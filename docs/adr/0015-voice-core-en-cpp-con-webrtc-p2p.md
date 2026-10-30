@@ -13,7 +13,7 @@ Los participantes quieren hablar mientras ven el vídeo (HU-VOZ-01 a 06). La voz
 - **Servicio nuevo `services/voice-core` en C++23** (Boost.Beast/Asio, hiredis, nlohmann/json, OpenSSL), puerto **8085**, endpoint `/ws/voice`.
 - **Audio P2P en malla (mesh) con WebRTC.** voice-core solo autoriza, lleva la membresía y reenvía la señalización (`signal`). Cupo por sala `VOICE_MAX_MEMBERS` (8).
 - **Misma autorización que los otros canales:** JWT HS256 de identity-api ([ADR 0006](0006-tickets-jwt-hs256-emitidos-por-identity-api.md)), `EXISTS token:revoked:{jti}` con falla cerrado y `REVOKED` en vivo por `room:{id}:sync` ([ADR 0007](0007-revocacion-por-clave-redis-y-cierre-4001.md)); cierres `4001`/`4003` tras el upgrade ([ADR 0014](0014-upgrade-y-cierre-4xxx-para-estados-terminales.md)) y `4008` con la voz llena.
-- **STUN/TURN con `coturn`** en compose y credenciales efímeras firmadas con `TURN_SECRET` (Fase 3).
+- **STUN/TURN con `coturn`** en compose y credenciales efímeras por usuario firmadas con `TURN_SECRET` (REST API de TURN: `username = exp:sub`, `credential = base64(HMAC-SHA1)`), validadas por coturn con `use-auth-secret`.
 - **Calidad:** GoogleTest, gcovr ≥ 85 %, ASan+UBSan y TSan en CI (job `C++ · voice-core`), `clang-format`.
 
 ```mermaid

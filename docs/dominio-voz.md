@@ -11,7 +11,7 @@
 | **HU-VOZ-02** Silenciar y activar mi micrófono | AC1 silenciado no transmite · AC2 al activar vuelve el audio · AC3 los demás ven el icono | 🟢 Backend (Fase 2): `self_mute` → `peer_muted` a toda la sala. AC1/AC2 (no enviar audio) los cierra la web con `replaceTrack` (Fase 4). |
 | **HU-VOZ-03** Ver quién habla | AC1 resalta al que habla · AC2 se apaga en silencio · AC3 legible con muchos | ⏳ Previsto (solo web: Web Audio `AnalyserNode`) |
 | **HU-VOZ-04** El host silencia a un participante | AC1 deja de oírse para todos · AC2 no puede quitárselo · AC3 un no-host recibe 403 | 🟢 Backend (Fase 2): `host_mute` por WS y REST, `HOST_MUTED`, `403` sin rol, persistido en Redis. El silencio en los receptores lo aplica la web (Fase 4). |
-| **HU-VOZ-05** Redes restrictivas | AC1 funciona por TURN · AC2 usa la ruta directa si existe · AC3 reconecta | ⏳ Previsto (Fase 3; `coturn` ya está en compose) |
+| **HU-VOZ-05** Redes restrictivas | AC1 funciona por TURN · AC2 usa la ruta directa si existe · AC3 reconecta | 🟢 AC1 backend (Fase 3): `ice_servers` con credencial TURN efímera por usuario, aceptada por `coturn` (probado con un Allocate real). AC2 lo da ICE (prueba host/STUN antes que relay) siempre que la web no fuerce `relay`. AC3 (ICE restart y reconexión) es de la web (Fase 4). |
 | **HU-VOZ-06** Componente propio | AC1 si se detiene, chat y sync siguen · AC2 API de salas, membresía y moderación · AC3 aparece en las vistas | 🟢 AC1, AC2 (salas, membresía y moderación) y AC3 |
 
 ## 2. Vista general
@@ -151,7 +151,7 @@ Ver la tabla completa en [voice-core/AGENTS.md § Protocolo](../services/voice-c
 | Host y cohost moderan | Igual que la moderación del chat en social-core. |
 | `replaceTrack(null)` para silenciarse | `track.enabled = false` sigue enviando paquetes de silencio; AC1 pide que no se transmita audio. |
 | Detección de quién habla en el navegador (HU-VOZ-03) | Web Audio sobre cada pista: sin tráfico ni latencia del servidor. |
-| TURN con credenciales efímeras (Fase 3) | REST API de TURN: `usuario = exp:user_id`, `clave = base64(HMAC-SHA1(TURN_SECRET, usuario))`; nada fijo en la web. |
+| TURN con credenciales efímeras | REST API de TURN: `usuario = exp:user_id`, `clave = base64(HMAC-SHA1(TURN_SECRET, usuario))`; nada fijo en la web. |
 
 ## 7. Plan por fases
 
@@ -160,23 +160,25 @@ Ver la tabla completa en [voice-core/AGENTS.md § Protocolo](../services/voice-c
 | 0 | `voice-core` y `coturn` en compose, `.env.example`, `make test-cpp`, job `C++ · voice-core` en CI | infra | 🟢 |
 | 1 | Handshake, membresía, señalización, `peer_left`, revocación en vivo | voice-core | 🟢 |
 | 2 | `self_mute`, `host_mute` (WS y REST `PUT/DELETE /api/v1/voice/rooms/{id}/mutes/{user_id}`, 403 sin rol host), persistencia `room:{id}:voice:muted` | voice-core | 🟢 |
-| 3 | `ice_servers` con credenciales TURN efímeras | voice-core | ⏳ |
+| 3 | `ice_servers` con credenciales TURN efímeras | voice-core | 🟢 |
 | 4 | `useVoiceChannel`, `VoicePanel` en `WatchRoom`, perfect negotiation, ICE restart, quién habla | web | ⏳ |
 | 5 | E2E con dos navegadores (`--use-fake-device-for-media-stream`, `getStats`), `iceTransportPolicy: 'relay'`, k6 de señalización | voice-core + web | ⏳ |
 
-## 8. Verificación (Fases 1 y 2)
+## 8. Verificación (Fases 1 a 3)
 
 | Comprobación | Resultado |
 | :--- | :--- |
-| GoogleTest (unitarias + integración con Redis real + servidor Beast real) | 138/138 (Fase 1: 91) |
-| ASan + UBSan · TSan | 138/138 en ambos |
+| GoogleTest (unitarias + integración con Redis real + servidor Beast real) | 143/143 (Fase 1: 91, Fase 2: 138) |
+| ASan + UBSan · TSan | 143/143 en ambos |
 | Pruebas de red y Redis repetidas 30 veces con TSan (Fase 1) | Sin fallos intermitentes |
 | Cobertura de líneas (`src/` sin `main.cpp`, gcovr) | 97 % |
 | Imagen final: `/healthz`, 401 antes del upgrade, `PSUBSCRIBE` activo, parada con SIGTERM | OK |
-| `scripts/smoke.py` contra `docker compose` (handshake, HU-VOZ-01 sin audio, silencio propio, silencio del host por REST con 204/403, `HOST_MUTED` y persistencia) | 12/12 |
+| `scripts/smoke.py` contra `docker compose` (handshake, HU-VOZ-01 sin audio, silencio propio, silencio del host por REST con 204/403, `HOST_MUTED`, persistencia y TURN Allocate contra `coturn` con la credencial efímera; una falsa da 401) | 13/13 |
 
 ## 9. Limitaciones conocidas
 - **Una réplica** (membresía en memoria). Escalar exige un registro compartido en Redis.
 - **Mesh:** el ancho de banda de subida crece con el número de participantes.
 - **Formato de `REVOKED`:** se asume `{"type":"REVOKED","jti":"…"}`; confirmar con sync-core.
 - **Bloqueo por dispositivo:** hereda la limitación de [ADR 0013](adr/0013-bloqueo-de-invitados-por-dispositivo.md) (borrar los datos del navegador lo evade).
+- **Credencial TURN por sesión:** caduca en `TURN_TTL_SECONDS` (1 h). Una llamada más larga mantiene su relay (coturn lo refresca), pero un ICE restart después de esa hora necesita credenciales nuevas: la web debe reconectar el WebSocket para recibir otro `voice_state` (Fase 4).
+- **coturn local:** `network_mode: host` sin `--external-ip` ni TLS sirve en Linux y en la misma red. En producción hace falta IP pública, `turns:` (TLS 443) y quitar `--no-tls`.
