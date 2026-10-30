@@ -1,6 +1,6 @@
 # 🤖 AGENT Guidelines — TINT Monorepo (raíz)
 
-Este repositorio es un monorepo multi-lenguaje (Go, TypeScript y Python). **Antes de modificar cualquier archivo, lee el `AGENTS.md` del dominio correspondiente** y respeta sus límites.
+Este repositorio es un monorepo multi-lenguaje (Go, TypeScript, Python y C++). **Antes de modificar cualquier archivo, lee el `AGENTS.md` del dominio correspondiente** y respeta sus límites.
 
 ## Dominios
 | Dominio | Ruta | Stack | Guía |
@@ -11,6 +11,7 @@ Este repositorio es un monorepo multi-lenguaje (Go, TypeScript y Python). **Ante
 | Social & Gamificación | `services/social-core` | Go, Redis | [services/social-core/AGENTS.md](services/social-core/AGENTS.md) |
 | Media Worker | `services/media-worker` | Python 3.11, FFmpeg, MinIO | [services/media-worker/AGENTS.md](services/media-worker/AGENTS.md) |
 | Analítica | `services/analytics` | Python 3.11, Redis Streams, PostgreSQL, API HTTP de solo lectura | [services/analytics/AGENTS.md](services/analytics/AGENTS.md) |
+| Voz | `services/voice-core` | C++23, Boost.Beast, hiredis, WebRTC P2P (solo señalización) | [services/voice-core/AGENTS.md](services/voice-core/AGENTS.md) |
 | Infra / CI | raíz, `.github/`, `scripts/` | Docker Compose, GitHub Actions | este archivo |
 
 ## Documentación
@@ -19,6 +20,7 @@ La documentación de features vive en [`docs/`](docs/README.md), con diagramas M
 - [Decisiones de arquitectura (ADRs)](docs/adr/README.md): una decisión por archivo; una decisión nueva va como ADR en el mismo PR.
 - [Usuarios, identidad y permisos](docs/usuarios-e-identidad.md): tipos de usuario, permisos, esquema de BD y tokens.
 - [Dominio de Reproducción](docs/dominio-reproduccion.md): Canal Sync v2.
+- [Dominio de Voz](docs/dominio-voz.md): canal de voz (voice-core).
 - [Contrato de eventos de analítica](docs/contrato-eventos-analitica.md): `analytics:events` y la API de KPIs.
 
 **Actualiza el documento en el mismo PR** en el que cambie un flujo, un contrato, una tabla o una variable de entorno.
@@ -28,7 +30,7 @@ La documentación de features vive en [`docs/`](docs/README.md), con diagramas M
 2. **TDD obligatorio:** Red → Green → Refactor. Cobertura mínima **85 %** por servicio; el CI (`.github/workflows/ci-pipeline.yml`) bloquea el merge si no se cumple.
 3. **Conventional Commits en español:** `tipo(alcance): descripción`, con el dominio como alcance: `feat(sync-core): …`, `fix(identity-api): …`, `docs(web): …`, `perf(sync-core): …`, `ci: …`, `chore: …`. El cuerpo explica el *porqué* y, si hay mediciones, las incluye.
 4. **Ramas:** `main` (producción) y `develop` (integración) están protegidas. Trabaja en `feat/*`, `fix/*` o `chore/*` y abre el PR hacia `develop`.
-5. **Infraestructura local:** `docker compose up -d` (PostgreSQL, Redis, MinIO, media-worker, analytics, social-core y sync-core). **Nunca subas `.env`** ni credenciales; documenta las variables nuevas en el `.env.example` correspondiente.
+5. **Infraestructura local:** `docker compose up -d` (PostgreSQL, Redis, MinIO, media-worker, analytics, social-core, sync-core, voice-core y coturn). **Nunca subas `.env`** ni credenciales; documenta las variables nuevas en el `.env.example` correspondiente.
 6. **Verificación:** `make test-all` antes de abrir un PR, más los comandos propios del dominio.
 7. **Archivos ajenos:** los `.docx` de planeación en la raíz no se versionan. No los agregues a commits.
 8. **Dependencias:** no agregues dependencias sin justificarlas en el commit y en el Stack Técnico del `AGENTS.md` del dominio. Fija versiones exactas en Go y prefiere versiones exactas en npm.
@@ -38,14 +40,16 @@ Cambiar uno exige actualizar **ambos lados**, sus pruebas y [docs/arquitectura.m
 
 | Contrato | Lados | Fuente de verdad |
 | :--- | :--- | :--- |
-| Claims JWT HS256 (`sub`, `room_id`, `role`, `nick`, `jti`, `iss`, `aud`, `exp`) | identity-api ↔ sync-core, social-core, analytics | [usuarios-e-identidad §4](docs/usuarios-e-identidad.md#4-esquemas-de-tokens) |
-| `JWT_SECRET` / `JWT_ISSUER` / `JWT_AUDIENCE` | identity-api ↔ sync-core, social-core, analytics | `.env.example` raíz |
+| Claims JWT HS256 (`sub`, `room_id`, `role`, `nick`, `jti`, `iss`, `aud`, `exp`) | identity-api ↔ sync-core, social-core, analytics, voice-core | [usuarios-e-identidad §4](docs/usuarios-e-identidad.md#4-esquemas-de-tokens) |
+| `JWT_SECRET` / `JWT_ISSUER` / `JWT_AUDIENCE` | identity-api ↔ sync-core, social-core, analytics, voice-core | `.env.example` raíz |
 | Protocolo del Canal Sync v2 (incl. `VOLUME`/`QUALITY`) | sync-core ↔ web | [sync-core/AGENTS.md](services/sync-core/AGENTS.md#protocolo-del-canal-sync) |
 | Protocolo del Canal Social (chat con spoilers, reacciones, láser, encuestas, trivias, recap; moderación del chat —modo lento y silencio—, láser, encuestas y programación de trivias con sync-ticket del host) | social-core ↔ web | [social-core/AGENTS.md](services/social-core/AGENTS.md#protocolo-del-canal-social) |
 | Comandos de reproducción en `room:{id}:sync` (solo lectura, para el recap) | sync-core → social-core | [arquitectura §5](docs/arquitectura.md#5-contratos-compartidos-entre-dominios) |
-| Revocación `token:revoked:{jti}` + `REVOKED` (cierre `4001`; token caducado `4003`) | identity-api → sync-core, social-core, analytics, web | [dominio-reproduccion §6.6](docs/dominio-reproduccion.md#66-retirar-a-un-invitado-f5) |
+| Revocación `token:revoked:{jti}` + `REVOKED` (cierre `4001`; token caducado `4003`) | identity-api → sync-core, social-core, analytics, voice-core, web | [dominio-reproduccion §6.6](docs/dominio-reproduccion.md#66-retirar-a-un-invitado-f5) |
 | Stream `media:uploads` + tabla `videos` (`id`, `storage_key`, `duration_ms`, `status`, `renditions`) + staging `incoming/{id}/original.*` (el worker publica `{id}/source.*` y reescribe `storage_key`; también `{id}/720p.mp4`/`{id}/360p.mp4` y sus alturas en `renditions`) | identity-api → media-worker | [dominio-reproduccion §6.7](docs/dominio-reproduccion.md#67-subida-y-cambio-de-vídeo) |
-| Puertos locales: social-core 8082, sync-core 8083, analytics 8084 | infra ↔ web | `docker-compose.yml`, `.env.example` de la web |
+| Protocolo del Canal de Voz (`/ws/voice`: `voice_state`, `peer_joined`/`peer_left`, `signal`, `leave`, `error`; cierre `4008` con la voz llena) | voice-core ↔ web | [voice-core/AGENTS.md](services/voice-core/AGENTS.md#protocolo-del-canal-de-voz) |
+| `TURN_SECRET` (credenciales TURN efímeras) | voice-core ↔ coturn | `.env.example` raíz |
+| Puertos locales: social-core 8082, sync-core 8083, analytics 8084, voice-core 8085, coturn 3478 | infra ↔ web | `docker-compose.yml`, `.env.example` de la web |
 | API REST `/api/v1` (incl. bloqueo por dispositivo `room_bans` + `deviceId` en el claim, y biblioteca `GET /videos`) | identity-api → web | [identity-api/AGENTS.md](services/identity-api/AGENTS.md#api) |
 | Stream `analytics:events` (sin PII) | identity-api, social-core, sync-core, media-worker → analytics | [docs/contrato-eventos-analitica.md](docs/contrato-eventos-analitica.md) |
 | API de lectura de analytics (`/api/v1/rooms/{id}/kpis`, `/reactions/heatmap`, `/timeline`) + `analytics-ticket` (`POST /api/v1/rooms/:id/analytics-ticket`) | identity-api → web → analytics | [analytics/AGENTS.md](services/analytics/AGENTS.md#api-solo-lectura-puerto-analytics_port-por-defecto-8084) |
@@ -66,6 +70,7 @@ Cambiar uno exige actualizar **ambos lados**, sus pruebas y [docs/arquitectura.m
 | `identity-api` | `npm ci` · `npm run typecheck` · `npx vitest run --coverage` |
 | `apps/web` | `npm ci` · `npm run lint` · `npm run typecheck` · `npx vitest run --coverage` · `npm run build` |
 | Python (`media-worker`, `analytics`) | `ruff check . && ruff format --check .` · `pytest --cov=src --cov-fail-under=85` |
+| C++ (`voice-core`) | `clang-format --dry-run --Werror` · `ctest` con `-DVOICE_SANITIZE=address` y `=thread` · `gcovr --fail-under-line 85` (`make test-cpp`; ver su AGENTS.md para correrlo en Docker) |
 | Carga del Canal Sync | `k6 run -e VUS=50 -e DURATION=20s services/sync-core/loadtest/sync.js` (CI); 500 VUs desde otra máquina |
 
 ## Lecciones aprendidas (no repetir)
