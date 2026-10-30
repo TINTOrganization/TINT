@@ -36,7 +36,7 @@ Las versiones las fija la imagen base (`debian:trixie-slim` en el `Dockerfile`, 
 
 | Dirección | `type` | Campos | Notas |
 | :--- | :--- | :--- | :--- |
-| S → C | `voice_state` | `room_id`, `self{peer_id,user_id,nick,role,muted,host_muted}`, `peers[]`, `ice_servers[]` (RTCIceServer), `max_members` | Al entrar. **Quien llega** inicia la oferta WebRTC a cada peer de la lista. |
+| S → C | `voice_state` | `room_id`, `self{peer_id,user_id,nick,role,muted,host_muted}`, `peers[]`, `ice_servers[]` (RTCIceServer: STUN sin credencial y TURN con `username`/`credential` efímeros del usuario), `max_members` | Al entrar. **Quien llega** inicia la oferta WebRTC a cada peer de la lista. |
 | S → C | `peer_joined` | `room_id`, `peer{…}` | A los que ya estaban. |
 | S → C | `peer_left` | `room_id`, `peer_id` | Cierre limpio, caída de red (ping/pong, ≤ 20 s), `leave` o revocación. El cliente cierra esa `RTCPeerConnection`. |
 | C → S | `signal` | `to` (peer_id), `data` (objeto opaco: `{sdp}` o `{candidate}`) | Solo a un miembro de la misma sala. |
@@ -90,6 +90,7 @@ CORS: `OPTIONS` responde `204` con `Access-Control-Allow-Methods: PUT, DELETE` y
 | `src/domain/voice_room` | Membresía y cupo de una sala, sin red. |
 | `src/protocol/messages` | Parseo defensivo de mensajes del cliente y construcción de los del servidor. |
 | `src/moderation/mute_store` | Interfaz `MuteStore` y `can_moderate` (host/cohost). |
+| `src/ice/ice_servers` | Credenciales TURN efímeras y lista `RTCIceServer` por usuario. |
 | `src/hub/hub` | Salas, `join`/`leave`/`revoke`, reenvío de `signal`, `self_mute`/`host_mute`/`apply_host_mute`. Thread-safe; guarda `weak_ptr<Peer>`. La escritura en Redis de `host_mute` corre en `run_blocking`, sin el mutex. |
 | `src/net/handshake` | Decisión pura del handshake (404/403/400/401/503 o 4001/4003) y lectura del silencio del host. |
 | `src/net/mute_api` | Decisión pura del REST de silencios (404/405/401/403/503 o `MuteCommand`). |
@@ -132,7 +133,7 @@ Sanitizers: `-DVOICE_SANITIZE=address` o `-DVOICE_SANITIZE=thread`. Cobertura: `
 | `ALLOWED_ORIGINS` | `localhost:5173,127.0.0.1:5173` | `host[:puerto]` (en compose viene de `VOICE_ALLOWED_ORIGINS`). |
 | `VOICE_MAX_MEMBERS` | `8` | Cupo de la voz por sala (2–16). |
 | `STUN_URLS` | vacío | Se envían en `ice_servers`. |
-| `TURN_URLS` / `TURN_SECRET` / `TURN_TTL_SECONDS` | vacío / vacío / `3600` | Credenciales TURN efímeras (**Fase 3, prevista**: hoy solo se validan). |
+| `TURN_URLS` / `TURN_SECRET` / `TURN_TTL_SECONDS` | vacío / vacío / `3600` | TURN con credencial efímera por usuario: `username = <ahora+TTL>:<sub>`, `credential = base64(HMAC-SHA1(TURN_SECRET, username))` (REST API de TURN). `TURN_SECRET` debe ser el `static-auth-secret` de coturn. |
 
 ## Limitaciones conocidas
 - **Una réplica:** la membresía vive en memoria. Varias réplicas necesitarían un registro compartido en Redis (ZSET + Pub/Sub `room:{id}:voice`). Con mesh de ≤ 8 personas la carga por sala es baja.

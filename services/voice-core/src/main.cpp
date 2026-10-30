@@ -12,6 +12,7 @@
 #include "auth/token_verifier.hpp"
 #include "config.hpp"
 #include "hub/hub.hpp"
+#include "ice/ice_servers.hpp"
 #include "net/server.hpp"
 #include "redis/mute_store.hpp"
 #include "redis/redis_url.hpp"
@@ -50,12 +51,14 @@ int main() {
         .count();
   };
   options.new_event_id = util::new_uuid;
-  // Fase 1: solo STUN. Las credenciales TURN efímeras llegan en la Fase 3.
-  const auto stun_urls = config->stun_urls;
-  options.ice_servers = [stun_urls](const auth::Claims&) {
-    nlohmann::json servers = nlohmann::json::array();
-    if (!stun_urls.empty()) servers.push_back({{"urls", stun_urls}});
-    return servers;
+  // STUN y TURN con una credencial efímera por usuario (HU-VOZ-05).
+  ice::IceConfig ice_config{config->stun_urls, config->turn_urls, config->turn_secret,
+                            std::chrono::seconds(config->turn_ttl_s)};
+  options.ice_servers = [ice_config](const auth::Claims& claims) {
+    const auto now_s =
+        std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch())
+            .count();
+    return ice::make_ice_servers(ice_config, claims.sub, now_s);
   };
   auto hub = std::make_shared<hub::Hub>(std::move(options));
 

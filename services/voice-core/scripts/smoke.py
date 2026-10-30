@@ -2,12 +2,13 @@
 """Prueba rápida de voice-core contra el servicio levantado (docker compose up -d voice-core).
 
 Solo usa la biblioteca estándar: fabrica los JWT con JWT_SECRET, habla WebSocket, HTTP y
-RESP (Redis) a mano. Comprueba HU-VOZ-01, 02 y 04 de punta a punta salvo el audio, que es
-de la web.
+RESP (Redis) a mano. Comprueba HU-VOZ-01, 02, 04 y 05 (TURN contra coturn) de punta a punta salvo el audio,
+que es de la web.
 
     python3 services/voice-core/scripts/smoke.py
 
 Variables: VOICE_URL (http://localhost:8085), REDIS_HOST/REDIS_PORT (localhost:6379),
+TURN_HOST/TURN_PORT (127.0.0.1:3478),
 JWT_SECRET (si falta, se lee del .env de la raíz o se usa el valor por defecto de compose).
 """
 
@@ -29,6 +30,7 @@ import uuid
 VOICE_URL = os.environ.get("VOICE_URL", "http://localhost:8085")
 REDIS_HOST = os.environ.get("REDIS_HOST", "localhost")
 REDIS_PORT = int(os.environ.get("REDIS_PORT", "6379"))
+TURN_ADDR = (os.environ.get("TURN_HOST", "127.0.0.1"), int(os.environ.get("TURN_PORT", "3478")))
 TIMEOUT = 5.0
 
 
@@ -75,6 +77,53 @@ def redis(*args):
         if reply.startswith("-"):
             raise RuntimeError(f"Redis: {reply.strip()}")
         return reply
+
+
+# --- TURN (Allocate mínimo, RFC 5766 con autenticación de largo plazo) ---------------------
+
+
+def turn_allocate(username, password):
+    """Pide un relay UDP a coturn. Devuelve el código STUN: 0 si lo concedió, 401/438/… si no."""
+
+    def attr(t, value):
+        pad = (4 - len(value) % 4) % 4
+        return struct.pack("!HH", t, len(value)) + value + b"\0" * pad
+
+    def message(attrs, integrity_key=None):
+        tid = os.urandom(12)
+        body = b"".join(attrs)
+        if integrity_key:
+            # La longitud del encabezado ya cuenta el MESSAGE-INTEGRITY (24 bytes).
+            head = struct.pack("!HHI", 0x0003, len(body) + 24, 0x2112A442) + tid
+            mac = hmac.new(integrity_key, head + body, hashlib.sha1).digest()
+            body += attr(0x0008, mac)
+        return struct.pack("!HHI", 0x0003, len(body), 0x2112A442) + tid + body
+
+    def parse(data):
+        msg_type, length = struct.unpack("!HH", data[:4])
+        attrs, i = {}, 20
+        while i < 20 + length:
+            t, n = struct.unpack("!HH", data[i : i + 4])
+            attrs[t] = data[i + 4 : i + 4 + n]
+            i += 4 + n + (4 - n % 4) % 4
+        return msg_type, attrs
+
+    transport = attr(0x0019, bytes([17, 0, 0, 0]))  # REQUESTED-TRANSPORT: UDP
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+        s.settimeout(TIMEOUT)
+        s.sendto(message([transport]), TURN_ADDR)
+        _, attrs = parse(s.recv(2048))  # 401 con REALM y NONCE
+        realm, nonce = attrs[0x0014], attrs[0x0015]
+        key = hashlib.md5(username.encode() + b":" + realm + b":" + password.encode()).digest()
+        s.sendto(
+            message([transport, attr(0x0006, username.encode()), attr(0x0014, realm), attr(0x0015, nonce)], key),
+            TURN_ADDR,
+        )
+        msg_type, attrs = parse(s.recv(2048))
+        if msg_type == 0x0103:  # Allocate success
+            return 0
+        err = attrs.get(0x0009, b"\0\0\0\0")
+        return err[2] * 100 + err[3]
 
 
 # --- WebSocket (cliente mínimo, RFC 6455) --------------------------------------------------
@@ -392,6 +441,21 @@ def _():
     luis.send(client_msg("host_mute", user_id="u-cualquiera", muted=True))
     assert luis.recv_type("error")["code"] == "FORBIDDEN"
     luis.close()
+
+
+@check("HU-VOZ-05: ice_servers trae TURN con credencial efímera que coturn acepta (y rechaza una falsa)")
+def _():
+    token, claims = make_token(ROOM, "Ana")
+    ws = WS(ROOM, token)
+    servers = ws.recv_type("voice_state")["ice_servers"]
+    ws.close()
+    assert any("username" not in s for s in servers), f"falta STUN: {servers}"
+    turn = next(s for s in servers if "username" in s)
+    expires, user = turn["username"].split(":", 1)
+    assert user == claims["sub"], turn["username"]
+    assert 0 < int(expires) - time.time() <= 24 * 3600, "caduca según TURN_TTL_SECONDS"
+    assert turn_allocate(turn["username"], turn["credential"]) == 0, "coturn no concedió el relay"
+    assert turn_allocate(turn["username"], "clave-falsa") == 401
 
 
 ok = all(r[0] for r in results)
