@@ -10,6 +10,7 @@
 #include <boost/beast/http.hpp>
 #include <boost/beast/websocket.hpp>
 
+#include "net/mute_api.hpp"
 #include "protocol/messages.hpp"
 #include "util/uuid.hpp"
 
@@ -26,6 +27,7 @@ struct ServerShared {
   ServerOptions options;
   std::shared_ptr<auth::TokenVerifier> verifier;
   std::shared_ptr<RevocationChecker> revocation;
+  std::shared_ptr<moderation::MuteStore> mutes;
   std::shared_ptr<hub::Hub> hub;
   asio::thread_pool::executor_type blocking;
 };
@@ -46,13 +48,14 @@ class VoiceSession : public hub::Peer, public std::enable_shared_from_this<Voice
   const std::string& id() const override { return id_; }
 
   // Upgrade y entrada a la voz.
-  void accept_and_join(http::request<http::string_body> req, std::string room_id, auth::Claims claims) {
-    room_id_ = std::move(room_id);
+  void accept_and_join(http::request<http::string_body> req, Accept accept) {
+    room_id_ = std::move(accept.room_id);
     configure();
-    ws_.async_accept(req, [self = shared_from_this(), claims = std::move(claims)](beast::error_code ec) {
+    ws_.async_accept(req, [self = shared_from_this(), claims = std::move(accept.claims),
+                           host_muted = accept.host_muted](beast::error_code ec) {
       if (ec) return;
       self->do_read();
-      self->joined_ = self->shared_->hub->join(self->room_id_, claims, self);
+      self->joined_ = self->shared_->hub->join(self->room_id_, claims, self, host_muted);
     });
   }
 
@@ -173,19 +176,66 @@ class HttpSession : public std::enable_shared_from_this<HttpSession> {
     if (!websocket::is_upgrade(req_)) {
       if (req_.method() == http::verb::get && req_.target() == "/healthz")
         return respond(http::status::ok, R"({"status":"ok"})");
+      if (parse_mute_path(req_.target())) return on_mute_request();
       return respond(http::status::not_found, R"({"error":"not found"})");
     }
     // decide_handshake consulta Redis (bloqueante): fuera del io_context.
     asio::post(shared_->blocking, [self = shared_from_this()] {
       std::optional<std::string_view> origin;
       if (auto it = self->req_.find(http::field::origin); it != self->req_.end()) origin = it->value();
-      auto decision =
-          decide_handshake({self->req_.target(), origin}, *self->shared_->verifier,
-                           *self->shared_->revocation, self->shared_->options.allowed_origins, now_s());
+      auto decision = decide_handshake({self->req_.target(), origin}, *self->shared_->verifier,
+                                       *self->shared_->revocation, *self->shared_->mutes,
+                                       self->shared_->options.allowed_origins, now_s());
       asio::post(self->stream_.get_executor(), [self, decision = std::move(decision)]() mutable {
         self->on_decision(std::move(decision));
       });
     });
+  }
+
+  // REST de silencios del host (HU-VOZ-04). CORS solo para los orígenes permitidos.
+  void on_mute_request() {
+    if (auto it = req_.find(http::field::origin); it != req_.end()) {
+      if (!origin_allowed(it->value(), shared_->options.allowed_origins))
+        return respond(http::status::forbidden, R"({"error":"origin not allowed"})");
+      cors_origin_ = it->value();
+    }
+    if (req_.method() == http::verb::options) return respond_preflight();
+    asio::post(shared_->blocking, [self = shared_from_this()] {
+      std::optional<std::string_view> authorization;
+      if (auto it = self->req_.find(http::field::authorization); it != self->req_.end())
+        authorization = it->value();
+      auto decision = decide_mute_request({self->req_.method_string(), self->req_.target(), authorization},
+                                          *self->shared_->verifier, *self->shared_->revocation, now_s());
+      if (auto* reject = std::get_if<Reject>(&decision)) {
+        nlohmann::json body{{"error", reject->reason}};
+        return self->respond_from_pool(static_cast<http::status>(reject->status), body.dump());
+      }
+      auto& command = std::get<MuteCommand>(decision);
+      // Falla cerrado: solo se anuncia lo que quedó guardado.
+      if (!self->shared_->mutes->set_muted(command.room_id, command.user_id, command.muted))
+        return self->respond_from_pool(http::status::service_unavailable,
+                                       R"({"error":"mute store unavailable"})");
+      self->shared_->hub->apply_host_mute(command.room_id, command.user_id, command.muted);
+      self->respond_from_pool(http::status::no_content, "");
+    });
+  }
+
+  void respond_from_pool(http::status status, std::string body) {
+    asio::post(stream_.get_executor(), [self = shared_from_this(), status, body = std::move(body)]() mutable {
+      self->respond(status, std::move(body));
+    });
+  }
+
+  void respond_preflight() {
+    auto res = std::make_shared<http::response<http::string_body>>(http::status::no_content, req_.version());
+    if (!cors_origin_.empty()) {
+      res->set(http::field::access_control_allow_origin, cors_origin_);
+      res->set(http::field::vary, "Origin");
+    }
+    res->set(http::field::access_control_allow_methods, "PUT, DELETE");
+    res->set(http::field::access_control_allow_headers, "Authorization");
+    res->set(http::field::access_control_max_age, "600");
+    write(std::move(res));
   }
 
   void on_decision(HandshakeDecision decision) {
@@ -197,15 +247,22 @@ class HttpSession : public std::enable_shared_from_this<HttpSession> {
     auto session = std::make_shared<VoiceSession>(std::move(stream_), shared_);
     if (auto* close = std::get_if<AcceptThenClose>(&decision))
       return session->accept_and_close(std::move(req_), close->code, close->reason);
-    auto& accept = std::get<Accept>(decision);
-    session->accept_and_join(std::move(req_), std::move(accept.room_id), std::move(accept.claims));
+    session->accept_and_join(std::move(req_), std::move(std::get<Accept>(decision)));
   }
 
   void respond(http::status status, std::string body) {
     auto res = std::make_shared<http::response<http::string_body>>(status, req_.version());
-    res->set(http::field::content_type, "application/json");
-    res->keep_alive(false);
+    if (!body.empty()) res->set(http::field::content_type, "application/json");
+    if (!cors_origin_.empty()) {
+      res->set(http::field::access_control_allow_origin, cors_origin_);
+      res->set(http::field::vary, "Origin");
+    }
     res->body() = std::move(body);
+    write(std::move(res));
+  }
+
+  void write(std::shared_ptr<http::response<http::string_body>> res) {
+    res->keep_alive(false);
     res->prepare_payload();
     http::async_write(stream_, *res, [self = shared_from_this(), res](beast::error_code, std::size_t) {
       beast::error_code ec;
@@ -218,16 +275,18 @@ class HttpSession : public std::enable_shared_from_this<HttpSession> {
   beast::flat_buffer buffer_;
   std::optional<http::request_parser<http::string_body>> parser_;
   http::request<http::string_body> req_;
+  std::string cors_origin_;
 };
 
 }  // namespace
 
 Server::Server(asio::io_context& ioc, ServerOptions options, std::shared_ptr<auth::TokenVerifier> verifier,
-               std::shared_ptr<RevocationChecker> revocation, std::shared_ptr<hub::Hub> hub)
+               std::shared_ptr<RevocationChecker> revocation, std::shared_ptr<moderation::MuteStore> mutes,
+               std::shared_ptr<hub::Hub> hub)
     : ioc_(ioc), acceptor_(asio::make_strand(ioc)) {
   shared_ = std::make_shared<ServerShared>(ServerShared{std::move(options), std::move(verifier),
-                                                        std::move(revocation), std::move(hub),
-                                                        blocking_pool_.get_executor()});
+                                                        std::move(revocation), std::move(mutes),
+                                                        std::move(hub), blocking_pool_.get_executor()});
 }
 
 Server::~Server() {

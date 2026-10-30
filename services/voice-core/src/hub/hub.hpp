@@ -14,6 +14,7 @@
 
 #include "auth/token_verifier.hpp"
 #include "domain/voice_room.hpp"
+#include "moderation/mute_store.hpp"
 
 namespace voice::hub {
 
@@ -43,6 +44,10 @@ struct HubOptions {
   };
   std::function<std::int64_t()> now_ms;
   std::function<std::string()> new_event_id;
+  // Silencios del host persistidos (Redis). Sin store, host_mute responde UNAVAILABLE.
+  std::shared_ptr<moderation::MuteStore> mutes;
+  // Corre trabajo bloqueante (Redis) fuera del io_context. Por defecto, en el mismo hilo.
+  std::function<void(std::function<void()>)> run_blocking = [](std::function<void()> task) { task(); };
 };
 
 // Salas de voz, membresía y reenvío de la señalización WebRTC. Thread-safe.
@@ -52,7 +57,9 @@ class Hub {
 
   // Une al peer a la voz de la sala: le envía voice_state y avisa peer_joined a los demás.
   // Con la sala llena le envía error VOICE_FULL, lo cierra con 4008 y devuelve false.
-  bool join(const std::string& room_id, const auth::Claims& claims, std::shared_ptr<Peer> peer);
+  // host_muted: el host lo silenció antes (room:{id}:voice:muted); entra silenciado.
+  bool join(const std::string& room_id, const auth::Claims& claims, std::shared_ptr<Peer> peer,
+            bool host_muted = false);
 
   // Mensaje de texto recibido del peer.
   void handle_message(const std::string& room_id, const std::string& peer_id, std::string_view text);
@@ -62,6 +69,9 @@ class Hub {
 
   // REVOKED de identity-api: cierra con 4001 las conexiones de ese jti en la sala.
   void revoke(const std::string& room_id, const std::string& jti);
+
+  // Silencio del host ya guardado (WS host_mute o REST): avisa peer_muted a toda la sala.
+  void apply_host_mute(const std::string& room_id, const std::string& user_id, bool muted);
 
   std::vector<domain::Member> members(const std::string& room_id) const;
 

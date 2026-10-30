@@ -10,6 +10,7 @@
 #include <boost/beast/http.hpp>
 #include <boost/beast/websocket.hpp>
 
+#include "support/fake_mute_store.hpp"
 #include "support/fake_revocation.hpp"
 #include "support/jwt.hpp"
 
@@ -55,11 +56,15 @@ class Client {
   void send(const json& j) { ws_.write(asio::buffer(j.dump())); }
 
   // Lee un mensaje; nullopt si el servidor cerró (close_code() lo dice).
+  // Asíncrona a propósito: los tiempos límite de tcp_stream no aplican a las operaciones
+  // síncronas, y una prueba en rojo debe fallar, no quedarse colgada.
   std::optional<json> read() {
     beast::flat_buffer buffer;
     beast::error_code ec;
     beast::get_lowest_layer(ws_).expires_after(3s);
-    ws_.read(buffer, ec);
+    ws_.async_read(buffer, [&ec](beast::error_code e, std::size_t) { ec = e; });
+    ioc_.restart();
+    ioc_.run();
     if (ec) return std::nullopt;
     return json::parse(beast::buffers_to_string(buffer.data()));
   }
@@ -104,11 +109,13 @@ class ServerTest : public ::testing::Test {
     options.now_ms = [] { return 1; };
     int counter = 0;
     options.new_event_id = [counter]() mutable { return "evt-" + std::to_string(++counter); };
-    hub = std::make_shared<hub::Hub>(options);
     revocation = std::make_shared<FakeRevocation>();
+    mutes = std::make_shared<FakeMuteStore>();
+    options.mutes = mutes;
+    hub = std::make_shared<hub::Hub>(options);
     server = std::make_unique<net::Server>(ioc, net::ServerOptions{{"localhost:5173"}},
                                            std::make_shared<auth::TokenVerifier>(kSecret, kIssuer, kAudience),
-                                           revocation, hub);
+                                           revocation, mutes, hub);
     port = server->listen("127.0.0.1", 0);
     thread = std::thread([this] { ioc.run(); });
   }
@@ -141,9 +148,32 @@ class ServerTest : public ::testing::Test {
     return false;
   }
 
+  // Petición HTTP simple (REST de silencios).
+  http::response<http::string_body> request(http::verb method, const std::string& target,
+                                            const std::string& authorization = "",
+                                            const std::string& origin = "http://localhost:5173",
+                                            const std::string& preflight_method = "") {
+    asio::io_context ioc_client;
+    beast::tcp_stream stream(ioc_client);
+    stream.connect(tcp::endpoint(asio::ip::make_address("127.0.0.1"), port));
+    http::request<http::empty_body> req{method, target, 11};
+    req.set(http::field::host, "127.0.0.1");
+    if (!authorization.empty()) req.set(http::field::authorization, authorization);
+    if (!origin.empty()) req.set(http::field::origin, origin);
+    if (!preflight_method.empty()) req.set(http::field::access_control_request_method, preflight_method);
+    http::write(stream, req);
+    beast::flat_buffer buffer;
+    http::response<http::string_body> res;
+    stream.expires_after(3s);
+    http::async_read(stream, buffer, res, [](beast::error_code, std::size_t) {});
+    ioc_client.run();
+    return res;
+  }
+
   asio::io_context ioc;
   std::shared_ptr<hub::Hub> hub;
   std::shared_ptr<FakeRevocation> revocation;
+  std::shared_ptr<FakeMuteStore> mutes;
   std::unique_ptr<net::Server> server;
   std::uint16_t port = 0;
   std::thread thread;
@@ -311,4 +341,115 @@ TEST_F(ServerTest, OversizedMessageClosesTheConnection) {
   ana->send({{"type", "signal"}, {"pad", std::string(protocol::kMaxMessageBytes + 10, 'x')}});
   EXPECT_FALSE(ana->read_type("never").has_value());
   EXPECT_TRUE(wait_members(0));
+}
+
+// --- Fase 2: silencios --------------------------------------------------------------------
+
+namespace {
+const std::string kAnaMutePath = "/api/v1/voice/rooms/room-1/mutes/guest%3Aana";
+std::string bearer(const json& claims) { return "Bearer " + sign_jwt(token_claims(claims)); }
+}  // namespace
+
+// HU-VOZ-02: el silencio propio llega a los demás (icono).
+TEST_F(ServerTest, SelfMuteReachesTheOthers) {
+  auto host = joined(host_claims());
+  auto ana = joined(guest_claims());
+  ASSERT_TRUE(host->read_type("peer_joined"));
+  ana->send({{"type", "self_mute"}, {"event_id", "e"}, {"occurred_at", 1}, {"muted", true}});
+  auto muted = host->read_type("peer_muted");
+  ASSERT_TRUE(muted);
+  EXPECT_EQ((*muted)["peer_id"], self_ids["guest:ana"]);
+  EXPECT_EQ((*muted)["muted"], true);
+}
+
+// HU-VOZ-04 AC1 por REST: 204 y todos reciben peer_muted.
+TEST_F(ServerTest, RestHostMuteAnnouncesAndPersists) {
+  auto host = joined(host_claims());
+  auto ana = joined(guest_claims());
+  ASSERT_TRUE(host->read_type("peer_joined"));
+
+  auto res = request(http::verb::put, kAnaMutePath, bearer(host_claims()));
+  EXPECT_EQ(res.result(), http::status::no_content);
+  EXPECT_EQ(res[http::field::access_control_allow_origin], "http://localhost:5173");
+  EXPECT_TRUE(mutes->contains("room-1", "guest:ana"));
+  for (auto* c : {host.get(), ana.get()}) {
+    auto muted = c->read_type("peer_muted");
+    ASSERT_TRUE(muted);
+    EXPECT_EQ((*muted)["host_muted"], true);
+  }
+
+  // AC2: no puede quitárselo.
+  ana->send({{"type", "self_mute"}, {"event_id", "e-try"}, {"occurred_at", 1}, {"muted", false}});
+  auto err = ana->read_type("error");
+  ASSERT_TRUE(err);
+  EXPECT_EQ((*err)["code"], "HOST_MUTED");
+
+  res = request(http::verb::delete_, kAnaMutePath, bearer(host_claims()));
+  EXPECT_EQ(res.result(), http::status::no_content);
+  EXPECT_FALSE(mutes->contains("room-1", "guest:ana"));
+  auto lifted = host->read_type("peer_muted");
+  ASSERT_TRUE(lifted);
+  EXPECT_EQ((*lifted)["host_muted"], false);
+}
+
+// HU-VOZ-04 AC3: un no-host recibe 403 de la API.
+TEST_F(ServerTest, RestHostMuteByParticipantIs403) {
+  auto res = request(http::verb::put, kAnaMutePath,
+                     bearer(guest_claims("room-1", "guest:luis", "jti-luis", "Luis")));
+  EXPECT_EQ(res.result(), http::status::forbidden);
+  EXPECT_EQ(mutes->writes, 0);
+}
+
+TEST_F(ServerTest, RestErrors) {
+  EXPECT_EQ(request(http::verb::put, kAnaMutePath).result(), http::status::unauthorized);
+  EXPECT_EQ(request(http::verb::get, kAnaMutePath, bearer(host_claims())).result(),
+            http::status::method_not_allowed);
+  EXPECT_EQ(request(http::verb::put, kAnaMutePath, bearer(host_claims()), "https://evil.example").result(),
+            http::status::forbidden);
+  mutes->unavailable = true;
+  EXPECT_EQ(request(http::verb::put, kAnaMutePath, bearer(host_claims())).result(),
+            http::status::service_unavailable);
+}
+
+TEST_F(ServerTest, RestWorksWithoutOriginHeader) {
+  auto res = request(http::verb::put, kAnaMutePath, bearer(host_claims()), "");
+  EXPECT_EQ(res.result(), http::status::no_content);
+  EXPECT_EQ(res.count(http::field::access_control_allow_origin), 0u);
+}
+
+// El navegador pregunta antes (CORS) porque el PUT lleva Authorization.
+TEST_F(ServerTest, CorsPreflight) {
+  auto res = request(http::verb::options, kAnaMutePath, "", "http://localhost:5173", "PUT");
+  EXPECT_EQ(res.result(), http::status::no_content);
+  EXPECT_EQ(res[http::field::access_control_allow_origin], "http://localhost:5173");
+  EXPECT_NE(std::string(res[http::field::access_control_allow_methods]).find("DELETE"), std::string::npos);
+  EXPECT_NE(std::string(res[http::field::access_control_allow_headers]).find("Authorization"),
+            std::string::npos);
+  EXPECT_EQ(request(http::verb::options, kAnaMutePath, "", "https://evil.example", "PUT").result(),
+            http::status::forbidden);
+}
+
+// Persistencia: si vuelve a entrar sigue silenciada.
+TEST_F(ServerTest, HostMuteSurvivesReconnect) {
+  mutes->set_muted("room-1", "guest:ana", true);
+  auto ana = std::make_unique<Client>(port);
+  ASSERT_FALSE(ana->connect(target(guest_claims())));
+  auto state = ana->read_type("voice_state");
+  ASSERT_TRUE(state);
+  EXPECT_EQ((*state)["self"]["host_muted"], true);
+  EXPECT_EQ((*state)["self"]["muted"], true);
+}
+
+TEST_F(ServerTest, WebSocketHostMute) {
+  auto host = joined(host_claims());
+  auto ana = joined(guest_claims());
+  ASSERT_TRUE(host->read_type("peer_joined"));
+  host->send({{"type", "host_mute"},
+              {"event_id", "e"},
+              {"occurred_at", 1},
+              {"user_id", "guest:ana"},
+              {"muted", true}});
+  auto muted = ana->read_type("peer_muted");
+  ASSERT_TRUE(muted);
+  EXPECT_EQ((*muted)["host_muted"], true);
 }

@@ -41,8 +41,11 @@ add_library(voice_core_lib
   src/domain/voice_room.cpp
   src/hub/hub.cpp
   src/net/handshake.cpp
+  src/net/mute_api.cpp
   src/net/server.cpp
   src/protocol/messages.cpp
+  src/redis/connection.cpp
+  src/redis/mute_store.cpp
   src/redis/redis_url.cpp
   src/redis/revocation.cpp
   src/util/uuid.cpp
@@ -66,6 +69,8 @@ if(VOICE_BUILD_TESTS)
     tests/messages_test.cpp
     tests/hub_test.cpp
     tests/handshake_test.cpp
+    tests/mute_api_test.cpp
+    tests/mute_store_test.cpp
     tests/redis_url_test.cpp
     tests/revocation_test.cpp
     tests/server_test.cpp

@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "auth/token_verifier.hpp"
+#include "moderation/mute_store.hpp"
 
 namespace voice::net {
 
@@ -40,6 +41,7 @@ struct AcceptThenClose {
 struct Accept {
   std::string room_id;
   auth::Claims claims;
+  bool host_muted = false;  // el host lo silenció antes de entrar
 };
 
 using HandshakeDecision = std::variant<Reject, AcceptThenClose, Accept>;
@@ -47,11 +49,14 @@ using HandshakeDecision = std::variant<Reject, AcceptThenClose, Accept>;
 inline constexpr std::string_view kVoicePath = "/ws/voice";
 
 HandshakeDecision decide_handshake(const HandshakeRequest& request, const auth::TokenVerifier& verifier,
-                                   RevocationChecker& revocation,
+                                   RevocationChecker& revocation, moderation::MuteStore& mutes,
                                    const std::vector<std::string>& allowed_origins, std::int64_t now_s);
 
 // Origin "http://localhost:5173" contra entradas "localhost:5173".
 bool origin_allowed(std::string_view origin, const std::vector<std::string>& allowed);
+
+// Decodifica %XX y '+'.
+std::string url_decode(std::string_view in);
 
 // Separa ruta y query string (decodifica %XX y '+').
 std::string_view target_path(std::string_view target);

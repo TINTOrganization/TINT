@@ -4,7 +4,8 @@ Servicio en **C++23** (Boost.Beast, hiredis) que permite a los participantes de 
 
 | | |
 | :--- | :--- |
-| Puerto | `8085` (`/ws/voice`, `/healthz`) |
+| Puerto | `8085` (`/ws/voice`, `PUT/DELETE /api/v1/voice/rooms/{id}/mutes/{user_id}`, `/healthz`) |
+| Moderación | Silencio propio (`self_mute`) y del host/cohost (WS `host_mute` o REST, `403` sin rol), persistido en `room:{id}:voice:muted` |
 | Credencial | Guest token o sync-ticket de identity-api (HS256) |
 | Redis | `EXISTS token:revoked:{jti}` y `PSUBSCRIBE room:*:sync` (`REVOKED`) |
 | STUN/TURN | `coturn` en `docker compose` (`:3478`) |
@@ -45,4 +46,4 @@ curl localhost:8085/healthz
 python3 services/voice-core/scripts/smoke.py   # prueba rápida contra el servicio levantado
 ```
 
-`scripts/smoke.py` solo usa la biblioteca estándar de Python: fabrica tokens con `JWT_SECRET` (del entorno o del `.env`) y comprueba el handshake (401/403/4003), entrar, `peer_joined`, `signal`, `peer_left` y la revocación (4001 al entrar y `REVOKED` en vivo). No prueba audio: eso es de la web.
+`scripts/smoke.py` solo usa la biblioteca estándar de Python: fabrica tokens con `JWT_SECRET` (del entorno o del `.env`) y comprueba el handshake (401/403/4003), entrar, `peer_joined`, `signal`, `peer_left`, la revocación (4001 al entrar y `REVOKED` en vivo) y los silencios (propio, del host por REST con 204/403, `HOST_MUTED` y persistencia al volver). No prueba audio: eso es de la web.

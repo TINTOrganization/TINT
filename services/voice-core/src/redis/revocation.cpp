@@ -1,44 +1,13 @@
 #include "redis/revocation.hpp"
 
 #include <sys/socket.h>
-#include <sys/time.h>
 
 #include <hiredis/hiredis.h>
 #include <nlohmann/json.hpp>
 
+#include "redis/connection.hpp"
+
 namespace voice::redis {
-namespace {
-
-timeval to_timeval(std::chrono::milliseconds ms) {
-  return {static_cast<time_t>(ms.count() / 1000), static_cast<suseconds_t>((ms.count() % 1000) * 1000)};
-}
-
-// Conecta y autentica; nullptr si algo falla.
-redisContext* open_context(const RedisEndpoint& ep, std::chrono::milliseconds timeout, bool select_db) {
-  const timeval tv = to_timeval(timeout);
-  redisContext* ctx = redisConnectWithTimeout(ep.host.c_str(), ep.port, tv);
-  if (!ctx || ctx->err) {
-    if (ctx) redisFree(ctx);
-    return nullptr;
-  }
-  auto ok = [&](redisReply* reply) {
-    const bool good = reply && reply->type != REDIS_REPLY_ERROR;
-    if (reply) freeReplyObject(reply);
-    return good;
-  };
-  if (!ep.password.empty() &&
-      !ok(static_cast<redisReply*>(redisCommand(ctx, "AUTH %b", ep.password.data(), ep.password.size())))) {
-    redisFree(ctx);
-    return nullptr;
-  }
-  if (select_db && ep.db != 0 && !ok(static_cast<redisReply*>(redisCommand(ctx, "SELECT %d", ep.db)))) {
-    redisFree(ctx);
-    return nullptr;
-  }
-  return ctx;
-}
-
-}  // namespace
 
 // --- RedisRevocationChecker -----------------------------------------------------------
 
@@ -53,8 +22,7 @@ RedisRevocationChecker::~RedisRevocationChecker() {
 bool RedisRevocationChecker::connect_locked() {
   ctx_ = open_context(endpoint_, timeout_, /*select_db=*/true);
   if (!ctx_) return false;
-  const timeval tv = to_timeval(timeout_);
-  redisSetTimeout(ctx_, tv);
+  set_command_timeout(ctx_, timeout_);
   return true;
 }
 

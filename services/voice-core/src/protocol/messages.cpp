@@ -57,6 +57,19 @@ std::expected<ClientMessage, ProtocolError> parse_client_message(std::string_vie
     if (data == j.end() || !data->is_object()) return std::unexpected(ProtocolError::InvalidField);
     return SignalIn{j["event_id"], j["occurred_at"], j["to"], std::move(*data)};
   }
+  if (t == "self_mute") {
+    auto muted = j.find("muted");
+    if (!valid_id(j, "event_id") || !valid_time(j) || muted == j.end() || !muted->is_boolean())
+      return std::unexpected(ProtocolError::InvalidField);
+    return SelfMuteIn{j["event_id"], j["occurred_at"], muted->get<bool>()};
+  }
+  if (t == "host_mute") {
+    auto muted = j.find("muted");
+    if (!valid_id(j, "event_id") || !valid_time(j) || !valid_id(j, "user_id") || muted == j.end() ||
+        !muted->is_boolean())
+      return std::unexpected(ProtocolError::InvalidField);
+    return HostMuteIn{j["event_id"], j["occurred_at"], j["user_id"], muted->get<bool>()};
+  }
   if (t == "leave") {
     if (!valid_id(j, "event_id") || !valid_time(j)) return std::unexpected(ProtocolError::InvalidField);
     return LeaveIn{j["event_id"], j["occurred_at"]};
@@ -65,8 +78,8 @@ std::expected<ClientMessage, ProtocolError> parse_client_message(std::string_vie
 }
 
 json peer_json(const domain::Member& member) {
-  return {
-      {"peer_id", member.peer_id}, {"user_id", member.user_id}, {"nick", member.nick}, {"role", member.role}};
+  return {{"peer_id", member.peer_id}, {"user_id", member.user_id}, {"nick", member.nick},
+          {"role", member.role},       {"muted", member.muted},     {"host_muted", member.host_muted}};
 }
 
 std::string make_voice_state(const Envelope& env, const std::string& room_id, const domain::Member& self,
@@ -103,6 +116,16 @@ std::string make_signal(const Envelope& env, const std::string& room_id, const s
   j["room_id"] = room_id;
   j["from"] = from;
   j["data"] = data;
+  return j.dump();
+}
+
+std::string make_peer_muted(const Envelope& env, const std::string& room_id, const domain::Member& member) {
+  json j = envelope("peer_muted", env);
+  j["room_id"] = room_id;
+  j["peer_id"] = member.peer_id;
+  j["user_id"] = member.user_id;
+  j["muted"] = member.muted;
+  j["host_muted"] = member.host_muted;
   return j.dump();
 }
 

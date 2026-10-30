@@ -35,6 +35,24 @@ std::vector<std::string> VoiceRoom::peers_with_jti(const std::string& jti) const
   return out;
 }
 
+const Member* VoiceRoom::set_muted(const std::string& peer_id, bool muted) {
+  auto it = std::ranges::find(members_, peer_id, &Member::peer_id);
+  if (it == members_.end()) return nullptr;
+  it->muted = muted;
+  return &*it;
+}
+
+std::vector<Member> VoiceRoom::set_host_muted(const std::string& user_id, bool host_muted) {
+  std::vector<Member> changed;
+  for (auto& m : members_) {
+    if (m.user_id != user_id || m.host_muted == host_muted) continue;
+    m.host_muted = host_muted;
+    if (host_muted) m.muted = true;
+    changed.push_back(m);
+  }
+  return changed;
+}
+
 std::size_t VoiceRoom::size() const { return members_.size(); }
 bool VoiceRoom::empty() const { return members_.empty(); }
 std::size_t VoiceRoom::max_members() const { return max_members_; }

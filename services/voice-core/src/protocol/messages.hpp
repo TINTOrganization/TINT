@@ -29,7 +29,22 @@ struct LeaveIn {
   std::int64_t occurred_at = 0;
 };
 
-using ClientMessage = std::variant<SignalIn, LeaveIn>;
+// HU-VOZ-02: silenciar o activar mi micrófono.
+struct SelfMuteIn {
+  std::string event_id;
+  std::int64_t occurred_at = 0;
+  bool muted = false;
+};
+
+// HU-VOZ-04: el host (o cohost) silencia a un usuario de la sala.
+struct HostMuteIn {
+  std::string event_id;
+  std::int64_t occurred_at = 0;
+  std::string user_id;
+  bool muted = false;
+};
+
+using ClientMessage = std::variant<SignalIn, LeaveIn, SelfMuteIn, HostMuteIn>;
 
 enum class ProtocolError { TooLarge, InvalidJson, UnknownType, InvalidField };
 
@@ -54,6 +69,7 @@ std::string make_peer_joined(const Envelope& env, const std::string& room_id, co
 std::string make_peer_left(const Envelope& env, const std::string& room_id, const std::string& peer_id);
 std::string make_signal(const Envelope& env, const std::string& room_id, const std::string& from,
                         const nlohmann::json& data);
+std::string make_peer_muted(const Envelope& env, const std::string& room_id, const domain::Member& member);
 std::string make_error(const Envelope& env, std::string_view code, const std::string& event_id_ref);
 
 }  // namespace voice::protocol

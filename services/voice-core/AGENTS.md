@@ -7,7 +7,7 @@ Eres el agente del **Canal de Voz** de TINT: los participantes de una sala habla
 - **Membresía:** quién está en la voz, con cupo máximo (`VOICE_MAX_MEMBERS`, mesh), avisos `peer_joined`/`peer_left`.
 - **Autorización:** el mismo JWT HS256 de identity-api que usan sync-core y social-core, más la revocación `token:revoked:{jti}` (falla cerrado).
 - **Señalización:** reenvía offer/answer/candidatos ICE (`signal`) solo entre miembros de la misma sala, con el remitente que fija el servidor.
-- **Moderación (Fase 2, prevista):** silencio propio y silencio del host.
+- **Moderación:** silencio propio (`self_mute`) y silencio del host (`host_mute` por WebSocket o REST), persistido en Redis para que siga vigente al volver a entrar.
 
 Documento de dominio: [docs/dominio-voz.md](../../docs/dominio-voz.md) · decisión: [ADR 0015](../../docs/adr/0015-voice-core-en-cpp-con-webrtc-p2p.md).
 
@@ -36,13 +36,16 @@ Las versiones las fija la imagen base (`debian:trixie-slim` en el `Dockerfile`, 
 
 | Dirección | `type` | Campos | Notas |
 | :--- | :--- | :--- | :--- |
-| S → C | `voice_state` | `room_id`, `self{peer_id,user_id,nick,role}`, `peers[]`, `ice_servers[]` (RTCIceServer), `max_members` | Al entrar. **Quien llega** inicia la oferta WebRTC a cada peer de la lista. |
+| S → C | `voice_state` | `room_id`, `self{peer_id,user_id,nick,role,muted,host_muted}`, `peers[]`, `ice_servers[]` (RTCIceServer), `max_members` | Al entrar. **Quien llega** inicia la oferta WebRTC a cada peer de la lista. |
 | S → C | `peer_joined` | `room_id`, `peer{…}` | A los que ya estaban. |
 | S → C | `peer_left` | `room_id`, `peer_id` | Cierre limpio, caída de red (ping/pong, ≤ 20 s), `leave` o revocación. El cliente cierra esa `RTCPeerConnection`. |
 | C → S | `signal` | `to` (peer_id), `data` (objeto opaco: `{sdp}` o `{candidate}`) | Solo a un miembro de la misma sala. |
 | S → C | `signal` | `from`, `data` | `from` lo pone el servidor (no se puede suplantar). |
+| C → S | `self_mute` | `muted` (bool) | HU-VOZ-02. El cliente además hace `replaceTrack(null)` (no envía audio). Con el silencio del host, `muted:false` responde `HOST_MUTED`. |
+| C → S | `host_mute` | `user_id`, `muted` (bool) | HU-VOZ-04. Solo `host`/`cohost` (si no, `FORBIDDEN`). Se guarda en Redis **antes** de anunciarse (si falla, `UNAVAILABLE`). Alcanza todas las conexiones del usuario. |
+| S → C | `peer_muted` | `room_id`, `peer_id`, `user_id`, `muted`, `host_muted` | A **toda** la sala, incluido el afectado. Con `host_muted:true` los receptores silencian esa pista aunque el emisor siga enviando (en P2P el servidor no puede cortar el audio). Al levantar el silencio del host, `muted` sigue en `true` hasta que el participante se active. |
 | C → S | `leave` | — | Sale de la voz; el servidor cierra con `1000`. |
-| S → C | `error` | `code`, `event_id_ref?` | `INVALID_MESSAGE`, `UNKNOWN_TYPE`, `MESSAGE_TOO_LARGE`, `PEER_NOT_FOUND`, `VOICE_FULL`. No cierra la conexión salvo `VOICE_FULL`. |
+| S → C | `error` | `code`, `event_id_ref?` | `INVALID_MESSAGE`, `UNKNOWN_TYPE`, `MESSAGE_TOO_LARGE`, `PEER_NOT_FOUND`, `VOICE_FULL`, `HOST_MUTED`, `FORBIDDEN`, `UNAVAILABLE`. No cierra la conexión salvo `VOICE_FULL`. |
 
 | Handshake | Respuesta |
 | :--- | :--- |
@@ -51,12 +54,26 @@ Las versiones las fija la imagen base (`debian:trixie-slim` en el `Dockerfile`, 
 | Falta `room_id` o `token` | 400 |
 | Firma, `alg`, `iss`, `aud`, claims o rol inválidos | 401 antes del upgrade |
 | `room_id` del token ≠ el de la URL | 403 |
-| Redis no responde | 503 (falla cerrado) |
+| Redis no responde (revocación o silencios) | 503 (falla cerrado) |
 | Token caducado (firma válida) | upgrade y cierre **4003** |
 | `jti` revocado (retirado o bloqueado) | upgrade y cierre **4001** |
 | Sala de voz llena | upgrade, `error{VOICE_FULL}` y cierre **4008** |
 
 Mensajes de hasta 64 KiB (`kMaxMessageBytes`); uno mayor cierra la conexión.
+
+## API REST de moderación
+`PUT` (silenciar) o `DELETE` (levantar) `/api/v1/voice/rooms/{room_id}/mutes/{user_id}` con `Authorization: Bearer <sync-ticket>`. Responde `204` y voice-core anuncia `peer_muted` a la sala. El `user_id` es el `sub` del token del participante (va codificado en la URL: `guest%3A…`).
+
+| Caso | Respuesta |
+| :--- | :--- |
+| Host o cohost de esa sala | `204` |
+| Rol `participant` (HU-VOZ-04 AC3) o token de otra sala | `403` |
+| Sin `Bearer`, firma inválida, caducado o revocado | `401` |
+| Método distinto de `PUT`/`DELETE` | `405` |
+| `Origin` fuera de `ALLOWED_ORIGINS` | `403` |
+| Redis no responde | `503` (no se anuncia nada) |
+
+CORS: `OPTIONS` responde `204` con `Access-Control-Allow-Methods: PUT, DELETE` y `Allow-Headers: Authorization` solo para los orígenes permitidos. Un usuario que no está en la voz también se puede silenciar: entra ya silenciado.
 
 ## Modelo de Datos Involucrado
 | Dato | Dónde | Notas |
@@ -64,6 +81,7 @@ Mensajes de hasta 64 KiB (`kMaxMessageBytes`); uno mayor cierra la conexión.
 | Membresía de la voz | Memoria del proceso (`hub::Hub`) | **Una réplica** en esta fase (ver Limitaciones). |
 | `token:revoked:{jti}` | Redis (lo escribe identity-api) | `EXISTS` en cada handshake. |
 | `room:{id}:sync` | Redis Pub/Sub (lo publica identity-api) | `PSUBSCRIBE room:*:sync`; solo se usa `{"type":"REVOKED","jti":…}`. |
+| `room:{id}:voice:muted` | Redis SET (lo escribe voice-core) | `user_id` silenciados por el host. `SISMEMBER` en cada handshake; `SADD` + `EXPIRE` 24 h al silenciar, `SREM` al levantar. El silencio propio **no** se persiste. |
 
 ## Estructura
 | Ruta | Rol |
@@ -71,10 +89,12 @@ Mensajes de hasta 64 KiB (`kMaxMessageBytes`); uno mayor cierra la conexión.
 | `src/auth/` | `base64url`, `TokenVerifier` (HS256, `iss`, `aud`, `exp`, rol). |
 | `src/domain/voice_room` | Membresía y cupo de una sala, sin red. |
 | `src/protocol/messages` | Parseo defensivo de mensajes del cliente y construcción de los del servidor. |
-| `src/hub/hub` | Salas, `join`/`leave`/`revoke`, reenvío de `signal`. Thread-safe; guarda `weak_ptr<Peer>`. |
-| `src/net/handshake` | Decisión pura del handshake (404/403/400/401/503 o 4001/4003). |
-| `src/net/server` | Boost.Beast: `/healthz`, upgrade, sesiones WebSocket con cola de escritura y keep-alive. La revocación corre en un `thread_pool` aparte. |
-| `src/redis/` | `parse_redis_url`, `RedisRevocationChecker`, `RevokedListener` (reconexión con espera exponencial). |
+| `src/moderation/mute_store` | Interfaz `MuteStore` y `can_moderate` (host/cohost). |
+| `src/hub/hub` | Salas, `join`/`leave`/`revoke`, reenvío de `signal`, `self_mute`/`host_mute`/`apply_host_mute`. Thread-safe; guarda `weak_ptr<Peer>`. La escritura en Redis de `host_mute` corre en `run_blocking`, sin el mutex. |
+| `src/net/handshake` | Decisión pura del handshake (404/403/400/401/503 o 4001/4003) y lectura del silencio del host. |
+| `src/net/mute_api` | Decisión pura del REST de silencios (404/405/401/403/503 o `MuteCommand`). |
+| `src/net/server` | Boost.Beast: `/healthz`, REST de silencios con CORS, upgrade, sesiones WebSocket con cola de escritura y keep-alive. Lo que toca Redis corre en un `thread_pool` aparte. |
+| `src/redis/` | `parse_redis_url`, `open_context` compartido, `RedisRevocationChecker`, `RevokedListener` (reconexión con espera exponencial), `RedisMuteStore`. |
 | `src/config` | Variables de entorno validadas. |
 | `src/main.cpp` | Ensamblado y señales (fuera de la cobertura). |
 

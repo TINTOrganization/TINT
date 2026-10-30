@@ -13,6 +13,15 @@ int hex_value(char c) {
   return -1;
 }
 
+std::string lower(std::string_view s) {
+  std::string out(s);
+  std::ranges::transform(out, out.begin(),
+                         [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+  return out;
+}
+
+}  // namespace
+
 std::string url_decode(std::string_view in) {
   std::string out;
   out.reserve(in.size());
@@ -28,15 +37,6 @@ std::string url_decode(std::string_view in) {
   }
   return out;
 }
-
-std::string lower(std::string_view s) {
-  std::string out(s);
-  std::ranges::transform(out, out.begin(),
-                         [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-  return out;
-}
-
-}  // namespace
 
 std::string_view target_path(std::string_view target) { return target.substr(0, target.find('?')); }
 
@@ -67,7 +67,7 @@ bool origin_allowed(std::string_view origin, const std::vector<std::string>& all
 }
 
 HandshakeDecision decide_handshake(const HandshakeRequest& request, const auth::TokenVerifier& verifier,
-                                   RevocationChecker& revocation,
+                                   RevocationChecker& revocation, moderation::MuteStore& mutes,
                                    const std::vector<std::string>& allowed_origins, std::int64_t now_s) {
   if (target_path(request.target) != kVoicePath) return Reject{404, "not found"};
   // Sin Origin no es un navegador (no hay CSWSH posible); con Origin debe estar permitido.
@@ -90,7 +90,10 @@ HandshakeDecision decide_handshake(const HandshakeRequest& request, const auth::
   auto revoked = revocation.is_revoked(claims->jti);
   if (!revoked) return Reject{503, "revocation store unavailable"};
   if (*revoked) return AcceptThenClose{4001, "token revoked"};
-  return Accept{room->second, std::move(*claims)};
+  // El silencio del host sigue vigente al volver a entrar (HU-VOZ-04 AC2).
+  auto host_muted = mutes.is_muted(room->second, claims->sub);
+  if (!host_muted) return Reject{503, "mute store unavailable"};
+  return Accept{room->second, std::move(*claims), *host_muted};
 }
 
 }  // namespace voice::net

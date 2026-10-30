@@ -2,6 +2,7 @@
 
 #include <gtest/gtest.h>
 
+#include "support/fake_mute_store.hpp"
 #include "support/fake_revocation.hpp"
 #include "support/jwt.hpp"
 
@@ -14,7 +15,7 @@ class HandshakeTest : public ::testing::Test {
  protected:
   HandshakeDecision decide(const std::string& target,
                            std::optional<std::string_view> origin = "http://localhost:5173") {
-    return decide_handshake({target, origin}, verifier, revocation, allowed, kNow);
+    return decide_handshake({target, origin}, verifier, revocation, mutes, allowed, kNow);
   }
   std::string target(const std::string& token, const std::string& room = "room-1") {
     return "/ws/voice?room_id=" + room + "&token=" + token;
@@ -26,6 +27,7 @@ class HandshakeTest : public ::testing::Test {
 
   voice::auth::TokenVerifier verifier{kSecret, kIssuer, kAudience};
   FakeRevocation revocation;
+  FakeMuteStore mutes;
   std::vector<std::string> allowed{"localhost:5173", "127.0.0.1:5173"};
 };
 
@@ -113,4 +115,36 @@ TEST(ParseQuery, DecodesValues) {
   EXPECT_TRUE(parse_query("/ws/voice").empty());
   EXPECT_EQ(target_path("/ws/voice?x=1"), "/ws/voice");
   EXPECT_EQ(target_path("/healthz"), "/healthz");
+}
+
+// --- Fase 2: silencio del host persistido -------------------------------------------------
+
+TEST_F(HandshakeTest, AcceptCarriesPersistedHostMute) {
+  auto d = decide(target(sign_jwt(guest_claims())));
+  ASSERT_NE(std::get_if<Accept>(&d), nullptr);
+  EXPECT_FALSE(std::get<Accept>(d).host_muted);
+
+  mutes.set_muted("room-1", "guest:ana", true);
+  d = decide(target(sign_jwt(guest_claims())));
+  ASSERT_NE(std::get_if<Accept>(&d), nullptr);
+  EXPECT_TRUE(std::get<Accept>(d).host_muted);
+}
+
+TEST_F(HandshakeTest, MuteStoreDownFailsClosedWith503) {
+  mutes.unavailable = true;
+  EXPECT_EQ(rejected_status(decide(target(sign_jwt(guest_claims())))), 503u);
+}
+
+TEST_F(HandshakeTest, RevokedWinsOverMuteLookup) {
+  revocation.revoke("jti-ana");
+  mutes.unavailable = true;
+  auto d = decide(target(sign_jwt(guest_claims())));
+  ASSERT_NE(std::get_if<AcceptThenClose>(&d), nullptr);
+  EXPECT_EQ(std::get<AcceptThenClose>(d).code, 4001);
+}
+
+TEST(UrlDecode, DecodesPercentAndPlus) {
+  EXPECT_EQ(url_decode("guest%3Aana"), "guest:ana");
+  EXPECT_EQ(url_decode("a+b"), "a b");
+  EXPECT_EQ(url_decode("100%"), "100%");
 }

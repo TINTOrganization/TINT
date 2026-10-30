@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Prueba rápida de voice-core contra el servicio levantado (docker compose up -d voice-core).
 
-Solo usa la biblioteca estándar: fabrica los JWT con JWT_SECRET, habla WebSocket y RESP
-(Redis) a mano. Comprueba HU-VOZ-01 de punta a punta salvo el audio, que es de la web.
+Solo usa la biblioteca estándar: fabrica los JWT con JWT_SECRET, habla WebSocket, HTTP y
+RESP (Redis) a mano. Comprueba HU-VOZ-01, 02 y 04 de punta a punta salvo el audio, que es
+de la web.
 
     python3 services/voice-core/scripts/smoke.py
 
@@ -46,9 +47,9 @@ def b64url(data):
     return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
 
 
-def make_token(room_id, nick, role="participant", jti=None, exp_in=3600, secret=None):
+def make_token(room_id, nick, role="participant", jti=None, exp_in=3600, secret=None, sub=None):
     claims = {
-        "sub": f"u-{nick.lower()}-{uuid.uuid4().hex[:6]}",
+        "sub": sub or f"u-{nick.lower()}-{uuid.uuid4().hex[:6]}",
         "room_id": room_id,
         "role": role,
         "nick": nick,
@@ -308,6 +309,89 @@ def _():
     assert luis.recv() is None and luis.close_code == 4001, luis.close_code
     assert ana.recv_type("peer_left")["peer_id"] == luis_id
     ana.close()
+
+
+def mute_api(method, room_id, user_id, token=None, origin=None):
+    """PUT/DELETE /api/v1/voice/rooms/{id}/mutes/{user_id} → código HTTP."""
+    url = f"{VOICE_URL}/api/v1/voice/rooms/{urllib.parse.quote(room_id)}/mutes/{urllib.parse.quote(user_id, safe='')}"
+    req = urllib.request.Request(url, method=method)
+    if token:
+        req.add_header("Authorization", f"Bearer {token}")
+    if origin:
+        req.add_header("Origin", origin)
+    try:
+        with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
+            return r.status
+    except urllib.error.HTTPError as e:
+        return e.code
+
+
+@check("HU-VOZ-02: silenciarse y activarse llega a los demás (peer_muted)")
+def _():
+    ta, _ = make_token(ROOM, "Ana")
+    tl, _ = make_token(ROOM, "Luis")
+    ana = WS(ROOM, ta)
+    ana.recv_type("voice_state")
+    luis = WS(ROOM, tl)
+    luis_id = luis.recv_type("voice_state")["self"]["peer_id"]
+    ana.recv_type("peer_joined")
+    luis.send(client_msg("self_mute", muted=True))
+    m = ana.recv_type("peer_muted")
+    assert m["peer_id"] == luis_id and m["muted"] is True and m["host_muted"] is False, m
+    assert luis.recv_type("peer_muted")["muted"] is True, "el propio también recibe la confirmación"
+    luis.send(client_msg("self_mute", muted=False))
+    assert ana.recv_type("peer_muted")["muted"] is False
+    ana.close()
+    luis.close()
+
+
+@check("HU-VOZ-04: el host silencia por REST (204), no puede quitárselo y persiste al volver")
+def _():
+    room = f"{ROOM}-mute"
+    th, _ = make_token(room, "Host", role="host")
+    ta, ca = make_token(room, "Ana")
+    host = WS(room, th)
+    host.recv_type("voice_state")
+    ana = WS(room, ta)
+    ana.recv_type("voice_state")
+    host.recv_type("peer_joined")
+
+    assert mute_api("PUT", room, ca["sub"], th) == 204
+    for ws in (host, ana):
+        m = ws.recv_type("peer_muted")
+        assert m["host_muted"] is True and m["muted"] is True, m
+    ana.send(client_msg("self_mute", muted=False))
+    assert ana.recv_type("error")["code"] == "HOST_MUTED"
+
+    # Persistencia: sale y vuelve (otro token, mismo usuario) y sigue silenciada.
+    ana.send(client_msg("leave"))
+    ana.recv()
+    host.recv_type("peer_left")
+    ta2, _ = make_token(room, "Ana", sub=ca["sub"])
+    ana = WS(room, ta2)
+    self_state = ana.recv_type("voice_state")["self"]
+    assert self_state["host_muted"] is True and self_state["muted"] is True, self_state
+    host.recv_type("peer_joined")
+
+    assert mute_api("DELETE", room, ca["sub"], th) == 204
+    lifted = ana.recv_type("peer_muted")
+    assert lifted["host_muted"] is False and lifted["muted"] is True, lifted
+    host.close()
+    ana.close()
+
+
+@check("HU-VOZ-04 AC3: un participante que intenta silenciar recibe 403")
+def _():
+    tl, _ = make_token(ROOM, "Luis")
+    assert mute_api("PUT", ROOM, "u-cualquiera", tl) == 403
+    assert mute_api("PUT", ROOM, "u-cualquiera") == 401
+    th, _ = make_token(ROOM, "Host", role="host")
+    assert mute_api("PUT", ROOM, "u-cualquiera", th, origin="http://evil.example") == 403
+    luis = WS(ROOM, tl)
+    luis.recv_type("voice_state")
+    luis.send(client_msg("host_mute", user_id="u-cualquiera", muted=True))
+    assert luis.recv_type("error")["code"] == "FORBIDDEN"
+    luis.close()
 
 
 ok = all(r[0] for r in results)

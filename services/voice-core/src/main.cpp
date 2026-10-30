@@ -5,12 +5,15 @@
 #include <thread>
 
 #include <boost/asio/io_context.hpp>
+#include <boost/asio/post.hpp>
 #include <boost/asio/signal_set.hpp>
+#include <boost/asio/thread_pool.hpp>
 
 #include "auth/token_verifier.hpp"
 #include "config.hpp"
 #include "hub/hub.hpp"
 #include "net/server.hpp"
+#include "redis/mute_store.hpp"
 #include "redis/redis_url.hpp"
 #include "redis/revocation.hpp"
 #include "util/uuid.hpp"
@@ -31,7 +34,15 @@ int main() {
     return 2;
   }
 
+  auto mutes = std::make_shared<redis::RedisMuteStore>(*endpoint, std::chrono::milliseconds(500));
+  // host_mute por WebSocket escribe en Redis: fuera de los hilos del io_context.
+  boost::asio::thread_pool moderation_pool(1);
+
   hub::HubOptions options;
+  options.mutes = mutes;
+  options.run_blocking = [&moderation_pool](std::function<void()> task) {
+    boost::asio::post(moderation_pool, std::move(task));
+  };
   options.max_members = config->max_members;
   options.now_ms = [] {
     return std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -54,7 +65,7 @@ int main() {
       std::make_shared<redis::RedisRevocationChecker>(*endpoint, std::chrono::milliseconds(500));
 
   boost::asio::io_context ioc;
-  net::Server server(ioc, {config->allowed_origins}, verifier, revocation, hub);
+  net::Server server(ioc, {config->allowed_origins}, verifier, revocation, mutes, hub);
   const auto port = server.listen(config->host, config->port);
 
   redis::RevokedListener listener(
@@ -75,5 +86,6 @@ int main() {
   ioc.run();
   for (auto& w : workers) w.join();
   listener.stop();
+  moderation_pool.join();
   return 0;
 }

@@ -10,13 +10,16 @@ namespace proto = voice::protocol;
 
 Hub::Hub(HubOptions options) : options_(std::move(options)) {}
 
-bool Hub::join(const std::string& room_id, const auth::Claims& claims, std::shared_ptr<Peer> peer) {
+bool Hub::join(const std::string& room_id, const auth::Claims& claims, std::shared_ptr<Peer> peer,
+               bool host_muted) {
   std::lock_guard lock(mu_);
   const auto now = options_.now_ms();
   auto [it, inserted] = rooms_.try_emplace(room_id, options_.max_members);
   Room& room = it->second;
 
   Member member{peer->id(), claims.sub, claims.nick, claims.role, claims.jti};
+  member.host_muted = host_muted;
+  member.muted = host_muted;
   auto others = room.voice.members();
   const auto result = room.voice.join(member);
   if (result != JoinResult::Joined) {
@@ -36,7 +39,7 @@ bool Hub::join(const std::string& room_id, const auth::Claims& claims, std::shar
 }
 
 void Hub::handle_message(const std::string& room_id, const std::string& peer_id, std::string_view text) {
-  std::lock_guard lock(mu_);
+  std::unique_lock lock(mu_);
   auto room_it = rooms_.find(room_id);
   if (room_it == rooms_.end()) return;
   Room& room = room_it->second;
@@ -63,6 +66,39 @@ void Hub::handle_message(const std::string& room_id, const std::string& peer_id,
     return;
   }
 
+  if (auto* mute = std::get_if<proto::SelfMuteIn>(&*parsed)) {
+    // HU-VOZ-04 AC2: con el silencio del host no puede activarse.
+    if (!mute->muted && room.voice.find(peer_id)->host_muted) {
+      peer->send(error_locked("HOST_MUTED", mute->event_id));
+      return;
+    }
+    const Member* me = room.voice.set_muted(peer_id, mute->muted);
+    broadcast_locked(
+        room, "",
+        proto::make_peer_muted({mute->event_id, mute->occurred_at, options_.now_ms()}, room_id, *me));
+    return;
+  }
+
+  if (auto* host_mute = std::get_if<proto::HostMuteIn>(&*parsed)) {
+    if (!moderation::can_moderate(room.voice.find(peer_id)->role)) {
+      peer->send(error_locked("FORBIDDEN", host_mute->event_id));
+      return;
+    }
+    if (!options_.mutes) {
+      peer->send(error_locked("UNAVAILABLE", host_mute->event_id));
+      return;
+    }
+    // Primero se guarda en Redis (bloqueante, sin el mutex) y solo entonces se anuncia.
+    lock.unlock();
+    options_.run_blocking([this, room_id, request = *host_mute, moderator = std::weak_ptr<Peer>(peer)] {
+      if (options_.mutes->set_muted(room_id, request.user_id, request.muted))
+        return apply_host_mute(room_id, request.user_id, request.muted);
+      std::lock_guard relock(mu_);
+      if (auto p = moderator.lock()) p->send(error_locked("UNAVAILABLE", request.event_id));
+    });
+    return;
+  }
+
   // leave: el cliente sale de la voz a propósito.
   leave_locked(room_id, peer_id);
   peer->close(close_code::kNormal, "left voice");
@@ -83,6 +119,17 @@ void Hub::revoke(const std::string& room_id, const std::string& jti) {
     leave_locked(room_id, peer_id);
     room_it = rooms_.find(room_id);
     if (room_it == rooms_.end()) return;
+  }
+}
+
+void Hub::apply_host_mute(const std::string& room_id, const std::string& user_id, bool muted) {
+  std::lock_guard lock(mu_);
+  auto room_it = rooms_.find(room_id);
+  if (room_it == rooms_.end()) return;
+  Room& room = room_it->second;
+  for (const auto& member : room.voice.set_host_muted(user_id, muted)) {
+    const auto now = options_.now_ms();
+    broadcast_locked(room, "", proto::make_peer_muted({options_.new_event_id(), now, now}, room_id, member));
   }
 }
 

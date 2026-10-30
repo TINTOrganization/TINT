@@ -11,6 +11,7 @@
 
 #include "auth/token_verifier.hpp"
 #include "hub/hub.hpp"
+#include "moderation/mute_store.hpp"
 #include "net/handshake.hpp"
 
 namespace voice::net {
@@ -21,12 +22,13 @@ struct ServerOptions {
   std::vector<std::string> allowed_origins;
 };
 
-// HTTP (/healthz) y WebSocket (/ws/voice) sobre Boost.Beast. La consulta de revocación
-// (bloqueante, Redis) corre en un pool aparte para no frenar el io_context.
+// HTTP (/healthz, REST de silencios) y WebSocket (/ws/voice) sobre Boost.Beast. Lo que
+// consulta Redis (bloqueante) corre en un pool aparte para no frenar el io_context.
 class Server {
  public:
   Server(boost::asio::io_context& ioc, ServerOptions options, std::shared_ptr<auth::TokenVerifier> verifier,
-         std::shared_ptr<RevocationChecker> revocation, std::shared_ptr<hub::Hub> hub);
+         std::shared_ptr<RevocationChecker> revocation, std::shared_ptr<moderation::MuteStore> mutes,
+         std::shared_ptr<hub::Hub> hub);
   ~Server();
 
   // Abre el puerto (0 = cualquiera libre) y empieza a aceptar. Devuelve el puerto real.

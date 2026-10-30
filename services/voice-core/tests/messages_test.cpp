@@ -81,8 +81,12 @@ TEST(ErrorCode, NamesEveryProtocolError) {
 
 TEST(PeerJson, NeverExposesTheJti) {
   json j = peer_json(kAna);
-  EXPECT_EQ(j,
-            (json{{"peer_id", "p-ana"}, {"user_id", "guest:ana"}, {"nick", "Ana"}, {"role", "participant"}}));
+  EXPECT_EQ(j, (json{{"peer_id", "p-ana"},
+                     {"user_id", "guest:ana"},
+                     {"nick", "Ana"},
+                     {"role", "participant"},
+                     {"muted", false},
+                     {"host_muted", false}}));
   EXPECT_FALSE(j.contains("jti"));
 }
 
@@ -129,4 +133,65 @@ TEST(ServerMessages, Error) {
 
   json without_ref = parse(make_error(kEnv, "VOICE_FULL", ""));
   EXPECT_FALSE(without_ref.contains("event_id_ref"));
+}
+
+// --- Fase 2: silencios ------------------------------------------------------------------
+
+TEST(ParseClientMessage, ParsesSelfMute) {
+  auto msg = parse_client_message(R"({"type":"self_mute","event_id":"e1","occurred_at":7,"muted":true})");
+  ASSERT_TRUE(msg.has_value());
+  auto* mute = std::get_if<SelfMuteIn>(&*msg);
+  ASSERT_NE(mute, nullptr);
+  EXPECT_EQ(mute->event_id, "e1");
+  EXPECT_EQ(mute->occurred_at, 7);
+  EXPECT_TRUE(mute->muted);
+}
+
+TEST(ParseClientMessage, ParsesHostMute) {
+  auto msg = parse_client_message(
+      R"({"type":"host_mute","event_id":"e2","occurred_at":8,"user_id":"guest:ana","muted":false})");
+  ASSERT_TRUE(msg.has_value());
+  auto* mute = std::get_if<HostMuteIn>(&*msg);
+  ASSERT_NE(mute, nullptr);
+  EXPECT_EQ(mute->user_id, "guest:ana");
+  EXPECT_FALSE(mute->muted);
+}
+
+TEST(ParseClientMessage, RejectsInvalidMutes) {
+  for (const char* text : {
+           R"({"type":"self_mute","event_id":"e","occurred_at":1})",
+           R"({"type":"self_mute","event_id":"e","occurred_at":1,"muted":"yes"})",
+           R"({"type":"self_mute","occurred_at":1,"muted":true})",
+           R"({"type":"host_mute","event_id":"e","occurred_at":1,"muted":true})",
+           R"({"type":"host_mute","event_id":"e","occurred_at":1,"user_id":"","muted":true})",
+           R"({"type":"host_mute","event_id":"e","occurred_at":1,"user_id":"u","muted":1})",
+       }) {
+    auto msg = parse_client_message(text);
+    ASSERT_FALSE(msg.has_value()) << text;
+    EXPECT_EQ(msg.error(), ProtocolError::InvalidField) << text;
+  }
+}
+
+TEST(Messages, PeerJsonCarriesMuteFlags) {
+  Member muted = kAna;
+  muted.muted = true;
+  muted.host_muted = true;
+  json j = peer_json(muted);
+  EXPECT_EQ(j["muted"], true);
+  EXPECT_EQ(j["host_muted"], true);
+  EXPECT_EQ(peer_json(kHost)["muted"], false);
+}
+
+TEST(Messages, MakePeerMuted) {
+  Member ana = kAna;
+  ana.muted = true;
+  json j = parse(make_peer_muted(kEnv, "room-1", ana));
+  EXPECT_EQ(j["type"], "peer_muted");
+  expect_envelope(j);
+  EXPECT_EQ(j["room_id"], "room-1");
+  EXPECT_EQ(j["peer_id"], "p-ana");
+  EXPECT_EQ(j["user_id"], "guest:ana");
+  EXPECT_EQ(j["muted"], true);
+  EXPECT_EQ(j["host_muted"], false);
+  EXPECT_FALSE(j.contains("jti"));
 }
