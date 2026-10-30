@@ -8,11 +8,11 @@
 | HU | Criterios | Estado |
 | :--- | :--- | :--- |
 | **HU-VOZ-01** Unirse a la voz de la sala | AC1 al pulsar *Join voice* oye a los demás · AC2 un bloqueado es rechazado · AC3 al desconectarse los demás dejan de oírlo | 🟢 Backend implementado (Fase 1). Falta la web (Fase 4) para AC1 de punta a punta. |
-| **HU-VOZ-02** Silenciar y activar mi micrófono | AC1 silenciado no transmite · AC2 al activar vuelve el audio · AC3 los demás ven el icono | ⏳ Previsto (Fase 2 + web) |
+| **HU-VOZ-02** Silenciar y activar mi micrófono | AC1 silenciado no transmite · AC2 al activar vuelve el audio · AC3 los demás ven el icono | 🟢 Backend (Fase 2): `self_mute` → `peer_muted` a toda la sala. AC1/AC2 (no enviar audio) los cierra la web con `replaceTrack` (Fase 4). |
 | **HU-VOZ-03** Ver quién habla | AC1 resalta al que habla · AC2 se apaga en silencio · AC3 legible con muchos | ⏳ Previsto (solo web: Web Audio `AnalyserNode`) |
-| **HU-VOZ-04** El host silencia a un participante | AC1 deja de oírse para todos · AC2 no puede quitárselo · AC3 un no-host recibe 403 | ⏳ Previsto (Fase 2) |
+| **HU-VOZ-04** El host silencia a un participante | AC1 deja de oírse para todos · AC2 no puede quitárselo · AC3 un no-host recibe 403 | 🟢 Backend (Fase 2): `host_mute` por WS y REST, `HOST_MUTED`, `403` sin rol, persistido en Redis. El silencio en los receptores lo aplica la web (Fase 4). |
 | **HU-VOZ-05** Redes restrictivas | AC1 funciona por TURN · AC2 usa la ruta directa si existe · AC3 reconecta | ⏳ Previsto (Fase 3; `coturn` ya está en compose) |
-| **HU-VOZ-06** Componente propio | AC1 si se detiene, chat y sync siguen · AC2 API de salas, membresía y moderación · AC3 aparece en las vistas | 🟢 AC1 y AC3 · AC2 parcial (salas y membresía; moderación en Fase 2) |
+| **HU-VOZ-06** Componente propio | AC1 si se detiene, chat y sync siguen · AC2 API de salas, membresía y moderación · AC3 aparece en las vistas | 🟢 AC1, AC2 (salas, membresía y moderación) y AC3 |
 
 ## 2. Vista general
 
@@ -94,11 +94,51 @@ Un invitado bloqueado por el host ([ADR 0013](adr/0013-bloqueo-de-invitados-por-
 
 En todos los casos los demás reciben `peer_left` y cierran esa `RTCPeerConnection`, así que dejan de oírlo. WebRTC también detecta la pérdida de ICE por su lado.
 
-## 4. Protocolo
+## 4. Silencios (HU-VOZ-02 y HU-VOZ-04)
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor H as Host
+    participant VC as voice-core
+    participant R as Redis
+    actor A as Ana
+    actor L as Luis
+
+    A->>VC: self_mute {muted: true}
+    Note over A: replaceTrack(null): no envía audio
+    VC-->>H: peer_muted {Ana, muted}
+    VC-->>L: peer_muted {Ana, muted}
+    VC-->>A: peer_muted {Ana, muted}
+
+    H->>VC: PUT /api/v1/voice/rooms/{id}/mutes/{Luis} (o host_mute por WS)
+    VC->>VC: rol host/cohost (si no, 403 / FORBIDDEN)
+    VC->>R: SADD room:{id}:voice:muted Luis + EXPIRE 24 h
+    alt Redis no responde
+        VC-->>H: 503 / UNAVAILABLE (no se anuncia nada)
+    else guardado
+        VC-->>H: 204
+        VC-->>A: peer_muted {Luis, host_muted}
+        VC-->>L: peer_muted {Luis, host_muted}
+        Note over A: silencia la pista de Luis aunque él siga enviando
+        L->>VC: self_mute {muted: false}
+        VC-->>L: error HOST_MUTED
+    end
+```
+
+| Regla | Detalle |
+| :--- | :--- |
+| Quién modera | `host` y `cohost` (como en el Canal Social). Un `participant` recibe `403` del REST o `FORBIDDEN` por WebSocket (HU-VOZ-04 AC3). |
+| Dónde se aplica | En P2P el servidor no ve el audio: el silenciado deja de enviar (`replaceTrack(null)`) y **además** cada receptor silencia su pista, así un cliente modificado tampoco se oye (AC1). |
+| Persistencia | `room:{id}:voice:muted` (SET de `user_id`, TTL 24 h). Se lee en cada handshake: si sale y vuelve, entra silenciado (AC2). El silencio propio no se guarda. |
+| Levantar el silencio | `DELETE` (o `host_mute {muted:false}`): `host_muted` pasa a `false` pero `muted` sigue en `true`; el participante decide cuándo volver a hablar. |
+| Varias pestañas | El silencio del host es por usuario: alcanza todas sus conexiones. El propio es por conexión. |
+
+## 5. Protocolo
 
 Ver la tabla completa en [voice-core/AGENTS.md § Protocolo](../services/voice-core/AGENTS.md#protocolo-del-canal-de-voz). Todos los eventos llevan `event_id`, `occurred_at` y `received_at` (Documento General §1.2). El `jti` nunca sale del servidor.
 
-## 5. Decisiones de diseño
+## 6. Decisiones de diseño
 
 | Decisión | Por qué |
 | :--- | :--- |
@@ -106,34 +146,36 @@ Ver la tabla completa en [voice-core/AGENTS.md § Protocolo](../services/voice-c
 | Servicio propio, no dentro de social-core | Separación de dominios (HU-VOZ-06) y fallo aislado. |
 | Mismo JWT y misma revocación que sync/social | Sin cambios en identity-api; una sola vía para retirar, bloquear y borrar la sala. |
 | HS256 con OpenSSL, sin librería de JWT | Una dependencia menos; comparación en tiempo constante y pruebas de firma, `alg`, `exp`, `iss`, `aud`. |
-| Silencio del host aplicado también en quien escucha (Fase 2) | En P2P el servidor no puede cortar el audio; los receptores silencian la pista de ese peer al recibir `host_muted`. |
-| `replaceTrack(null)` para silenciarse (Fase 2) | `track.enabled = false` sigue enviando paquetes de silencio; AC1 pide que no se transmita audio. |
+| Silencio del host aplicado también en quien escucha | En P2P el servidor no puede cortar el audio; los receptores silencian la pista de ese peer al recibir `host_muted`. |
+| Guardar en Redis antes de anunciar | Si Redis falla no se anuncia un silencio que se perdería al reconectar (falla cerrado). |
+| Host y cohost moderan | Igual que la moderación del chat en social-core. |
+| `replaceTrack(null)` para silenciarse | `track.enabled = false` sigue enviando paquetes de silencio; AC1 pide que no se transmita audio. |
 | Detección de quién habla en el navegador (HU-VOZ-03) | Web Audio sobre cada pista: sin tráfico ni latencia del servidor. |
 | TURN con credenciales efímeras (Fase 3) | REST API de TURN: `usuario = exp:user_id`, `clave = base64(HMAC-SHA1(TURN_SECRET, usuario))`; nada fijo en la web. |
 
-## 6. Plan por fases
+## 7. Plan por fases
 
 | Fase | Alcance | Dominio / PR | Estado |
 | :--- | :--- | :--- | :--- |
 | 0 | `voice-core` y `coturn` en compose, `.env.example`, `make test-cpp`, job `C++ · voice-core` en CI | infra | 🟢 |
 | 1 | Handshake, membresía, señalización, `peer_left`, revocación en vivo | voice-core | 🟢 |
-| 2 | `self_mute`, `host_mute` (WS y REST `PUT/DELETE /api/v1/voice/rooms/{id}/mutes/{user_id}`, 403 sin rol host), persistencia `room:{id}:voice:muted` | voice-core | ⏳ |
+| 2 | `self_mute`, `host_mute` (WS y REST `PUT/DELETE /api/v1/voice/rooms/{id}/mutes/{user_id}`, 403 sin rol host), persistencia `room:{id}:voice:muted` | voice-core | 🟢 |
 | 3 | `ice_servers` con credenciales TURN efímeras | voice-core | ⏳ |
 | 4 | `useVoiceChannel`, `VoicePanel` en `WatchRoom`, perfect negotiation, ICE restart, quién habla | web | ⏳ |
 | 5 | E2E con dos navegadores (`--use-fake-device-for-media-stream`, `getStats`), `iceTransportPolicy: 'relay'`, k6 de señalización | voice-core + web | ⏳ |
 
-## 7. Verificación (Fase 1)
+## 8. Verificación (Fases 1 y 2)
 
 | Comprobación | Resultado |
 | :--- | :--- |
-| GoogleTest (unitarias + integración con Redis real + servidor Beast real) | 91/91 |
-| ASan + UBSan · TSan | 91/91 en ambos |
-| Pruebas de red y Redis repetidas 30 veces con TSan | Sin fallos intermitentes |
-| Cobertura de líneas (`src/` sin `main.cpp`, gcovr) | 96 % |
+| GoogleTest (unitarias + integración con Redis real + servidor Beast real) | 138/138 (Fase 1: 91) |
+| ASan + UBSan · TSan | 138/138 en ambos |
+| Pruebas de red y Redis repetidas 30 veces con TSan (Fase 1) | Sin fallos intermitentes |
+| Cobertura de líneas (`src/` sin `main.cpp`, gcovr) | 97 % |
 | Imagen final: `/healthz`, 401 antes del upgrade, `PSUBSCRIBE` activo, parada con SIGTERM | OK |
-| `scripts/smoke.py` contra `docker compose` (handshake, AC1 sin audio, AC2, AC3) | 9/9 |
+| `scripts/smoke.py` contra `docker compose` (handshake, HU-VOZ-01 sin audio, silencio propio, silencio del host por REST con 204/403, `HOST_MUTED` y persistencia) | 12/12 |
 
-## 8. Limitaciones conocidas
+## 9. Limitaciones conocidas
 - **Una réplica** (membresía en memoria). Escalar exige un registro compartido en Redis.
 - **Mesh:** el ancho de banda de subida crece con el número de participantes.
 - **Formato de `REVOKED`:** se asume `{"type":"REVOKED","jti":"…"}`; confirmar con sync-core.

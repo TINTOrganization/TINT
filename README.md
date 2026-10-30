@@ -367,7 +367,7 @@ cd services/identity-api && WAIT_WORKER=1 npm run test:integration
 | identity-api | `http://localhost:8081/api/v1` |
 | social-core (Canal Social) | `ws://localhost:8082/ws/social` |
 | sync-core (Canal Sync) | `ws://localhost:8083/ws/sync` · `/healthz` · `/metrics` (Prometheus) |
-| voice-core (Canal de Voz) | `ws://localhost:8085/ws/voice` · `/healthz` · STUN/TURN en `localhost:3478` |
+| voice-core (Canal de Voz) | `ws://localhost:8085/ws/voice` · `PUT/DELETE /api/v1/voice/rooms/{id}/mutes/{user_id}` · `/healthz` · STUN/TURN en `localhost:3478` |
 | PostgreSQL | `localhost:5432` |
 | Redis | `localhost:6379` |
 | MinIO API / Consola | `localhost:9000` / [`localhost:9001`](http://localhost:9001) |
