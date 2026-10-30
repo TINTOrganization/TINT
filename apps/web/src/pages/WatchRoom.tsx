@@ -18,6 +18,7 @@ import { ChangeVideoPanel } from '../components/host/ChangeVideoPanel';
 import { ParticipantsPanel } from '../components/host/ParticipantsPanel';
 import { ReconnectStatus, SyncQualityIndicator } from '../components/sync/SyncStatus';
 import { ToastStack } from '../components/sync/SyncToasts';
+import { VoiceSection } from '../components/voice/VoiceSection';
 import { BackLink } from '../components/ui/BackLink';
 import { BrandMark } from '../components/layout/AppShell';
 import { AmbientBackground } from '../components/layout/AmbientBackground';
@@ -551,6 +552,9 @@ export default function WatchRoom() {
               </Card>
             </div>
           </AmbilightGlow>
+
+          {/* Canal de voz (voice-core): no conecta nada hasta pulsar "Unirse a la voz". */}
+          <VoiceSection roomId={roomId ?? ''} role={isGuest ? 'guest' : 'host'} />
 
           {!isGuest && (
             <div className="mt-4 grid gap-4 md:grid-cols-2">
