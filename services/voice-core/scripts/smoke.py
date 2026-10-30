@@ -1,0 +1,317 @@
+#!/usr/bin/env python3
+"""Prueba rápida de voice-core contra el servicio levantado (docker compose up -d voice-core).
+
+Solo usa la biblioteca estándar: fabrica los JWT con JWT_SECRET, habla WebSocket y RESP
+(Redis) a mano. Comprueba HU-VOZ-01 de punta a punta salvo el audio, que es de la web.
+
+    python3 services/voice-core/scripts/smoke.py
+
+Variables: VOICE_URL (http://localhost:8085), REDIS_HOST/REDIS_PORT (localhost:6379),
+JWT_SECRET (si falta, se lee del .env de la raíz o se usa el valor por defecto de compose).
+"""
+
+import base64
+import hashlib
+import hmac
+import json
+import os
+import pathlib
+import socket
+import struct
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+import uuid
+
+VOICE_URL = os.environ.get("VOICE_URL", "http://localhost:8085")
+REDIS_HOST = os.environ.get("REDIS_HOST", "localhost")
+REDIS_PORT = int(os.environ.get("REDIS_PORT", "6379"))
+TIMEOUT = 5.0
+
+
+def jwt_secret():
+    if os.environ.get("JWT_SECRET"):
+        return os.environ["JWT_SECRET"]
+    env_file = pathlib.Path(__file__).resolve().parents[3] / ".env"
+    if env_file.exists():
+        for line in env_file.read_text().splitlines():
+            if line.startswith("JWT_SECRET="):
+                return line.split("=", 1)[1].strip().strip('"')
+    return "dev-secret-change-in-prod"
+
+
+def b64url(data):
+    return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
+
+
+def make_token(room_id, nick, role="participant", jti=None, exp_in=3600, secret=None):
+    claims = {
+        "sub": f"u-{nick.lower()}-{uuid.uuid4().hex[:6]}",
+        "room_id": room_id,
+        "role": role,
+        "nick": nick,
+        "jti": jti or uuid.uuid4().hex,
+        "iss": os.environ.get("JWT_ISSUER", "tint-identity"),
+        "aud": os.environ.get("JWT_AUDIENCE", "tint:room"),
+        "exp": int(time.time()) + exp_in,
+    }
+    head = b64url(json.dumps({"alg": "HS256", "typ": "JWT"}).encode())
+    body = b64url(json.dumps(claims).encode())
+    sig = hmac.new((secret or jwt_secret()).encode(), f"{head}.{body}".encode(), hashlib.sha256).digest()
+    return f"{head}.{body}.{b64url(sig)}", claims
+
+
+# --- Redis (RESP mínimo) -------------------------------------------------------------------
+
+
+def redis(*args):
+    with socket.create_connection((REDIS_HOST, REDIS_PORT), timeout=TIMEOUT) as s:
+        cmd = f"*{len(args)}\r\n" + "".join(f"${len(str(a).encode())}\r\n{a}\r\n" for a in args)
+        s.sendall(cmd.encode())
+        reply = s.recv(4096).decode()
+        if reply.startswith("-"):
+            raise RuntimeError(f"Redis: {reply.strip()}")
+        return reply
+
+
+# --- WebSocket (cliente mínimo, RFC 6455) --------------------------------------------------
+
+
+class HandshakeRejected(Exception):
+    def __init__(self, status):
+        super().__init__(f"HTTP {status}")
+        self.status = status
+
+
+class WS:
+    def __init__(self, room_id, token, origin=None):
+        u = urllib.parse.urlparse(VOICE_URL)
+        self.sock = socket.create_connection((u.hostname, u.port or 80), timeout=TIMEOUT)
+        query = urllib.parse.urlencode({"room_id": room_id, "token": token})
+        key = base64.b64encode(os.urandom(16)).decode()
+        lines = [
+            f"GET /ws/voice?{query} HTTP/1.1",
+            f"Host: {u.hostname}:{u.port}",
+            "Upgrade: websocket",
+            "Connection: Upgrade",
+            f"Sec-WebSocket-Key: {key}",
+            "Sec-WebSocket-Version: 13",
+        ]
+        if origin:
+            lines.append(f"Origin: {origin}")
+        self.sock.sendall(("\r\n".join(lines) + "\r\n\r\n").encode())
+        head = b""
+        while b"\r\n\r\n" not in head:
+            chunk = self.sock.recv(1)
+            if not chunk:
+                raise ConnectionError("el servidor cerró durante el handshake")
+            head += chunk
+        status = int(head.split(b" ", 2)[1])
+        if status != 101:
+            self.sock.close()
+            raise HandshakeRejected(status)
+        self.close_code = None
+
+    def _recv_exact(self, n):
+        buf = b""
+        while len(buf) < n:
+            chunk = self.sock.recv(n - len(buf))
+            if not chunk:
+                raise ConnectionError("conexión cerrada")
+            buf += chunk
+        return buf
+
+    def _send_frame(self, opcode, payload):
+        mask = os.urandom(4)
+        n = len(payload)
+        if n < 126:
+            header = struct.pack("!BB", 0x80 | opcode, 0x80 | n)
+        elif n < 65536:
+            header = struct.pack("!BBH", 0x80 | opcode, 0x80 | 126, n)
+        else:
+            header = struct.pack("!BBQ", 0x80 | opcode, 0x80 | 127, n)
+        masked = bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
+        self.sock.sendall(header + mask + masked)
+
+    def send(self, obj):
+        self._send_frame(0x1, json.dumps(obj).encode())
+
+    def recv(self):
+        """Devuelve el siguiente mensaje JSON, o None si el servidor cerró (close_code queda puesto)."""
+        while True:
+            b1, b2 = self._recv_exact(2)
+            opcode, n = b1 & 0x0F, b2 & 0x7F
+            if n == 126:
+                n = struct.unpack("!H", self._recv_exact(2))[0]
+            elif n == 127:
+                n = struct.unpack("!Q", self._recv_exact(8))[0]
+            payload = self._recv_exact(n)
+            if opcode == 0x1:
+                return json.loads(payload)
+            if opcode == 0x8:
+                self.close_code = struct.unpack("!H", payload[:2])[0] if len(payload) >= 2 else 1005
+                return None
+            if opcode == 0x9:  # ping → pong
+                self._send_frame(0xA, payload)
+
+    def recv_type(self, wanted):
+        msg = self.recv()
+        if msg is None or msg.get("type") != wanted:
+            raise AssertionError(f"esperaba {wanted}, llegó {msg if msg else f'cierre {self.close_code}'}")
+        return msg
+
+    def close(self):
+        try:
+            self._send_frame(0x8, struct.pack("!H", 1000))
+        except OSError:
+            pass
+        self.sock.close()
+
+
+def client_msg(type_, **fields):
+    return {"type": type_, "event_id": uuid.uuid4().hex, "occurred_at": int(time.time() * 1000), **fields}
+
+
+# --- Comprobaciones ------------------------------------------------------------------------
+
+results = []
+
+
+def check(name):
+    def wrap(fn):
+        try:
+            fn()
+            results.append((True, name, ""))
+        except Exception as e:  # noqa: BLE001 — cualquier fallo se reporta y se sigue
+            results.append((False, name, f"{type(e).__name__}: {e}"))
+        return fn
+
+    return wrap
+
+
+ROOM = f"smoke-{uuid.uuid4().hex[:8]}"
+
+
+@check("GET /healthz responde 200")
+def _():
+    with urllib.request.urlopen(f"{VOICE_URL}/healthz", timeout=TIMEOUT) as r:
+        assert r.status == 200, r.status
+
+
+@check("token con firma inválida → 401 antes del upgrade")
+def _():
+    token, _ = make_token(ROOM, "Mallory", secret="otro-secreto")
+    try:
+        WS(ROOM, token)
+    except HandshakeRejected as e:
+        assert e.status == 401, e.status
+        return
+    raise AssertionError("se aceptó el upgrade")
+
+
+@check("room_id del token distinto al de la URL → 403")
+def _():
+    token, _ = make_token("otra-sala", "Ana")
+    try:
+        WS(ROOM, token)
+    except HandshakeRejected as e:
+        assert e.status == 403, e.status
+        return
+    raise AssertionError("se aceptó el upgrade")
+
+
+@check("Origin no permitido → 403")
+def _():
+    token, _ = make_token(ROOM, "Ana")
+    try:
+        WS(ROOM, token, origin="http://evil.example")
+    except HandshakeRejected as e:
+        assert e.status == 403, e.status
+        return
+    raise AssertionError("se aceptó el upgrade")
+
+
+@check("token caducado → upgrade y cierre 4003")
+def _():
+    token, _ = make_token(ROOM, "Ana", exp_in=-60)
+    ws = WS(ROOM, token)
+    assert ws.recv() is None and ws.close_code == 4003, ws.close_code
+
+
+@check("AC1: entrar, peer_joined y reenvío de signal con from del servidor")
+def _():
+    ta, _ = make_token(ROOM, "Ana", role="host")
+    tl, _ = make_token(ROOM, "Luis")
+    ana = WS(ROOM, ta)
+    sa = ana.recv_type("voice_state")
+    assert sa["peers"] == [] and sa["self"]["nick"] == "Ana", sa
+    assert "jti" not in json.dumps(sa), "voice_state expone el jti"
+    luis = WS(ROOM, tl)
+    sl = luis.recv_type("voice_state")
+    assert [p["nick"] for p in sl["peers"]] == ["Ana"], sl["peers"]
+    joined = ana.recv_type("peer_joined")
+    assert joined["peer"]["peer_id"] == sl["self"]["peer_id"], joined
+
+    # El que llega ofrece; from lo fija el servidor aunque el cliente intente otro.
+    luis.send(client_msg("signal", to=sa["self"]["peer_id"], data={"sdp": {"type": "offer", "sdp": "v=0"}},
+                         **{"from": "suplantado"}))
+    sig = ana.recv_type("signal")
+    assert sig["from"] == sl["self"]["peer_id"] and sig["data"]["sdp"]["type"] == "offer", sig
+
+    luis.send(client_msg("signal", to="no-existe", data={}))
+    err = luis.recv_type("error")
+    assert err["code"] == "PEER_NOT_FOUND", err
+
+    # AC3: al salir, el otro recibe peer_left.
+    luis.send(client_msg("leave"))
+    assert luis.recv() is None and luis.close_code == 1000, luis.close_code
+    left = ana.recv_type("peer_left")
+    assert left["peer_id"] == sl["self"]["peer_id"], left
+    ana.close()
+
+
+@check("AC3: cerrar la conexión sin leave → peer_left")
+def _():
+    ta, _ = make_token(ROOM, "Ana")
+    tl, _ = make_token(ROOM, "Luis")
+    ana = WS(ROOM, ta)
+    ana.recv_type("voice_state")
+    luis = WS(ROOM, tl)
+    luis_id = luis.recv_type("voice_state")["self"]["peer_id"]
+    ana.recv_type("peer_joined")
+    luis.sock.close()  # como cerrar la pestaña
+    assert ana.recv_type("peer_left")["peer_id"] == luis_id
+    ana.close()
+
+
+@check("AC2: jti revocado → upgrade y cierre 4001")
+def _():
+    token, claims = make_token(ROOM, "Bloqueado")
+    redis("SET", f"token:revoked:{claims['jti']}", "1", "EX", "60")
+    ws = WS(ROOM, token)
+    assert ws.recv() is None and ws.close_code == 4001, ws.close_code
+
+
+@check("AC2: REVOKED en vivo saca al que ya hablaba (4001 + peer_left)")
+def _():
+    ta, _ = make_token(ROOM, "Ana")
+    tl, claims = make_token(ROOM, "Luis")
+    ana = WS(ROOM, ta)
+    ana.recv_type("voice_state")
+    luis = WS(ROOM, tl)
+    luis_id = luis.recv_type("voice_state")["self"]["peer_id"]
+    ana.recv_type("peer_joined")
+    redis("SET", f"token:revoked:{claims['jti']}", "1", "EX", "60")
+    redis("PUBLISH", f"room:{ROOM}:sync", json.dumps({"type": "REVOKED", "jti": claims["jti"]}))
+    assert luis.recv() is None and luis.close_code == 4001, luis.close_code
+    assert ana.recv_type("peer_left")["peer_id"] == luis_id
+    ana.close()
+
+
+ok = all(r[0] for r in results)
+for passed, name, detail in results:
+    print(f"{'✔' if passed else '✘'} {name}" + (f"\n    {detail}" if detail else ""))
+print(f"\n{sum(r[0] for r in results)}/{len(results)} en verde · sala {ROOM}")
+sys.exit(0 if ok else 1)
