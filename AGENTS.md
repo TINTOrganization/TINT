@@ -72,6 +72,7 @@ Cambiar uno exige actualizar **ambos lados**, sus pruebas y [docs/arquitectura.m
 | Python (`media-worker`, `analytics`) | `ruff check . && ruff format --check .` · `pytest --cov=src --cov-fail-under=85` |
 | C++ (`voice-core`) | `clang-format --dry-run --Werror` · `ctest` con `-DVOICE_SANITIZE=address` y `=thread` · `gcovr --fail-under-line 85` (`make test-cpp`; ver su AGENTS.md para correrlo en Docker) |
 | Carga del Canal Sync | `k6 run -e VUS=50 -e DURATION=20s services/sync-core/loadtest/sync.js` (CI); 500 VUs desde otra máquina |
+| Carga y E2E del Canal de Voz | `k6 run … services/voice-core/loadtest/voice.js` (CI, `voice-load-smoke`; local con `make load-voice`) · `make e2e-voice`: dos Chromium reales contra la web y `docker compose` (local) |
 
 ## Lecciones aprendidas (no repetir)
 - **Mide con la infraestructura real** antes de afirmar algo sobre rendimiento: con miniredis no se reproducían los conflictos de `WATCH/MULTI` que con Redis real perdían comandos.
