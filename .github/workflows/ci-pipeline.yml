@@ -103,6 +103,49 @@ jobs:
       - name: vitest + coverage gate (thresholds en vitest.config.ts)
         run: npx vitest run --coverage
 
+  # Canal de Voz (C++). Ubuntu 24.04 trae las mismas versiones mayores que
+  # el Dockerfile (Boost 1.83, GoogleTest, nlohmann/json, hiredis). Las pruebas
+  # de integración usan el Redis del servicio.
+  cpp:
+    name: C++ · voice-core
+    runs-on: ubuntu-24.04
+    services:
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping" --health-interval 2s --health-timeout 2s --health-retries 15
+    env:
+      VOICE_TEST_REDIS_URL: redis://localhost:6379
+    defaults:
+      run:
+        working-directory: services/voice-core
+    steps:
+      - uses: actions/checkout@v4
+      - name: Dependencias
+        run: >-
+          sudo apt-get update && sudo apt-get install -y --no-install-recommends
+          cmake ninja-build g++ libboost-dev libssl-dev libhiredis-dev
+          nlohmann-json3-dev libgtest-dev libgmock-dev pkgconf gcovr clang-format
+      - name: clang-format
+        run: clang-format --dry-run --Werror $(git ls-files '*.cpp' '*.hpp')
+      - name: Pruebas con ASan + UBSan
+        run: |
+          cmake -S . -B build-asan -G Ninja -DCMAKE_BUILD_TYPE=Debug -DVOICE_SANITIZE=address
+          cmake --build build-asan
+          ctest --test-dir build-asan --output-on-failure
+      - name: Pruebas con TSan
+        run: |
+          cmake -S . -B build-tsan -G Ninja -DCMAKE_BUILD_TYPE=Debug -DVOICE_SANITIZE=thread
+          cmake --build build-tsan
+          ctest --test-dir build-tsan --output-on-failure
+      - name: Coverage gate (≥ ${{ env.COVERAGE_MIN }}%)
+        run: |
+          cmake -S . -B build-cov -G Ninja -DCMAKE_BUILD_TYPE=Debug -DVOICE_COVERAGE=ON
+          cmake --build build-cov
+          ctest --test-dir build-cov --output-on-failure
+          gcovr --root . --filter src/ --exclude src/main.cpp build-cov --fail-under-line "$COVERAGE_MIN"
+
   # Humo de carga del Canal Sync (SYNC-TEST-01 reducido): 50 conexiones
   # reales contra sync-core + Redis. La prueba completa de 500 conexiones
   # debe correrse con k6 en una máquina distinta a la del servidor.
@@ -147,16 +190,17 @@ jobs:
   ci-gate:
     name: CI Gate
     if: always()
-    needs: [go, python, web, identity-api, sync-load-smoke]
+    needs: [go, python, web, identity-api, cpp, sync-load-smoke]
     runs-on: ubuntu-latest
     steps:
       - name: Verificar resultado de todos los jobs
         run: |
-          echo "go=${{ needs.go.result }} python=${{ needs.python.result }} web=${{ needs.web.result }} identity-api=${{ needs.identity-api.result }} load=${{ needs.sync-load-smoke.result }}"
+          echo "go=${{ needs.go.result }} python=${{ needs.python.result }} web=${{ needs.web.result }} identity-api=${{ needs.identity-api.result }} cpp=${{ needs.cpp.result }} load=${{ needs.sync-load-smoke.result }}"
           if [ "${{ needs.go.result }}" != "success" ] || \
              [ "${{ needs.python.result }}" != "success" ] || \
              [ "${{ needs.web.result }}" != "success" ] || \
              [ "${{ needs.identity-api.result }}" != "success" ] || \
+             [ "${{ needs.cpp.result }}" != "success" ] || \
              [ "${{ needs.sync-load-smoke.result }}" != "success" ]; then
             echo "::error::Pruebas o cobertura (≥ ${COVERAGE_MIN}%) no superadas. Merge bloqueado."
             exit 1
