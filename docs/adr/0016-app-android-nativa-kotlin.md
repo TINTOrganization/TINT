@@ -45,8 +45,8 @@ flowchart LR
 
 **Riesgos**
 - Los tokens se guardan en `SharedPreferences` sin cifrar, igual que la web usa `localStorage`; revisar `EncryptedSharedPreferences` antes de publicar.
-- Transmisión en vivo y voz no tienen backend (RTC/VOI): AND-06 y AND-07 quedan condicionados a que exista.
-- Los WebSockets limitan `ALLOWED_ORIGINS`; el cliente nativo no envía `Origin`, comportamiento por verificar contra sync-core al implementar AND-03.
+- La transmisión en vivo (AND-06) no tiene backend: queda condicionada a que exista. La voz (AND-07) ya tiene `voice-core` ([ADR 0015](0015-voice-core-en-cpp-con-webrtc-p2p.md)) y falta el cliente móvil, que exigiría WebRTC nativo; no se ha revisado si su contrato sirve tal cual.
+- Los WebSockets limitan `ALLOWED_ORIGINS`; el cliente nativo no envía `Origin`. Verificado (2026-10-31): un cliente OkHttp sin `Origin` conecta a sync-core desplegado por `wss://`.
 
 ## Referencias
 - Código: `apps/android/`
