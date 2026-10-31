@@ -48,25 +48,31 @@ export interface TriviaPanelProps {
   /** Posición actual del vídeo en ms (null si no hay vídeo). */
   getCurrentMs: () => number | null;
   onSchedule: (draft: TriviaDraft) => boolean;
+  /** Reemplaza una pregunta pendiente por su nueva versión. */
+  onUpdate: (triviaId: string, draft: TriviaDraft) => boolean;
   onDelete: (triviaId: string) => boolean;
   /** Último `error.code` del canal social. */
   error: string | null;
 }
 
+/** Formulario en curso: nueva pregunta (en `atMs`) o edición de una pendiente. */
+type FormTarget = { kind: 'new'; atMs: number } | { kind: 'edit'; trivia: ScheduledTrivia };
+
 function TriviaForm({
-  initialMs,
+  target,
   onSubmit,
   onCancel,
 }: {
-  initialMs: number;
+  target: FormTarget;
   onSubmit: (draft: TriviaDraft) => boolean;
   onCancel: () => void;
 }) {
-  const [time, setTime] = useState(() => formatMmSs(initialMs));
-  const [question, setQuestion] = useState('');
-  const [options, setOptions] = useState(['', '']);
-  const [correct, setCorrect] = useState(0);
-  const [windowS, setWindowS] = useState(TRIVIA_WINDOW_DEFAULT_S);
+  const editing = target.kind === 'edit' ? target.trivia : null;
+  const [time, setTime] = useState(() => formatMmSs(editing ? editing.at_ms : target.kind === 'new' ? target.atMs : 0));
+  const [question, setQuestion] = useState(editing?.question ?? '');
+  const [options, setOptions] = useState(editing ? [...editing.options] : ['', '']);
+  const [correct, setCorrect] = useState(editing?.correct ?? 0);
+  const [windowS, setWindowS] = useState(editing?.answer_window_s ?? TRIVIA_WINDOW_DEFAULT_S);
   const [error, setError] = useState('');
   const questionRef = useRef<HTMLInputElement>(null);
   const ids = { time: useId(), question: useId(), window: useId(), correct: useId() };
@@ -204,7 +210,7 @@ function TriviaForm({
         </p>
       )}
       <div className="flex flex-wrap gap-2">
-        <Button type="submit">Programar pregunta</Button>
+        <Button type="submit">{editing ? 'Guardar cambios' : 'Programar pregunta'}</Button>
         <Button type="button" variant="quiet" onClick={onCancel}>
           Cancelar
         </Button>
@@ -214,8 +220,8 @@ function TriviaForm({
 }
 
 /** Tarjeta de trivia: el host programa preguntas por momento del vídeo; el invitado ve cómo jugar. */
-export function TriviaPanel({ isHost, schedule, getCurrentMs, onSchedule, onDelete, error }: TriviaPanelProps) {
-  const [formAtMs, setFormAtMs] = useState<number | null>(null);
+export function TriviaPanel({ isHost, schedule, getCurrentMs, onSchedule, onUpdate, onDelete, error }: TriviaPanelProps) {
+  const [form, setForm] = useState<FormTarget | null>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const channelError = error && TRIVIA_ERRORS.has(error) ? socialErrorMessage(error) : '';
 
@@ -231,7 +237,7 @@ export function TriviaPanel({ isHost, schedule, getCurrentMs, onSchedule, onDele
   }
 
   const closeForm = () => {
-    setFormAtMs(null);
+    setForm(null);
     triggerRef.current?.focus();
   };
 
@@ -241,17 +247,22 @@ export function TriviaPanel({ isHost, schedule, getCurrentMs, onSchedule, onDele
       <p className="mt-1 text-[13px] leading-relaxed">
         Programa preguntas en momentos del vídeo: aparecerán a todos justo en ese segundo.
       </p>
-      {formAtMs === null ? (
+      {form === null ? (
         <Button
           ref={triggerRef}
           variant="ghost"
           className="mt-3"
-          onClick={() => setFormAtMs(Math.max(0, getCurrentMs() ?? 0))}
+          onClick={() => setForm({ kind: 'new', atMs: Math.max(0, getCurrentMs() ?? 0) })}
         >
           Agregar pregunta en este momento
         </Button>
       ) : (
-        <TriviaForm initialMs={formAtMs} onSubmit={onSchedule} onCancel={closeForm} />
+        <TriviaForm
+          key={form.kind === 'edit' ? form.trivia.trivia_id : 'new'}
+          target={form}
+          onSubmit={form.kind === 'edit' ? (draft) => onUpdate(form.trivia.trivia_id, draft) : onSchedule}
+          onCancel={closeForm}
+        />
       )}
 
       {channelError && (
@@ -276,14 +287,26 @@ export function TriviaPanel({ isHost, schedule, getCurrentMs, onSchedule, onDele
                   respuestas
                 </p>
               </div>
-              <Button
-                variant="quiet"
-                className="shrink-0 px-3 py-1.5 text-[13px]"
-                aria-label={`Eliminar la pregunta de ${formatMmSs(q.at_ms)}`}
-                onClick={() => onDelete(q.trivia_id)}
-              >
-                Eliminar
-              </Button>
+              <div className="flex shrink-0 gap-1">
+                {(q.status ?? 'pending') === 'pending' && (
+                  <Button
+                    variant="quiet"
+                    className="px-3 py-1.5 text-[13px]"
+                    aria-label={`Editar la pregunta de ${formatMmSs(q.at_ms)}`}
+                    onClick={() => setForm({ kind: 'edit', trivia: q })}
+                  >
+                    Editar
+                  </Button>
+                )}
+                <Button
+                  variant="quiet"
+                  className="px-3 py-1.5 text-[13px]"
+                  aria-label={`Eliminar la pregunta de ${formatMmSs(q.at_ms)}`}
+                  onClick={() => onDelete(q.trivia_id)}
+                >
+                  Eliminar
+                </Button>
+              </div>
             </li>
           ))}
         </ul>

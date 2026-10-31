@@ -35,6 +35,7 @@ describe('TriviaPanel — host', () => {
       schedule,
       getCurrentMs: () => 83_400,
       onSchedule: vi.fn(() => true),
+      onUpdate: vi.fn(() => true),
       onDelete: vi.fn(() => true),
       error: null,
       ...over,
@@ -87,6 +88,30 @@ describe('TriviaPanel — host', () => {
     expect(screen.queryByLabelText('Pregunta de trivia')).not.toBeInTheDocument();
   });
 
+  it('edita una pregunta pendiente: precarga el formulario y envía la nueva versión', () => {
+    const props = renderHost();
+    // Solo las pendientes se editan (no las en curso ni las terminadas).
+    expect(screen.queryByRole('button', { name: 'Editar la pregunta de 01:05' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Editar la pregunta de 03:20' })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Editar la pregunta de 02:05' }));
+    expect(screen.getByLabelText('Momento del vídeo (mm:ss)')).toHaveValue('02:05');
+    expect(screen.getByLabelText('Pregunta de trivia')).toHaveValue('¿De qué color era?');
+    expect(screen.getByLabelText('Respuesta 3')).toHaveValue('Verde');
+    expect(screen.getByRole('radio', { name: 'Respuesta 3 es la correcta' })).toBeChecked();
+    fireEvent.change(screen.getByLabelText('Pregunta de trivia'), { target: { value: '¿De qué tono?' } });
+    fireEvent.change(screen.getByLabelText('Momento del vídeo (mm:ss)'), { target: { value: '02:10' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Guardar cambios' }));
+    expect(props.onUpdate).toHaveBeenCalledWith('t2', {
+      atMs: 130_000,
+      question: '¿De qué tono?',
+      options: ['Rojo', 'Azul', 'Verde'],
+      correct: 2,
+      answerWindowS: 20,
+    });
+    expect(props.onSchedule).not.toHaveBeenCalled();
+    expect(screen.queryByLabelText('Pregunta de trivia')).not.toBeInTheDocument();
+  });
+
   it('valida el borrador y el tiempo antes de enviar', () => {
     const props = renderHost({ getCurrentMs: () => null });
     fireEvent.click(screen.getByRole('button', { name: 'Agregar pregunta en este momento' }));
@@ -133,7 +158,7 @@ describe('TriviaPanel — host', () => {
 
 describe('TriviaPanel — invitado', () => {
   it('explica cómo funciona, sin herramientas del host', () => {
-    render(<TriviaPanel isHost={false} schedule={[]} getCurrentMs={() => 0} onSchedule={vi.fn()} onDelete={vi.fn()} error={null} />);
+    render(<TriviaPanel isHost={false} schedule={[]} getCurrentMs={() => 0} onSchedule={vi.fn()} onUpdate={vi.fn()} onDelete={vi.fn()} error={null} />);
     expect(screen.getByText(/aparecerán preguntas/)).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Agregar pregunta en este momento' })).not.toBeInTheDocument();
   });

@@ -382,6 +382,10 @@ export function buildTriviaSchedule(roomId: string, draft: TriviaDraft, eventId 
   });
 }
 
+export function buildTriviaUpdate(roomId: string, triviaId: string, draft: TriviaDraft, eventId = newEventId()): string {
+  return JSON.stringify({ ...JSON.parse(buildTriviaSchedule(roomId, draft, eventId)), type: 'trivia_update', trivia_id: triviaId });
+}
+
 export function buildTriviaDelete(roomId: string, triviaId: string, eventId = newEventId()): string {
   return JSON.stringify({ type: 'trivia_delete', event_id: eventId, room_id: roomId, trivia_id: triviaId });
 }

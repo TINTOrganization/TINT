@@ -139,6 +139,7 @@ export default function WatchRoom() {
     trivia,
     triviaSchedule,
     scheduleTrivia,
+    updateTrivia,
     deleteTrivia,
     answerTrivia,
     dismissTrivia,
@@ -586,6 +587,7 @@ export default function WatchRoom() {
               schedule={triviaSchedule}
               getCurrentMs={getPositionMs}
               onSchedule={scheduleTrivia}
+              onUpdate={updateTrivia}
               onDelete={deleteTrivia}
               error={socialError?.code ?? null}
             />
