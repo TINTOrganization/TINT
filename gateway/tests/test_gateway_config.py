@@ -28,9 +28,21 @@ class GatewayConfigTests(unittest.TestCase):
             "reverse_proxy @identity {$IDENTITY_API_UPSTREAM:host.docker.internal:8081}",
             caddyfile,
         )
-        self.assertIn("reverse_proxy @sync sync-core:8080", caddyfile)
-        self.assertIn("reverse_proxy @social social-core:8082", caddyfile)
-        self.assertIn("reverse_proxy @analytics analytics:8084", caddyfile)
+        self.assertIn("reverse_proxy @sync {$SYNC_CORE_UPSTREAM:sync-core:8080}", caddyfile)
+        self.assertIn("reverse_proxy @social {$SOCIAL_CORE_UPSTREAM:social-core:8082}", caddyfile)
+        self.assertIn("reverse_proxy @analytics {$ANALYTICS_UPSTREAM:analytics:8084}", caddyfile)
+        self.assertIn("@voice path /ws/voice /ws/voice/*", caddyfile)
+        self.assertIn("reverse_proxy @voice {$VOICE_CORE_UPSTREAM:voice-core:8085}", caddyfile)
+        self.assertIn("@voice_api path /api/v1/voice/*", caddyfile)
+        self.assertIn("reverse_proxy @voice_api {$VOICE_CORE_UPSTREAM:voice-core:8085}", caddyfile)
+
+    def test_gateway_declares_configurable_service_upstreams(self):
+        compose = COMPOSE.read_text(encoding="utf-8")
+
+        self.assertIn("SYNC_CORE_UPSTREAM:", compose)
+        self.assertIn("SOCIAL_CORE_UPSTREAM:", compose)
+        self.assertIn("ANALYTICS_UPSTREAM:", compose)
+        self.assertIn("VOICE_CORE_UPSTREAM:", compose)
 
 
     def test_gateway_service_publishes_http_and_https_and_restarts(self):

@@ -459,11 +459,22 @@ flowchart LR
 | MinIO | 9000 (API) · 9001 (consola) | |
 
 El servicio `gateway` publica `80/443` como entrada única. Redirige HTTP a
-HTTPS, termina TLS con Caddy y enruta `/api/*`, `/ws/sync` y `/ws/social` a
-los servicios correspondientes; las rutas de KPIs, heatmap y timeline bajo
-`/api/v1/rooms/*` se envían a analytics. Las rutas no reconocidas responden
-404. Su política `restart: unless-stopped` permite recuperar automáticamente
-el punto de entrada después de una caída.
+HTTPS, termina TLS con Caddy y mantiene el contrato público de rutas:
+
+| Ruta pública | Servicio | Upstream configurable |
+| :--- | :--- | :--- |
+| `/api/*` (excepto analytics y voz) | identity-api | `IDENTITY_API_UPSTREAM` |
+| `/api/v1/rooms/{id}/kpis`, `/reactions/heatmap`, `/timeline` | analytics | `ANALYTICS_UPSTREAM` |
+| `/api/v1/voice/*` | voice-core | `VOICE_CORE_UPSTREAM` |
+| `/ws/sync` | sync-core | `SYNC_CORE_UPSTREAM` |
+| `/ws/social` | social-core | `SOCIAL_CORE_UPSTREAM` |
+| `/ws/voice` | voice-core | `VOICE_CORE_UPSTREAM` |
+
+Los clientes usan estas rutas públicas; para añadir un servicio se incorpora su
+matcher y upstream en `gateway/Caddyfile`, y para moverlo se cambia únicamente
+la variable `*_UPSTREAM` del gateway. Las rutas no reconocidas responden 404.
+Su política `restart: unless-stopped` permite recuperar automáticamente el
+punto de entrada después de una caída.
 
 ## 9. Calidad, CI y CD
 
