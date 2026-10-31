@@ -943,9 +943,7 @@ flowchart TD
 
 ```bash
 cp .env.example .env                     # JWT_SECRET compartido por identity-api y sync-core
-docker compose up -d                     # postgres, redis, minio (+ bucket), social-core :8082 y sync-core :8083
-cd services/identity-api && npm ci && npx drizzle-kit migrate && npm run dev   # :8081, migraciones 0000–0005
-cd apps/web && cp .env.example .env && npm run dev  # :5173
+docker compose up -d --build              # todo el sistema; aplica migraciones y sirve la web
 ```
 
 Para probar el vídeo:

@@ -3,18 +3,15 @@ http://{$GATEWAY_HOST:localhost} {
 }
 
 https://{$GATEWAY_HOST:localhost} {
-    @public path / /healthz /api/v1/healthz /api/v1/invitations/claim
     @protected {
-        not path / /healthz /api/v1/healthz /api/v1/invitations/claim
+        path /api/* /ws/*
+        not path /api/v1/healthz /api/v1/invitations/claim
     }
 
-    forward_auth @protected {$IDENTITY_API_UPSTREAM:host.docker.internal:8081} {
+    forward_auth @protected {$IDENTITY_API_UPSTREAM:identity-api:8081} {
         uri /api/v1/internal/auth/check
         copy_headers X-User-Id X-User-Sub X-User-Role X-User-Room-Id X-User-Nick
     }
-
-    @root path /
-    respond @root 200
 
     @health path /healthz
     respond @health 200
@@ -23,7 +20,7 @@ https://{$GATEWAY_HOST:localhost} {
     reverse_proxy @analytics analytics:8084
 
     @identity path /api/*
-    reverse_proxy @identity {$IDENTITY_API_UPSTREAM:host.docker.internal:8081}
+    reverse_proxy @identity {$IDENTITY_API_UPSTREAM:identity-api:8081}
 
     @sync path /ws/sync /ws/sync/*
     reverse_proxy @sync sync-core:8080
@@ -31,5 +28,9 @@ https://{$GATEWAY_HOST:localhost} {
     @social path /ws/social /ws/social/*
     reverse_proxy @social social-core:8082
 
-    respond 404
+    @voice path /ws/voice /ws/voice/*
+    reverse_proxy @voice voice-core:8085
+
+    @frontend not path /api/* /ws/*
+    reverse_proxy @frontend web:80
 }

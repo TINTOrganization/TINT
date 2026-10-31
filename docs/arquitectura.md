@@ -332,11 +332,6 @@ flowchart TB
         GK["Claves públicas de Google<br/>JWKS y certificados x509"]
     end
 
-    subgraph dev["Máquina del desarrollador - procesos fuera de compose"]
-        VITE["npm run dev<br/>Vite :5173"]
-        IDP["identity-api<br/>npm run dev · tsx watch :8081"]
-    end
-
     subgraph docker["Host Docker - docker compose up -d"]
         subgraph c_infra["Infraestructura"]
             PG["tint-postgres<br/>postgres:16-alpine<br/>5432:5432"]
@@ -345,6 +340,8 @@ flowchart TB
             MINIT["tint-minio-init<br/>pgsty/mc:latest<br/>una vez: bucket + regla ILM incoming/ 2 días"]
         end
         subgraph c_apps["Servicios construidos con build"]
+            WEB["tint-web<br/>nginx<br/>5173:80"]
+            IDP["tint-identity-api<br/>Node 22<br/>8081:8081"]
             MW["tint-media-worker<br/>python:3.11-slim + ffmpeg<br/>sin puertos"]
             AN["tint-analytics<br/>python:3.11-slim<br/>8084:8084"]
             SOC["tint-social-core<br/>distroless/static nonroot<br/>8082:8082"]
@@ -357,7 +354,7 @@ flowchart TB
         V3[("volumen minio-data")]
     end
 
-    VITE -- "sirve la SPA" --> SPA
+    WEB -- "sirve la SPA" --> SPA
     SPA -- "login" --> FBA
     SPA -- "HTTP :8081" --> IDP
     SPA -- "WS :8083" --> SYN
@@ -366,8 +363,8 @@ flowchart TB
     SPA -- "WS :8085" --> VOI
     SPA -- "STUN/TURN :3478" --> TRN
     SPA -- "HTTP :9000 firmado" --> MI
-    IDP -- "localhost:5432" --> PG
-    IDP -- "localhost:6379" --> RD
+    IDP -- "postgres:5432" --> PG
+    IDP -- "redis:6379" --> RD
     IDP -- "localhost:9000" --> MI
     IDP -- "HTTPS" --> GK
     SOC -- "HTTPS" --> GK
@@ -382,10 +379,9 @@ flowchart TB
     VOI -- "redis:6379" --> RD
 ```
 
-- **identity-api no está en `docker-compose.yml` ni tiene Dockerfile.** Corre como proceso de Node 22 en la máquina del desarrollador (`npm run dev`, `tsx watch src/server.ts`) y llega a la infraestructura por los puertos publicados en `localhost`. Existe `npm run build` (`tsup` → `dist/`) y `npm start`, pero no hay imagen. Sus migraciones se aplican a mano con `npx drizzle-kit migrate`.
-- **La web tampoco está en compose:** `npm run dev` (Vite 5173) o `npm run build` (`tsc -b && vite build` → `dist/`, servible con `npm run preview`). No hay servidor estático configurado en el repositorio.
-- **Orden de arranque** (`depends_on`): `minio-init` espera a que MinIO esté sano; `media-worker` espera a PostgreSQL y Redis sanos y a que `minio-init` termine bien; `analytics`, `social-core` y `sync-core` esperan a Redis (analytics también a PostgreSQL). analytics aplica sus migraciones al arrancar.
-- **Salud y métricas:** analytics, social-core, sync-core y voice-core exponen `/healthz` (media-worker no tiene HTTP); solo sync-core expone `/metrics` (Prometheus). social-core no tiene `/metrics`.
+- **Contenedores de aplicación:** `web` construye la SPA y la sirve con nginx en `5173`; `identity-api` compila Node 22, aplica las migraciones y escucha en `8081`. El gateway usa ambos servicios por sus nombres internos.
+- **Orden de arranque** (`depends_on`): `env-check` valida `.env` antes de crear servicios; `minio-init` espera a que MinIO esté sano; `identity-api` y `media-worker` esperan a PostgreSQL, Redis y el bucket; analytics espera a PostgreSQL y Redis; los canales esperan a Redis.
+- **Salud y métricas:** gateway, web, identity-api, analytics, social-core, sync-core y voice-core tienen healthcheck; media-worker se comprueba por proceso (no tiene HTTP). Solo sync-core expone `/metrics` (Prometheus). `env-check` y `minio-init` son tareas de una sola ejecución y deben terminar correctamente.
 - **Réplicas:** compose levanta **una** réplica de cada servicio. El diseño soporta N réplicas de sync-core y social-core (Pub/Sub, CAS y `HSETNX` entre réplicas); voice-core solo admite **una** (membresía en memoria, [dominio-voz §9](dominio-voz.md#9-limitaciones-conocidas)). No no hay balanceador ni configuración multirréplica en el repositorio.
 
 | Nodo | Artefacto | Puertos (host → contenedor) | Volúmenes | Variables principales |
@@ -447,8 +443,8 @@ flowchart LR
 
 | Servicio | Puerto | Notas |
 | :--- | :--- | :--- |
-| web | 5173 | `npm run dev` |
-| identity-api | 8081 | `npm run dev` (fuera de compose) |
+| web | 5173 | `docker compose` (`nginx`) |
+| identity-api | 8081 | `docker compose` (aplica migraciones al arrancar) |
 | social-core | 8082 | `docker compose` (`/ws/social`, `/healthz`) |
 | sync-core | 8083 → 8080 | `docker compose` (`/ws/sync`, `/healthz`, `/metrics`) |
 | analytics | 8084 | `docker compose` (`/healthz`, `/api/v1/rooms/{id}/kpis`, `/reactions/heatmap`, `/timeline`) |
@@ -459,10 +455,11 @@ flowchart LR
 | MinIO | 9000 (API) · 9001 (consola) | |
 
 El servicio `gateway` publica `80/443` como entrada única. Redirige HTTP a
-HTTPS, termina TLS con Caddy y enruta `/api/*`, `/ws/sync` y `/ws/social` a
-los servicios correspondientes; las rutas de KPIs, heatmap y timeline bajo
-`/api/v1/rooms/*` se envían a analytics. Las rutas no reconocidas responden
-404. Su política `restart: unless-stopped` permite recuperar automáticamente
+HTTPS, termina TLS con Caddy y sirve la SPA desde `web`; enruta `/api/*`,
+`/ws/sync`, `/ws/social` y `/ws/voice` a los servicios correspondientes. Las
+rutas de KPIs, heatmap y timeline bajo `/api/v1/rooms/*` se envían a analytics.
+Las rutas no reconocidas responden 404. Su política `restart: unless-stopped`
+permite recuperar automáticamente
 el punto de entrada después de una caída.
 
 ## 9. Calidad, CI y CD

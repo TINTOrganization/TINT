@@ -330,35 +330,21 @@ Esquemas de tokens, matriz de permisos y flujos de login, invitación y retiro e
 
 ## 🚀 Inicio Rápido en Local
 
-**Requisitos:** Docker, Go 1.22+, Python 3.11+, Node.js 22+ y FFmpeg (para el media-worker fuera de Docker).
+**Requisitos:** Docker y Docker Compose.
 
 ```bash
-# 1. Clonar e infraestructura (gateway HTTPS :443/:80, PostgreSQL, Redis, MinIO + bucket, media-worker, social-core :8082, sync-core :8083)
+# 1. Clonar y arrancar todo el sistema (web, gateway, identity-api, workers, cores e infraestructura)
 git clone https://github.com/HanamDavid/tint-monorepo.git && cd tint-monorepo
 cp .env.example .env
-docker compose up -d
+docker compose up -d --build
 
-# 2. identity-api (:8081): dependencias, migraciones 0000–0005 y servidor
-#    (el media-worker de docker compose necesita la tabla videos: migra antes de subir vídeos)
-cd services/identity-api
-cp .env.example .env            # define FIREBASE_PROJECT_ID
-npm ci && npx drizzle-kit migrate && npm run dev
-
-# 3. media-worker: ya corre en docker compose (`docker logs -f tint-media-worker`).
-#    Para desarrollarlo fuera de Docker: pip install -r requirements-dev.txt y
-#    DATABASE_URL=… S3_ACCESS_KEY=… S3_SECRET_KEY=… PYTHONPATH=src python -m media_worker
-
-# 4. web (:5173)
-cd apps/web
-cp .env.example .env            # Firebase del cliente; VITE_SYNC_WS_URL=ws://localhost:8083/ws/sync
-npm ci && npm run dev
-
-# 5. Suite global de pruebas (TDD Policy Check) y flujo completo contra la infraestructura real
+# 2. Suite global de pruebas (TDD Policy Check)
 make test-all
-cd services/identity-api && WAIT_WORKER=1 npm run test:integration
 ```
 
 > [!IMPORTANT]
+> El primer arranque aplica automáticamente las migraciones de `identity-api`. Si falta `.env`, Compose detiene el arranque y muestra la ruta del archivo requerido; si faltan variables, `env-check` enumera todas las variables ausentes.
+>
 > Sin el media-worker el vídeo se reproduce igual desde el original de `incoming/`, pero queda en `processing` y sin Ambilight. Si el worker lo rechaza (archivo corrupto) queda `failed` y no se sirve.
 
 | Servicio local | URL |
