@@ -5,7 +5,7 @@ COVERAGE_MIN := 85
 NODE_SERVICES := services/identity-api
 CPP_SERVICES := services/voice-core
 
-.PHONY: up down test-all test-go test-python test-web test-node test-cpp
+.PHONY: up down test-all test-go test-python test-web test-node test-cpp test-android
 
 up:
 	docker compose up -d
@@ -47,3 +47,8 @@ test-cpp:
 		 cmake --build build-cov && ctest --test-dir build-cov --output-on-failure && \
 		 gcovr --root . --filter src/ --exclude src/main.cpp build-cov --fail-under-line $(COVERAGE_MIN)) || exit 1; \
 	done
+
+# Aparte de test-all: exige JDK 17 y el Android SDK (JAVA_HOME y ANDROID_HOME) y un google-services.json
+# (el real o app/google-services.json.example). Ver apps/android/README.md.
+test-android:
+	cd apps/android && ./gradlew testDebugUnitTest koverVerifyDebug
