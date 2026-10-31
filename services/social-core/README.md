@@ -72,7 +72,7 @@ flowchart LR
 | `internal/server` (features) | Un archivo por feature: [`moderation.go`](internal/server/moderation.go), [`laser.go`](internal/server/laser.go), [`polls.go`](internal/server/polls.go), [`recap.go`](internal/server/recap.go), [`trivia.go`](internal/server/trivia.go), [`revocation.go`](internal/server/revocation.go), [`liveness.go`](internal/server/liveness.go). | — |
 | `internal/auth` | Elige el verificador por el `alg` del header: HS256 (identity-api: firma, `iss`, `aud`, `exp`, `sub`, `jti`, `room_id`) o RS256 (Firebase, certificados de Google por `kid` con caché `max-age`). | [`auth.go`](internal/auth/auth.go), [`firebase.go`](internal/auth/firebase.go) |
 | `internal/chat` | `Hub` de difusión local por sala (no bloqueante); historial en LIST de Redis o en memoria; `Publish*`/`Subscribe` sobre `room:{id}:social` y `room:{id}:sync`; `IsRevoked`. | [`hub.go`](internal/chat/hub.go), [`redis.go`](internal/chat/redis.go), [`store.go`](internal/chat/store.go) |
-| `internal/reactions` | Limitador de ventana deslizante por usuario y `Buckets` (conteo en memoria por sala, ventana de 5 s y emoji, con poda de salas inactivas). | [`limiter.go`](internal/reactions/limiter.go), [`buckets.go`](internal/reactions/buckets.go) |
+| `internal/reactions` | Limitadores de ventana deslizante por usuario e IP, con duración de reintento, y `Buckets` (conteo en memoria por sala, ventana de 5 s y emoji, con poda de salas inactivas). | [`limiter.go`](internal/reactions/limiter.go), [`buckets.go`](internal/reactions/buckets.go) |
 | `internal/moderation` | Ajustes del chat y script `admit` (silencio + modo lento en una ida y vuelta). | [`store.go`](internal/moderation/store.go) |
 | `internal/polls` | Encuestas en Redis con scripts Lua `create`, `vote` y `close`; marca de flush coalescido. | [`store.go`](internal/polls/store.go) |
 | `internal/recap` | Contadores del recap, script `sync` (dedup + clasificación + ancla `last_pos`), `Position` (proyección con el reloj propio) y `Build`. | [`store.go`](internal/recap/store.go) |
@@ -149,7 +149,7 @@ sequenceDiagram
     end
     S->>S: límite 5/s por sub
     alt excedido
-        S-->>U: error RATE_LIMITED
+        S-->>U: error RATE_LIMITED con retry_after_ms
     end
     S->>M: Admit (se omite para host/cohost y sin Redis)
     M->>R: EVAL admit (SISMEMBER muted, HGET slow_mode_s, SET last NX PX)

@@ -7,7 +7,9 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/HanamDavid/tint-monorepo/services/social-core/internal/analytics"
 	"github.com/HanamDavid/tint-monorepo/services/social-core/internal/auth"
@@ -28,6 +30,15 @@ const analyticsBuffer = 4096
 
 // defaultOrigins son los orígenes del frontend en desarrollo (Vite).
 const defaultOrigins = "localhost:5173,127.0.0.1:5173"
+
+const (
+	defaultReactionLimit    = reactions.MaxPerSecond
+	defaultReactionIPLimit  = reactions.MaxPerSecond
+	defaultReactionWindow   = time.Second
+	reactionLimitEnv        = "SOCIAL_REACTION_LIMIT"
+	reactionIPLimitEnv      = "SOCIAL_REACTION_IP_LIMIT"
+	reactionWindowMillisEnv = "SOCIAL_REACTION_WINDOW_MS"
+)
 
 // ErrMissingSecret indica que no se configuró JWT_SECRET.
 var ErrMissingSecret = errors.New("JWT_SECRET es obligatorio")
@@ -75,6 +86,8 @@ func DefaultDeps(getenv func(string) string) *Deps {
 		HostKeys:          auth.NewGoogleCerts("", nil),
 		AllowedOrigins:    splitList(or(getenv("ALLOWED_ORIGINS"), defaultOrigins)),
 		ReactionBuckets:   reactions.NewBuckets(),
+		ReactionLimit:     configuredLimiter(getenv, reactionLimitEnv, defaultReactionLimit, defaultReactionWindow),
+		ReactionIPLimit:   configuredLimiter(getenv, reactionIPLimitEnv, defaultReactionIPLimit, defaultReactionWindow),
 	}
 	if store != nil {
 		st := store
@@ -98,6 +111,22 @@ func DefaultDeps(getenv func(string) string) *Deps {
 		d.useAnalytics(analytics.New(st.Client(), analyticsBuffer))
 	}
 	return d
+}
+
+func configuredLimiter(getenv func(string) string, limitEnv string, defaultLimit int, defaultWindow time.Duration) *reactions.Limiter {
+	limit := defaultLimit
+	if raw := getenv(limitEnv); raw != "" {
+		if parsed, err := strconv.Atoi(raw); err == nil && parsed > 0 {
+			limit = parsed
+		}
+	}
+	window := defaultWindow
+	if raw := getenv(reactionWindowMillisEnv); raw != "" {
+		if parsed, err := strconv.Atoi(raw); err == nil && parsed > 0 {
+			window = time.Duration(parsed) * time.Millisecond
+		}
+	}
+	return reactions.NewLimiterWith(limit, window)
 }
 
 // useAnalytics cablea el emisor: chat_message, presence, reaction y

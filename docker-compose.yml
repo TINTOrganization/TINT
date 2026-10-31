@@ -165,6 +165,9 @@ services:
       FIREBASE_PROJECT_ID: ${FIREBASE_PROJECT_ID:-tint-login}
       # Orígenes (host[:puerto]) que pueden abrir /ws/social.
       ALLOWED_ORIGINS: ${SOCIAL_ALLOWED_ORIGINS:-localhost:5173,127.0.0.1:5173}
+      SOCIAL_REACTION_LIMIT: ${SOCIAL_REACTION_LIMIT:-5}
+      SOCIAL_REACTION_IP_LIMIT: ${SOCIAL_REACTION_IP_LIMIT:-5}
+      SOCIAL_REACTION_WINDOW_MS: ${SOCIAL_REACTION_WINDOW_MS:-1000}
     depends_on:
       redis:
         condition: service_healthy
