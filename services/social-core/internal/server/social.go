@@ -310,8 +310,48 @@ func MountSocial(mux *http.ServeMux, d *Deps) {
 func NewRouterWithDeps(d *Deps) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", healthz)
+	mux.HandleFunc("POST /internal/events/start", startEvent)
+	mux.HandleFunc("POST /internal/events/start/{roomID}", startEvent)
+	mux.HandleFunc("DELETE /internal/events/start/{roomID}", stopEvent)
 	MountSocial(mux, d)
 	return mux
+}
+
+func startEvent(w http.ResponseWriter, r *http.Request) {
+	var input struct {
+		RoomID string `json:"roomId"`
+		HostID string `json:"hostId"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		http.Error(w, "roomId y hostId son obligatorios", http.StatusBadRequest)
+		return
+	}
+	if input.RoomID == "" {
+		input.RoomID = r.PathValue("roomID")
+	}
+	if input.RoomID == "" || input.HostID == "" {
+		http.Error(w, "roomId y hostId son obligatorios", http.StatusBadRequest)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{
+		"roomId":    input.RoomID,
+		"sessionId": "social-" + input.RoomID,
+		"wsUrl":     "/ws/social?room_id=" + input.RoomID,
+	})
+}
+
+func stopEvent(w http.ResponseWriter, r *http.Request) {
+	if r.PathValue("roomID") == "" {
+		http.Error(w, "roomId es obligatorio", http.StatusBadRequest)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func writeJSON(w http.ResponseWriter, status int, value any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(value)
 }
 
 func writeError(ctx context.Context, c *websocket.Conn, code, ref string) {
