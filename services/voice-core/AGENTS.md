@@ -120,7 +120,18 @@ make test-cpp     # requiere las dependencias en el host o correrlo dentro de ti
 
 # Prueba rápida contra el servicio levantado (docker compose up -d voice-core), solo stdlib
 python3 services/voice-core/scripts/smoke.py
+
+# Carga de la señalización (k6 en Docker; en CI: job voice-load-smoke con 50 VUs)
+make load-voice                       # VUS=400 DURATION=30s make load-voice para más carga
+
+# E2E con dos Chromium reales (micrófono falso), ruta libre y solo TURN; necesita la web en :5173
+make e2e-voice                        # MODES=relay services/voice-core/e2e/run.sh para un modo
 ```
+
+| Prueba | Qué mide | Umbrales / comprobaciones |
+| :--- | :--- | :--- |
+| `loadtest/voice.js` (k6) | Cada VU firma su token, entra a una sala de `ROOM_SIZE` (5), ofrece a cada peer, manda una señal por segundo, se silencia, sale a los `SESSION_S` (6 s) y vuelve; además prueba un token falso | p95 hasta `voice_state` < 300 ms · p95 de reenvío de `signal` < 100 ms · entradas ok > 99 % · token falso → 401 siempre · 0 errores |
+| `e2e/voice-e2e.cjs` (Puppeteer) | Dos navegadores aislados en `WatchRoom`, audio medido con `getStats` | Se oyen; ruta directa sin TURN (o solo TURN en modo `relay`); quién habla; silencio propio = 0 bytes; silencio del host por REST (403/204, sin audio, `<audio>` mudo, `HOST_MUTED`); reconexión tras caer la señalización; salida |
 Sanitizers: `-DVOICE_SANITIZE=address` o `-DVOICE_SANITIZE=thread`. Cobertura: `-DVOICE_COVERAGE=ON` y `gcovr --root . --filter src/ --exclude src/main.cpp build-cov --fail-under-line 85`.
 
 ## Variables de Entorno

@@ -187,21 +187,55 @@ jobs:
           curl -fs localhost:8083/metrics | grep '^sync_' || true
           tail -n 50 /tmp/sync-core.log
 
+  voice-load-smoke:
+    name: k6 · voice-core (50 VUs)
+    needs: cpp
+    runs-on: ubuntu-latest
+    services:
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping" --health-interval 2s --health-timeout 2s --health-retries 15
+    env:
+      JWT_SECRET: ci-load-secret
+    steps:
+      - uses: actions/checkout@v4
+      - name: Arrancar voice-core (imagen de runtime)
+        run: |
+          docker build -q -t voice-core:ci services/voice-core
+          docker run -d --name voice-core --network host \
+            -e VOICE_CORE_ADDR=0.0.0.0:8085 -e REDIS_URL=redis://localhost:6379 -e JWT_SECRET \
+            -e STUN_URLS=stun:localhost:3478 voice-core:ci
+          for i in $(seq 1 50); do curl -fs localhost:8085/healthz && exit 0; sleep 0.2; done
+          docker logs voice-core; exit 1
+      - uses: grafana/setup-k6-action@v1
+        with:
+          k6-version: "0.54.0"
+      - name: k6 (umbrales de entrada, reenvío de señales y autorización)
+        run: >-
+          k6 run -e BASE_URL=ws://localhost:8085 -e VUS=50 -e DURATION=20s -e ROOM_ID=ci-${{ github.run_id }}-${{ github.run_attempt }}
+          services/voice-core/loadtest/voice.js
+      - name: Logs de voice-core
+        if: always()
+        run: docker logs --tail 50 voice-core || true
+
   ci-gate:
     name: CI Gate
     if: always()
-    needs: [go, python, web, identity-api, cpp, sync-load-smoke]
+    needs: [go, python, web, identity-api, cpp, sync-load-smoke, voice-load-smoke]
     runs-on: ubuntu-latest
     steps:
       - name: Verificar resultado de todos los jobs
         run: |
-          echo "go=${{ needs.go.result }} python=${{ needs.python.result }} web=${{ needs.web.result }} identity-api=${{ needs.identity-api.result }} cpp=${{ needs.cpp.result }} load=${{ needs.sync-load-smoke.result }}"
+          echo "go=${{ needs.go.result }} python=${{ needs.python.result }} web=${{ needs.web.result }} identity-api=${{ needs.identity-api.result }} cpp=${{ needs.cpp.result }} load=${{ needs.sync-load-smoke.result }} voice-load=${{ needs.voice-load-smoke.result }}"
           if [ "${{ needs.go.result }}" != "success" ] || \
              [ "${{ needs.python.result }}" != "success" ] || \
              [ "${{ needs.web.result }}" != "success" ] || \
              [ "${{ needs.identity-api.result }}" != "success" ] || \
              [ "${{ needs.cpp.result }}" != "success" ] || \
-             [ "${{ needs.sync-load-smoke.result }}" != "success" ]; then
+             [ "${{ needs.sync-load-smoke.result }}" != "success" ] || \
+             [ "${{ needs.voice-load-smoke.result }}" != "success" ]; then
             echo "::error::Pruebas o cobertura (≥ ${COVERAGE_MIN}%) no superadas. Merge bloqueado."
             exit 1
           fi
