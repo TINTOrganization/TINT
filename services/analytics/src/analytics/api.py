@@ -7,10 +7,15 @@ Lectura diferida para el host: nunca tiempo real ni eventos crudos. La lógica v
 Auth: `Authorization: Bearer <analytics-ticket>` HS256 emitido por identity-api (`iss`, `aud`,
 `exp` y `jti` obligatorios), `role == "host"` y `room_id` igual al de la ruta. Si existe
 `token:revoked:{jti}` → 401; si Redis no responde → 503 (falla cerrado).
+
+Aparte, `GET /api/v1/analytics/overview` entrega el panel de negocio (DAU/MAU, volumen de
+eventos y KPIs de las salas cerradas, siempre agregados). Se protege con una contraseña
+compartida (`ANALYTICS_ADMIN_PASSWORD`) enviada como Bearer; sin esa variable la ruta no existe.
 """
 
 from __future__ import annotations
 
+import hmac
 import json
 import logging
 import re
@@ -29,6 +34,7 @@ from analytics.kpis import (
     TIMELINE_TYPES,
     compute_room_kpis,
     format_timestamp,
+    heatmap_density,
     reaction_heatmap,
     reactions_by_emoji,
     timeline,
@@ -40,6 +46,10 @@ DEFAULT_PORT = 8084
 DEFAULT_ALLOWED_ORIGINS = ("http://localhost:5173",)
 REVOKED_KEY = "token:revoked:{jti}"
 ROUTE = re.compile(r"^/api/v1/rooms/(?P<room_id>[^/]+)/(?P<view>kpis|reactions/heatmap|timeline)$")
+OVERVIEW_PATH = "/api/v1/analytics/overview"
+# Ventana del panel de negocio: días de DAU/MAU y salas cerradas más recientes.
+OVERVIEW_DAYS = 30
+OVERVIEW_ROOMS = 50
 # Métricas en el orden del contrato y con su tipo JSON (los promedios siempre como float).
 METRICS = (
     ("peak_users", int),
@@ -51,6 +61,9 @@ METRICS = (
     ("playback_commands", int),
     ("buffering_events", int),
     ("avg_buffering_ms", float),
+    ("avg_rtt_ms", float),
+    ("p95_drift_ms", float),
+    ("total_buffering_ms", int),
 )
 # (default, mínimo, máximo) de los parámetros de consulta.
 BUCKET_MS = (5000, 1000, 60000)
@@ -96,6 +109,7 @@ class AnalyticsApi:
         audience: str,
         allowed_origins: Iterable[str] = DEFAULT_ALLOWED_ORIGINS,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+        admin_password: str | None = None,
     ) -> None:
         self.repo = repo
         self.redis = redis
@@ -104,6 +118,7 @@ class AnalyticsApi:
         self.audience = audience
         self.allowed_origins = frozenset(allowed_origins)
         self.clock = clock
+        self.admin_password = admin_password or None
 
     def handle(self, method: str, target: str, headers: Mapping[str, str]) -> Response:
         headers = {key.lower(): value for key, value in headers.items()}
@@ -124,10 +139,15 @@ class AnalyticsApi:
     def _route(self, method: str, target: str, headers: dict[str, str]) -> tuple[int, dict]:
         url = urlsplit(target)
         match = ROUTE.match(url.path)
-        if url.path != "/healthz" and match is None:
+        # Sin contraseña configurada el panel de negocio no existe (falla cerrado).
+        overview = url.path == OVERVIEW_PATH and self.admin_password is not None
+        if url.path != "/healthz" and match is None and not overview:
             raise ApiError(404, "no encontrado")
         if method != "GET":
             raise ApiError(405, "método no permitido", {"Allow": "GET, OPTIONS"})
+        if overview:
+            self._authorize_admin(headers.get("authorization", ""))
+            return 200, self._overview()
         if match is None:
             return 200, {"status": "ok"}
 
@@ -177,6 +197,14 @@ class AnalyticsApi:
         if claims.get("room_id") != room_id:
             raise ApiError(403, "el token no corresponde a esta sala")
 
+    def _authorize_admin(self, authorization: str) -> None:
+        scheme, _, password = authorization.partition(" ")
+        expected = (self.admin_password or "").encode()
+        if scheme.lower() != "bearer" or not hmac.compare_digest(
+            password.strip().encode(), expected
+        ):
+            raise ApiError(401, "contraseña incorrecta")
+
     # --- vistas -------------------------------------------------------------------------------
 
     def _read(self, call: Callable[[], Any]) -> Any:
@@ -195,6 +223,7 @@ class AnalyticsApi:
                 "room_id": room_id,
                 "live": False,
                 **{name: cast(row[name]) for name, cast in METRICS},
+                "close_reason": row["close_reason"],
                 "closed_at": _iso(row["closed_at"]),
                 "computed_at": _iso(row["computed_at"]),
             }
@@ -204,8 +233,41 @@ class AnalyticsApi:
             "room_id": room_id,
             "live": True,
             **{name: cast(kpis[name]) for name, cast in METRICS},
+            "close_reason": None,
             "closed_at": None,
             "computed_at": _iso(self.clock()),
+        }
+
+    def _overview(self) -> dict[str, Any]:
+        """Panel de negocio: solo agregados, nunca eventos crudos ni identificadores de usuario."""
+        data = self._read(lambda: self.repo.business_overview(OVERVIEW_DAYS, OVERVIEW_ROOMS))
+        return {
+            "generated_at": _iso(self.clock()),
+            "daily": [
+                {"day": day.isoformat(), "dau": dau, "mau": mau} for day, dau, mau in data["daily"]
+            ],
+            "events": {
+                "total": sum(count for _type, _source, count in data["events"]),
+                "rooms": data["active_rooms"],
+                "by_type": [
+                    {"type": kind, "source": source, "count": count}
+                    for kind, source, count in data["events"]
+                ],
+            },
+            "rooms": [
+                {
+                    "room_id": row["room_id"],
+                    **{name: cast(row[name]) for name, cast in METRICS},
+                    "close_reason": row["close_reason"],
+                    "closed_at": _iso(row["closed_at"]),
+                    "computed_at": _iso(row["computed_at"]),
+                    "heatmap": [
+                        {"bucket_start_ms": start, "reactions": reactions, "density": density}
+                        for start, reactions, density in data["heatmaps"].get(row["room_id"], [])
+                    ],
+                }
+                for row in data["rooms"]
+            ],
         }
 
     def _heatmap(self, room_id: str, bucket_ms: int) -> dict[str, Any]:
@@ -214,6 +276,7 @@ class AnalyticsApi:
             "room_id": room_id,
             "bucket_ms": bucket_ms,
             "buckets": reaction_heatmap(events, bucket_ms),
+            "density": heatmap_density(events, bucket_ms),
             "by_emoji": reactions_by_emoji(events),
         }
 

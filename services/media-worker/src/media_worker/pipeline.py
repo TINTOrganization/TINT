@@ -9,7 +9,7 @@ import tempfile
 from pathlib import Path, PurePosixPath
 
 from media_worker.ambilight import AmbilightError, extract_ambilight
-from media_worker.normalize import NormalizeError, is_normalized, normalize_video
+from media_worker.normalize import NormalizeError, is_normalized, normalize_video, remux_video
 from media_worker.probe import VideoStatus, inspect_media
 from media_worker.renditions import generate_renditions
 from media_worker.storage import ambilight_key, source_key
@@ -62,7 +62,8 @@ def process_video(
 ) -> VideoStatus:
     """Normaliza a MP4 y extrae el Ambilight de `source`; solo entonces publica en el bucket.
 
-    Si `source` ya es MP4 H.264 + AAC no se re-codifica: se publica tal cual. Tras publicar
+    Si `source` ya es MP4 H.264 + AAC de bitrate moderado no se re-codifica: se remuxa con
+    `+faststart` (si el remux falla, se re-codifica). Nunca se publica el original. Tras publicar
     `source.mp4` y `ambilight.json` se generan las calidades reducidas (720p, 360p) menores que
     la altura del original; una calidad que falle se omite sin marcar `failed`.
 
@@ -88,11 +89,7 @@ def process_video(
     with tempfile.TemporaryDirectory(prefix="media-worker-") as workdir:
         normalized = Path(workdir) / "source.mp4"
         try:
-            if is_normalized(source, runner):
-                logger.info("vídeo %s ya está normalizado: se omite la re-codificación", video_id)
-                normalized = source
-            else:
-                normalize_video(source, normalized, runner)
+            _normalize_or_remux(video_id, source, normalized, runner)
             palette = extract_ambilight(str(normalized), duration_ms, popen)
         except NormalizeError as exc:
             return _fail(repo, video_id, f"normalización: {exc}")
@@ -114,6 +111,18 @@ def process_video(
         renditions,
     )
     return VideoStatus.READY
+
+
+def _normalize_or_remux(video_id: str, source: Path, dest: Path, runner) -> None:
+    """Escribe en `dest` el MP4 a publicar: remux si `source` ya cumple, si no re-codificación."""
+    if is_normalized(source, runner):
+        try:
+            remux_video(source, dest, runner)
+            logger.info("vídeo %s ya está normalizado: remux con faststart", video_id)
+            return
+        except NormalizeError as exc:
+            logger.warning("vídeo %s: falló el remux (%s); se re-codifica", video_id, exc)
+    normalize_video(source, dest, runner)
 
 
 def _fail(repo, video_id: str, reason: str) -> VideoStatus:

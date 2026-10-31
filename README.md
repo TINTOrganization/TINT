@@ -41,6 +41,7 @@
 | [`services/sync-core`](services/sync-core) | Sincronización & Reloj Maestro | Golang, WebSockets (`coder/websocket`), Redis | 8083 |
 | [`services/media-worker`](services/media-worker) | Inspección de vídeo & Ambilight | Python 3.11, FFmpeg/ffprobe, MinIO | — (worker) |
 | [`services/analytics`](services/analytics) | Telemetría & KPIs diferidos | Python, Redis Streams (`XREADGROUP`), SQL | — (worker) |
+| [`services/voice-core`](services/voice-core) | Canal de voz: salas, membresía y señalización WebRTC P2P | C++23, Boost.Beast, hiredis, coturn (STUN/TURN) | 8085 |
 
 ```text
 tint-monorepo/
@@ -51,7 +52,8 @@ tint-monorepo/
 │   ├── sync-core/          # Reloj Maestro y Canal Sync (Go)
 │   ├── social-core/        # Chat, reacciones y trivias (Go)
 │   ├── media-worker/       # ffprobe + Ambilight (Python + FFmpeg)
-│   └── analytics/          # Analítica & insights (Python + SQL)
+│   ├── analytics/          # Analítica & insights (Python + SQL)
+│   └── voice-core/         # Canal de voz: señalización WebRTC P2P (C++)
 ├── docs/                   # Documentación de features (diagramas Mermaid)
 ├── scripts/                # Utilidades de CI (gate de cobertura Go)
 ├── docker-compose.yml      # PostgreSQL, Redis, MinIO, social-core y sync-core
@@ -366,6 +368,7 @@ cd services/identity-api && WAIT_WORKER=1 npm run test:integration
 | identity-api | `http://localhost:8081/api/v1` |
 | social-core (Canal Social) | `ws://localhost:8082/ws/social` |
 | sync-core (Canal Sync) | `ws://localhost:8083/ws/sync` · `/healthz` · `/metrics` (Prometheus) |
+| voice-core (Canal de Voz) | `ws://localhost:8085/ws/voice` · `PUT/DELETE /api/v1/voice/rooms/{id}/mutes/{user_id}` · `/healthz` · STUN/TURN en `localhost:3478` |
 | PostgreSQL | `localhost:5432` |
 | Redis | `localhost:6379` |
 | MinIO API / Consola | `localhost:9000` / [`localhost:9001`](http://localhost:9001) |

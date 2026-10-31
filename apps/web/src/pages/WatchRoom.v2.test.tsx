@@ -166,6 +166,82 @@ describe('WatchRoom v2 — vídeo de la sala (F3)', () => {
     expect(screen.getByText('El host cargó un nuevo vídeo')).toBeInTheDocument();
   });
 
+  it('si el vídeo falla (URL caducada) pide una URL nueva y la aplica', async () => {
+    localStorage.setItem('tint_guest_token', testGuestToken());
+    playbackByCall = [
+      { mediaId: 'm1', url: 'https://minio/m1?sig=1', expiresAt: '2099-01-01T00:00:00Z' },
+      { mediaId: 'm1', url: 'https://minio/m1?sig=2', expiresAt: '2099-01-01T00:00:00Z' },
+    ];
+    renderWatch();
+    await flush();
+    const video = screen.getByLabelText('Vídeo de la sala');
+    expect(video).toHaveAttribute('src', 'https://minio/m1?sig=1');
+    Object.defineProperty(video, 'error', { configurable: true, value: { code: 2 } });
+    fireEvent.error(video);
+    await flush();
+    expect(screen.getByLabelText('Vídeo de la sala')).toHaveAttribute('src', 'https://minio/m1?sig=2');
+  });
+
+  it('el refresco de la URL no cambia el src; un cambio de calidad adopta la URL nueva', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    localStorage.setItem('tint_guest_token', testGuestToken());
+    const soon = new Date(Date.now() + 70_000).toISOString();
+    const qualities = (sig: number) => [
+      { id: 'source', label: 'Original', url: `https://minio/m1?sig=${sig}` },
+      { id: '360p', label: '360p', url: `https://minio/m1/360p?sig=${sig}` },
+    ];
+    playbackByCall = [
+      { mediaId: 'm1', url: 'https://minio/m1?sig=1', expiresAt: soon, qualities: qualities(1) } as never,
+      { mediaId: 'm1', url: 'https://minio/m1?sig=2', expiresAt: '2099-01-01T00:00:00Z', qualities: qualities(2) } as never,
+    ];
+    renderWatch();
+    await flush();
+    const ws = MockWebSocket.last();
+    act(() => ws.open());
+    act(() => ws.receive({ ...state, quality: 'source' }));
+    await flush();
+    expect(screen.getByLabelText('Vídeo de la sala')).toHaveAttribute('src', 'https://minio/m1?sig=1');
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10_000);
+    });
+    expect(mockedApiFetch.mock.calls.filter(([p]) => String(p).endsWith('/playback'))).toHaveLength(2);
+    expect(screen.getByLabelText('Vídeo de la sala')).toHaveAttribute('src', 'https://minio/m1?sig=1');
+    act(() => ws.receive({ ...state, type: 'QUALITY', event_id: 'q', version: 2, quality: '360p' }));
+    await flush();
+    expect(screen.getByLabelText('Vídeo de la sala')).toHaveAttribute('src', 'https://minio/m1/360p?sig=2');
+  });
+
+  it('tras un LOAD, mientras llega la URL nueva, el heartbeat no reporta la posición del vídeo viejo', async () => {
+    localStorage.setItem('tint_guest_token', testGuestToken());
+    let playbackCalls = 0;
+    mockedApiFetch.mockImplementation(((path: string, init?: RequestInit) => {
+      if (path.endsWith('/playback')) {
+        playbackCalls += 1;
+        // La URL de m2 aún no llega.
+        return playbackCalls === 1 ? Promise.resolve(playbackByCall[0]) : new Promise(() => {});
+      }
+      return routeApi(path, init);
+    }) as typeof apiFetch);
+    renderWatch();
+    await flush();
+    const ws = MockWebSocket.last();
+    act(() => ws.open());
+    act(() => ws.receive(state));
+    await flush();
+    const video = screen.getByLabelText('Vídeo de la sala') as HTMLVideoElement;
+    video.currentTime = 42;
+    act(() => ws.receive({ type: 'HEARTBEAT', server_time_ms: 1_000 }));
+    expect(ws.sentJson().at(-1)).toMatchObject({ type: 'SYNC_CHECK', position_ms: 42_000 });
+    act(() => ws.receive({ ...state, type: 'LOAD', event_id: 'e', position_ms: 0, version: 2, media_id: 'm2' }));
+    await flush();
+    expect(screen.getByLabelText('Vídeo de la sala')).toHaveAttribute('src', 'https://minio/m1?sig=1');
+    // El <video> sigue con m1 (p. ej. siguió avanzando o no pudo buscar).
+    video.currentTime = 42;
+    act(() => ws.receive({ type: 'HEARTBEAT', server_time_ms: 2_000 }));
+    // Posición esperada del estado maestro (m2 en pausa en 0), no los 42 s de m1.
+    expect(ws.sentJson().at(-1)).toMatchObject({ type: 'SYNC_CHECK', position_ms: 0, version: 2 });
+  });
+
   it('si falla el playback muestra el error en el reproductor', async () => {
     localStorage.setItem('tint_guest_token', testGuestToken());
     mockedApiFetch.mockImplementation(((path: string) =>

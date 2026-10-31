@@ -23,6 +23,13 @@ export function formatNumber(value: number, decimals = 1): string {
   return new Intl.NumberFormat('es', { maximumFractionDigits: decimals }).format(value);
 }
 
+/** Duración legible a partir de milisegundos: 640 ms, 1,3 s o 25,5 min. */
+export function formatDuration(ms: number): string {
+  if (Math.abs(ms) < 1_000) return `${formatNumber(ms, 0)} ms`;
+  if (Math.abs(ms) < 60_000) return `${formatNumber(ms / 1_000)} s`;
+  return `${formatNumber(ms / 60_000)} min`;
+}
+
 /** Hora local HH:MM de un ISO (eje temporal); si no es fecha, el texto tal cual. */
 export function formatClockTime(iso: string): string {
   const d = new Date(iso);

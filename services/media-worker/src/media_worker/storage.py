@@ -3,11 +3,18 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from botocore.exceptions import ClientError
 
 NOT_FOUND_CODES = {"404", "NoSuchKey", "NotFound"}
+
+# Las claves llevan el id del vídeo, pero reprocesarlo sobrescribe las mismas claves (regla de
+# idempotencia): por eso no se marcan `immutable`. Un día basta para que los seeks y los cambios
+# de calidad reutilicen lo ya descargado durante la sesión.
+CACHE_CONTROL = "public, max-age=86400"
+
+CONTENT_TYPES = {".mp4": "video/mp4", ".json": "application/json"}
 
 
 class BlobNotFoundError(Exception):
@@ -43,10 +50,20 @@ class S3BlobStore:
             raise
 
     def upload_file(self, path: Path, key: str) -> None:
-        self.client.upload_file(str(path), self.bucket, key)
+        content_type = CONTENT_TYPES.get(PurePosixPath(key).suffix, "application/octet-stream")
+        self.client.upload_file(
+            str(path),
+            self.bucket,
+            key,
+            ExtraArgs={"ContentType": content_type, "CacheControl": CACHE_CONTROL},
+        )
 
     def put_json(self, key: str, data: object) -> None:
         body = json.dumps(data, separators=(",", ":")).encode()
         self.client.put_object(
-            Bucket=self.bucket, Key=key, Body=body, ContentType="application/json"
+            Bucket=self.bucket,
+            Key=key,
+            Body=body,
+            ContentType="application/json",
+            CacheControl=CACHE_CONTROL,
         )

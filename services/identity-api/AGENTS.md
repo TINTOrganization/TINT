@@ -3,7 +3,7 @@
 ## Contexto & Responsabilidad
 Eres el agente encargado de la **identidad** de TINT. Te ocupas de los usuarios registrados (Host), las salas, las invitaciones, las sesiones de invitado y la emisión de los tokens HS256 que sync-core verifica. También asignas el vídeo de cada sala y firmas su URL de reproducción.
 
-Documentación de referencia: [Usuarios, identidad y permisos](../../docs/usuarios-e-identidad.md) · [Arquitectura](../../docs/arquitectura.md).
+Documentación de referencia: [README del servicio (cómo funciona por dentro)](README.md) · [Usuarios, identidad y permisos](../../docs/usuarios-e-identidad.md) · [Arquitectura](../../docs/arquitectura.md).
 
 ## Stack Técnico
 - Node.js 22 + TypeScript 5 (ESM) + Express 5. Validación con `zod`.
@@ -39,9 +39,9 @@ Documentación de referencia: [Usuarios, identidad y permisos](../../docs/usuari
 | :--- | :--- | :--- |
 | `users` | PostgreSQL | `id`, `provider` (`firebase`), `provider_sub`, `email`, `display_name`, `avatar_url`, timestamps. Único `(provider, provider_sub)` (migración `0005`) |
 | `rooms` | PostgreSQL | `id`, `host_id` → `users`, `title` (≤150), `status` (`active`/`deleted`, borrado lógico), `media_id`, `media_key`, timestamps |
-| `invitations` | PostgreSQL | `id`, `code` (único, 12), `room_id`, `created_by`, `expires_at`, `revoked`, `device_id` (nullable, migración `0007`) |
+| `invitations` | PostgreSQL | `id`, `code` (único, 12), `room_id`, `created_by`, `expires_at`, `revoked` |
 | `room_bans` | PostgreSQL | `id`, `room_id`, `device_id` (nullable), `sub`, `nick`, `created_at`, `created_by`. Único `(room_id, device_id)` (migración `0007`). Nunca se exponen `device_id` ni `sub` |
-| `guest_sessions` | PostgreSQL | `jti` (PK), `room_id`, `sub` (`guest:<uuid>`), `nick` (≤64), `joined_at`, `expires_at`, `revoked` |
+| `guest_sessions` | PostgreSQL | `jti` (PK), `room_id`, `sub` (`guest:<uuid>`), `nick` (≤64), `joined_at`, `expires_at`, `revoked`, `device_id` (uuid nullable, migración `0007`) |
 | `videos` | PostgreSQL | `id` (= `video_id`), `room_id`, `uploaded_by`, `storage_key` (`incoming/{id}/original.*` al reservar; el worker la cambia a `{id}/source.*` al publicar), `content_type`, `size_bytes`, `duration_ms`, `status` (`pending` → `processing` al confirmar, en identity-api → `ready`/`failed`, en media-worker), `renditions` (jsonb, `[]` por defecto: alturas publicadas por media-worker en `{id}/{h}p.mp4`, migración `0006`), `title` (≤255, nullable: `filename` sin extensión al reservar, migración `0007`) |
 | `token:revoked:{jti}` | Redis String | Marca de revocación con `EXAT` = `exp` del token (la lee sync-core) |
 | `media:uploads` | Redis Stream | `XADD * video_id <id>` al confirmar una subida (lo consume media-worker, grupo `media-workers`) |

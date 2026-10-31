@@ -34,7 +34,7 @@ var benchState = master.State{Status: master.Playing, PositionMs: 120_000, Updat
 
 // benchHub crea un hub con n clientes listos en la sala (cada msgpackEvery-
 // ésimo usa MessagePack; 0 = todos JSON, 1 = todos MessagePack).
-func benchHub(b *testing.B, s StateStore, n, msgpackEvery int) (*Hub, []*Client) {
+func benchHub(b testing.TB, s StateStore, n, msgpackEvery int) (*Hub, []*Client) {
 	b.Helper()
 	clock := &fakeClock{}
 	clock.ms.Store(t0.UnixMilli())
@@ -158,7 +158,8 @@ func BenchmarkHandleSyncCheck(b *testing.B) {
 			b.ReportAllocs()
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				c.windowCount = 0
+				c.msgs, c.checks = fixedWindow{}, fixedWindow{}
+				c.lastSeekMs.Store(0) // sin enfriamiento: mide siempre el camino de corrección
 				h.Handle(ctx, c, raw)
 				for len(c.send) > 0 {
 					<-c.send
@@ -245,7 +246,7 @@ func BenchmarkHandleCommand(b *testing.B) {
 		raw, _ := json.Marshal(syncevent.Event{
 			EventID: fmt.Sprintf("evt-%d", i), Type: syncevent.Seek, RoomID: room, PositionMs: int64(i), OccurredAt: t0,
 		})
-		c.windowCount = 0
+		c.msgs, c.checks = fixedWindow{}, fixedWindow{}
 		h.Handle(ctx, c, raw)
 		<-c.send
 	}

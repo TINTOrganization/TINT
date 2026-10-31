@@ -38,6 +38,10 @@ const kpis: RoomKpis = {
   playback_commands: 9,
   buffering_events: 3,
   avg_buffering_ms: 712.4,
+  avg_rtt_ms: 48.2,
+  p95_drift_ms: 931.7,
+  total_buffering_ms: 2137,
+  close_reason: null,
   closed_at: null,
   computed_at: '2026-10-11T20:30:00.000Z',
 };
@@ -46,6 +50,7 @@ const heatmap: ReactionHeatmap = {
   room_id: 'r1',
   bucket_ms: 5_000,
   buckets: [{ bucket_start_ms: 0, emoji: '👏', count: 17 }],
+  density: [{ bucket_start_ms: 0, count: 17, density: 1 }],
   by_emoji: [{ emoji: '👏', count: 17 }],
 };
 
@@ -111,11 +116,13 @@ describe('RoomAnalytics', () => {
     expect(tile('Pico de espectadores')).toHaveTextContent('6');
     expect(tile('Promedio de espectadores')).toHaveTextContent('3,3');
     expect(tile('Drift promedio')).toHaveTextContent('85 ms');
+    expect(tile('Drift promedio')).toHaveTextContent('p95 932 ms');
+    expect(tile('Latencia de red')).toHaveTextContent('48 ms');
     expect(tile('Mensajes')).toHaveTextContent('42');
     expect(tile('Reacciones')).toHaveTextContent('17');
     expect(tile('Comandos de reproducción')).toHaveTextContent('9');
     expect(tile('Buffering')).toHaveTextContent('3 eventos');
-    expect(tile('Buffering')).toHaveTextContent('promedio 712 ms');
+    expect(tile('Buffering')).toHaveTextContent('promedio 712 ms · total 2,1 s');
     expect(tile('Aciertos de trivia')).toHaveTextContent('62,5 %');
 
     expect(screen.getByRole('heading', { name: 'Espectadores en el tiempo' })).toBeInTheDocument();
@@ -148,6 +155,15 @@ describe('RoomAnalytics', () => {
     renderPage();
     expect(await screen.findByText('Sesión cerrada')).toBeInTheDocument();
     expect(screen.queryByText('En vivo')).not.toBeInTheDocument();
+    expect(screen.queryByText('por inactividad')).not.toBeInTheDocument();
+  });
+
+  it('una sala cerrada por periodo de gracia lo indica y, sin correcciones, no muestra p95', async () => {
+    const closed = { ...kpis, live: false, closed_at: '2026-10-11T21:00:00.000Z', close_reason: 'grace_expired', p95_drift_ms: 0 };
+    mockedClient.mockReturnValue(client({ kpis: vi.fn().mockResolvedValue(closed) }));
+    renderPage();
+    expect(await screen.findByText('por inactividad')).toBeInTheDocument();
+    expect(screen.getByText('Desfase medio corregido')).toBeInTheDocument();
   });
 
   it('si la sala ya no existe en identity-api usa un título genérico', async () => {

@@ -28,6 +28,10 @@ const kpis: RoomKpis = {
   playback_commands: 3,
   buffering_events: 2,
   avg_buffering_ms: 640,
+  avg_rtt_ms: 40,
+  p95_drift_ms: 800,
+  total_buffering_ms: 1280,
+  close_reason: null,
   closed_at: null,
   computed_at: '2026-10-11T04:00:00.000Z',
 };

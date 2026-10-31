@@ -32,6 +32,21 @@ describe('App', () => {
     window.history.pushState({}, '', '/');
   });
 
+  it('expone /arquitectura sin sesión (ruta oculta solo por URL)', async () => {
+    window.history.pushState({}, '', '/arquitectura');
+    render(<App />);
+    expect(await screen.findByRole('heading', { level: 1, name: /Por dónde viajan los datos/ })).toBeInTheDocument();
+    window.history.pushState({}, '', '/');
+  });
+
+  it('expone /analitica sin sesión y pide la contraseña del equipo', async () => {
+    window.history.pushState({}, '', '/analitica');
+    render(<App />);
+    expect(await screen.findByRole('heading', { level: 1, name: 'Analítica de TINT' })).toBeInTheDocument();
+    expect(screen.getByLabelText('Contraseña')).toBeInTheDocument();
+    window.history.pushState({}, '', '/');
+  });
+
   it('/rooms/:id/analytics exige sesión de host', async () => {
     window.history.pushState({}, '', '/rooms/r1/analytics');
     render(<App />);
@@ -45,6 +60,22 @@ describe('App', () => {
     window.history.pushState({}, '', '/rooms/r1/analytics');
     render(<App />);
     expect(await screen.findByText('Cargando analítica…')).toBeInTheDocument();
+    localStorage.clear();
+    window.history.pushState({}, '', '/');
+  });
+
+  it('renderiza /403 directamente', async () => {
+    window.history.pushState({}, '', '/403?reason=not_host');
+    render(<App />);
+    expect(await screen.findByRole('heading', { name: /solo el host puede acceder a esta sección/i })).toBeInTheDocument();
+    window.history.pushState({}, '', '/');
+  });
+
+  it('un participante con guest token intentando acceder a /dashboard se bloquea y redirige a /403', async () => {
+    localStorage.setItem('tint_guest_token', 'guest-tok');
+    window.history.pushState({}, '', '/dashboard');
+    render(<App />);
+    expect(await screen.findByRole('heading', { name: /solo el host puede acceder a esta sección/i })).toBeInTheDocument();
     localStorage.clear();
     window.history.pushState({}, '', '/');
   });

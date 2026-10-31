@@ -16,10 +16,16 @@ interface LoadedPalette {
 const paletteKey = (url: string) => url.split('?')[0];
 
 /**
+ * Intervalo de muestreo (~4 Hz). La transición CSS de `AmbilightGlow` dura 700 ms, así que
+ * muestrear en cada fotograma solo provocaba ~60 renders/s sin diferencia visible.
+ */
+export const AMBILIGHT_SAMPLE_MS = 250;
+
+/**
  * Colores de borde del vídeo en el instante actual a partir de la paleta ya extraída por el
- * procesado del vídeo (`ambilightUrl`): descarga el JSON una vez por vídeo y, en cada
- * `requestAnimationFrame`, busca el frame por `videoRef.current.currentTime`. Solo
- * actualiza el estado cuando el color cambia. Sin URL, desactivado o si falla: `null`.
+ * procesado del vídeo (`ambilightUrl`): descarga el JSON una vez por vídeo y cada
+ * `AMBILIGHT_SAMPLE_MS` busca el frame por `videoRef.current.currentTime`. Solo actualiza el
+ * estado cuando el color cambia. Sin URL, desactivado o si falla: `null`.
  */
 export function useAmbilight(
   url: string | null,
@@ -53,23 +59,21 @@ export function useAmbilight(
   const active = enabled && !!frames && frames.length > 0;
 
   useEffect(() => {
-    if (!active || !frames || typeof requestAnimationFrame !== 'function') return;
+    if (!active || !frames) return;
     let last = '';
-    let id = 0;
-    const step = () => {
+    const sample = () => {
       const video = videoRef.current;
-      if (video) {
-        const next = colorsAt(frames, video.currentTime * 1000, interpolate);
-        const signature = next ? `${next.top}${next.right}${next.bottom}${next.left}` : '';
-        if (next && signature !== last) {
-          last = signature;
-          setColors(next);
-        }
+      if (!video) return;
+      const next = colorsAt(frames, video.currentTime * 1000, interpolate);
+      const signature = next ? `${next.top}${next.right}${next.bottom}${next.left}` : '';
+      if (next && signature !== last) {
+        last = signature;
+        setColors(next);
       }
-      id = requestAnimationFrame(step);
     };
-    id = requestAnimationFrame(step);
-    return () => cancelAnimationFrame(id);
+    sample();
+    const id = setInterval(sample, AMBILIGHT_SAMPLE_MS);
+    return () => clearInterval(id);
   }, [active, frames, interpolate, videoRef]);
 
   return active ? colors : null;

@@ -121,18 +121,24 @@ XADD analytics:events *
 ## Qué entrega Analítica a cambio
 
 - `telemetry_events` en PostgreSQL: todos los eventos sanitizados, 90 días, sin duplicados por `event_id`.
-- `room_kpis`: al recibir `room_closed`, pico y promedio de espectadores, drift promedio, % de aciertos,
-  conteos de mensajes, reacciones, comandos y buffering, y duración media del buffering de esa sala.
-- Usuarios activos por día (DAU/MAU) a partir de `user_login` (consultable en SQL).
+- `room_kpis`: al recibir `room_closed`, o cuando la sala lleva 12 h sin eventos (periodo de gracia,
+  `close_reason = grace_expired`): pico y promedio de espectadores, drift promedio y p95, RTT promedio,
+  % de aciertos, conteos de mensajes, reacciones, comandos y buffering, y duración media y total del
+  buffering de esa sala. QoS = RTT y drift; QoE = buffering.
+- `room_heatmap`: en ese mismo cierre, reacciones por tramo de 5 s del vídeo y su densidad normalizada
+  (0 a 1).
+- `daily_active_users`: usuarios activos por día (DAU) y en los últimos 30 días (MAU) a partir de
+  `user_login`, recalculados cada hora (consultable en SQL).
 - **API de solo lectura** (`analytics`, puerto `ANALYTICS_PORT` = 8084) para el host de la sala, con el
   `analytics-ticket` que emite identity-api en `POST /api/v1/rooms/:id/analytics-ticket`:
 
 | Ruta | Devuelve |
 | :--- | :--- |
 | `GET /healthz` | `{"status":"ok"}` |
-| `GET /api/v1/rooms/{id}/kpis` | Los KPIs de arriba más `live` (`false` = `room_kpis` de una sala cerrada; `true` = calculados al vuelo), `closed_at` y `computed_at` |
-| `GET /api/v1/rooms/{id}/reactions/heatmap?bucket_ms=5000` | `buckets` `[{bucket_start_ms, emoji, count}]` por posición del vídeo y `by_emoji` `[{emoji, count}]` |
+| `GET /api/v1/rooms/{id}/kpis` | Los KPIs de arriba más `live` (`false` = `room_kpis` de una sala cerrada; `true` = calculados al vuelo), `close_reason`, `closed_at` y `computed_at` |
+| `GET /api/v1/rooms/{id}/reactions/heatmap?bucket_ms=5000` | `buckets` `[{bucket_start_ms, emoji, count}]` por posición del vídeo, `density` `[{bucket_start_ms, count, density}]` (0 a 1) y `by_emoji` `[{emoji, count}]` |
 | `GET /api/v1/rooms/{id}/timeline?step_s=60` | `points` `[{t, connected_users, messages, reactions}]` por intervalo |
+| `GET /api/v1/analytics/overview` | Panel de negocio (página `/analitica`): DAU/MAU por día, eventos por tipo y salas cerradas con KPIs y heatmap. No usa el ticket: Bearer con `ANALYTICS_ADMIN_PASSWORD` |
 
 Formas exactas, auth (HS256, `role` `host`, sala del token, revocación con falla cerrado) y errores:
 [services/analytics/AGENTS.md](../services/analytics/AGENTS.md#api-solo-lectura-puerto-analytics_port-por-defecto-8084).
@@ -141,7 +147,21 @@ Nunca hay endpoints de tiempo real ni de eventos crudos.
 Un evento con un `type` que no está en este documento se guarda igual, pero no entra a ningún KPI.
 Para agregar un tipo o un campo: PR a este archivo.
 
-## Estado al 2026-10-11
+## Equivalencias con el documento del dominio
+
+El documento de requisitos de Analítica usa otros nombres para lo mismo:
+
+| Documento | Implementación |
+| :--- | :--- |
+| Tabla `analytics_events` | `telemetry_events` |
+| Tabla `session_kpis` | `room_kpis` (+ `room_heatmap`) |
+| Tabla `daily_active_users` | `daily_active_users` |
+| Campo `event_type` | `type` |
+| `peak_concurrent_users`, `trivia_accuracy_rate`, `chat_messages_count` | `peak_users`, `trivia_accuracy_pct`, `messages` |
+| REQ-28: "el cliente detecta el desfase" | Lo detecta `sync-core` con el `SYNC_CHECK` del cliente y publica `drift_correction` |
+| Cierre por periodo de gracia | Lo detecta Analítica (sala sin eventos durante 12 h); ningún servicio publica `grace_expired` |
+
+## Estado al 2026-10-12
 
 | Servicio | Publica hoy |
 | :--- | :--- |
@@ -149,4 +169,4 @@ Para agregar un tipo o un campo: PR a este archivo.
 | `identity-api` | `user_login`, `room_created`, `room_closed` (`reason=deleted`, solo el primer borrado) e `invitation_claimed`, con todos los campos comunes. Además entrega el analytics-ticket (`POST /rooms/:id/analytics-ticket`) |
 | `sync-core` | `playback_command`, `drift_correction` (antes `sync_drift`) y `buffering`, con `source`, `role` y sin `user_id` |
 | `media-worker` | `media_processed` completo |
-| `analytics` (consumidor) | Consume `analytics:events` (grupo `analytics-workers`), persiste en `telemetry_events`, consolida `room_kpis` con `room_closed`, purga a los 90 días y sirve la API de lectura. `room_id` solo se exige fuera de `user_login` y `media_processed` |
+| `analytics` (consumidor) | Consume `analytics:events` (grupo `analytics-workers`), persiste en `telemetry_events`, consolida `room_kpis` y `room_heatmap` con `room_closed` o al agotarse el periodo de gracia, resume DAU/MAU en `daily_active_users`, purga a los 90 días y sirve la API de lectura. `room_id` solo se exige fuera de `user_login` y `media_processed` |

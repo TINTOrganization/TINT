@@ -1,5 +1,6 @@
 import logging
 import threading
+from datetime import timedelta
 from unittest.mock import Mock
 
 import pytest
@@ -7,10 +8,12 @@ from fakes import FakeEventStore, FakeRedis
 from redis.exceptions import ResponseError
 
 from analytics.consumer import (
-    PURGE_INTERVAL_S,
+    DAU_BACKFILL_DAYS,
+    DAU_REFRESH_DAYS,
+    MAINTENANCE_INTERVAL_S,
     RETRY_DELAY_S,
     StreamConsumer,
-    run_purge_loop,
+    run_maintenance_loop,
 )
 from analytics.sanitize import CONSUMER_GROUP, STREAM_KEY
 
@@ -64,6 +67,24 @@ def test_poll_sanitizes_persists_and_acks_each_message():
     assert redis.pending == {}
 
 
+def test_poll_persists_the_whole_batch_in_one_call_and_acks_it_at_once():
+    redis = Mock()
+    redis.xreadgroup.return_value = [[STREAM_KEY, [("1-0", fields("e1")), ("2-0", fields("e2"))]]]
+    store = FakeEventStore()
+    assert make_consumer(redis, store).poll() == 2
+    assert store.batches == [["e1", "e2"]], "una sola transacción para el lote"
+    redis.xack.assert_called_once_with(STREAM_KEY, CONSUMER_GROUP, "1-0", "2-0")
+
+
+def test_poll_without_messages_does_not_touch_the_store_or_ack():
+    redis = Mock()
+    redis.xreadgroup.return_value = []
+    store = FakeEventStore()
+    assert make_consumer(redis, store).poll() == 0
+    assert store.saves == 0
+    redis.xack.assert_not_called()
+
+
 def test_poll_passes_block_and_count_to_redis():
     redis = Mock()
     redis.xreadgroup.return_value = None
@@ -104,6 +125,32 @@ def test_event_rejected_by_the_database_is_acked(caplog):
     assert "dato inválido" in caplog.text
 
 
+def test_a_rejected_event_only_discards_itself_and_the_rest_of_the_batch_is_saved(caplog):
+    redis = FakeRedis()
+    ids = [redis.xadd(STREAM_KEY, fields(e)) for e in ("e1", "bad", "e3")]
+    ids.append(redis.xadd(STREAM_KEY, fields(event_id="")))
+    store = FakeEventStore(invalid_ids={"bad"})
+    with caplog.at_level(logging.WARNING, logger="analytics.consumer"):
+        make_consumer(redis, store).poll()
+    assert list(store.events) == ["e1", "e3"]
+    # El lote entero falla una vez y luego se reintenta evento por evento.
+    assert store.batches == [["e1", "bad", "e3"], ["e1"], ["bad"], ["e3"]]
+    assert redis.acks == ids
+    assert f"evento {ids[1]} inválido" in caplog.text
+    assert f"evento {ids[3]} inválido" in caplog.text
+
+
+def test_store_error_leaves_the_whole_batch_pending():
+    redis = FakeRedis()
+    ids = [redis.xadd(STREAM_KEY, fields(e)) for e in ("e1", "e2")]
+    store = FakeEventStore(fail_times=1)
+    with pytest.raises(RuntimeError):
+        make_consumer(redis, store).poll()
+    assert redis.acks == []
+    assert set(redis.pending) == set(ids)
+    assert store.events == {}
+
+
 def test_store_error_leaves_message_pending():
     redis = FakeRedis()
     message_id = redis.xadd(STREAM_KEY, fields())
@@ -130,11 +177,10 @@ class StoppingStore(FakeEventStore):
         self.stop = stop
         self.stop_on = stop_on
 
-    def save(self, event):
-        result = super().save(event)
+    def stored(self, event):
         if event["event_id"] == self.stop_on:
             self.stop.set()
-        return result
+        return super().stored(event)
 
 
 def test_run_survives_store_errors_and_retries_pending(caplog):
@@ -191,20 +237,54 @@ class StopAfter(threading.Event):
         return self.is_set()
 
 
-def test_purge_loop_purges_at_start_and_every_interval_until_stopped():
+def test_maintenance_runs_at_start_and_every_interval_until_stopped():
     store = FakeEventStore()
     stop = StopAfter(2)
-    run_purge_loop(store, stop)
+    run_maintenance_loop(store, stop)
     assert store.purges == 2
-    assert stop.waits == [PURGE_INTERVAL_S, PURGE_INTERVAL_S]
+    assert store.grace_closes == [timedelta(hours=12)] * 2
+    # El primer ciclo rellena el histórico; los siguientes solo hoy y ayer.
+    assert store.dau_refreshes == [
+        ("America/Bogota", DAU_BACKFILL_DAYS),
+        ("America/Bogota", DAU_REFRESH_DAYS),
+    ]
+    assert stop.waits == [MAINTENANCE_INTERVAL_S, MAINTENANCE_INTERVAL_S]
 
 
-def test_purge_loop_survives_errors(caplog):
+def test_maintenance_uses_the_configured_grace_and_timezone():
+    store = FakeEventStore()
+    run_maintenance_loop(store, StopAfter(1), room_grace=timedelta(hours=1), timezone="UTC")
+    assert store.grace_closes == [timedelta(hours=1)]
+    assert store.dau_refreshes == [("UTC", DAU_BACKFILL_DAYS)]
+
+
+def test_maintenance_consolidates_idle_rooms_before_purging_their_events():
     store = Mock()
+    store.close_idle_rooms.return_value = store.purge_expired.return_value = 0
+    store.refresh_daily_active_users.return_value = 2
+    run_maintenance_loop(store, StopAfter(1))
+    assert [call[0] for call in store.method_calls] == [
+        "close_idle_rooms",
+        "purge_expired",
+        "refresh_daily_active_users",
+    ]
+
+
+def test_a_failing_maintenance_task_is_logged_and_does_not_stop_the_others(caplog):
+    store = Mock()
+    store.close_idle_rooms.side_effect = [RuntimeError("caído"), 1]
     store.purge_expired.side_effect = [RuntimeError("caído"), 3]
+    store.refresh_daily_active_users.side_effect = [RuntimeError("caído"), 90]
     stop = StopAfter(2)
     with caplog.at_level(logging.INFO, logger="analytics.consumer"):
-        run_purge_loop(store, stop, interval_s=10)
+        run_maintenance_loop(store, stop, interval_s=10)
     assert store.purge_expired.call_count == 2
+    assert store.close_idle_rooms.call_count == 2
     assert "fallo purgando" in caplog.text
+    assert "fallo consolidando" in caplog.text
+    assert "fallo calculando" in caplog.text
     assert "purgados 3 eventos" in caplog.text
+    assert "consolidadas 1 salas" in caplog.text
+    # El relleno del histórico se reintenta hasta que sale bien.
+    days = [call.args[1] for call in store.refresh_daily_active_users.call_args_list]
+    assert days == [DAU_BACKFILL_DAYS, DAU_BACKFILL_DAYS]

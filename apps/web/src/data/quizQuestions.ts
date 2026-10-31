@@ -203,7 +203,7 @@ export const quizQuestions: QuizQuestion[] = [
     prompt: 'Si la sala reproduce y el drift es de 1200 ms, ¿qué estrategia de corrección se usa?',
     options: ['seek', 'rate', 'reload', 'pause'],
     answer: 1,
-    explanation: 'Se usa rate si la sala reproduce y |drift| ≤ 2000 ms; en otro caso seek. El cliente aplica playbackRate 1.05 si va atrasado y 0.95 si va adelantado.',
+    explanation: 'Se usa rate si la sala reproduce y |drift| ≤ 2000 ms; en otro caso seek. El cliente aplica la velocidad de la sala × 1.05 si va atrasado y × 0.95 si va adelantado.',
     sources: ['services/sync-core/AGENTS.md', 'docs/dominio-reproduccion.md', 'apps/web/src/lib/drift.ts'],
   },
   {

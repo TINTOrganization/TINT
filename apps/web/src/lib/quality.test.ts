@@ -51,8 +51,14 @@ describe('normalizeQualities', () => {
 
 describe('autoQuality', () => {
   it.each([
-    [{}, 'source'],
-    [{ effectiveType: '4g', viewportWidth: 1280 }, 'source'],
+    // Sin Network Information API (Safari/Firefox): 720p, que arranca rápido y basta casi siempre.
+    [{}, '720p'],
+    [{ effectiveType: '4g', viewportWidth: 1280 }, '720p'],
+    [{ effectiveType: '4g', viewportWidth: 1280, downlink: 9.9 }, '720p'],
+    [{ effectiveType: '4g', viewportWidth: 1280, downlink: 10 }, 'source'],
+    [{ downlink: 50 }, 'source'],
+    [{ viewportWidth: 480, downlink: 50 }, '720p'],
+    [{ effectiveType: '3g', downlink: 50 }, '360p'],
     [{ effectiveType: '3g' }, '360p'],
     [{ effectiveType: 'slow-2g' }, '360p'],
     [{ saveData: true }, '360p'],
@@ -67,8 +73,13 @@ describe('resolveQuality', () => {
     expect(resolveQuality('auto', [], {})).toBeNull();
   });
 
-  it('auto con buena conexión → original', () => {
-    expect(resolveQuality('auto', ALL, {})?.id).toBe('source');
+  it('auto con conexión rápida (≥ 10 Mbps) → original', () => {
+    expect(resolveQuality('auto', ALL, { downlink: 25 })?.id).toBe('source');
+  });
+
+  it('auto sin datos de la red → 720p si existe; si no, el original', () => {
+    expect(resolveQuality('auto', ALL, {})?.id).toBe('720p');
+    expect(resolveQuality('auto', [ALL[0], ALL[2]], {})?.id).toBe('source');
   });
 
   it('auto con conexión lenta → 360p', () => {
@@ -95,12 +106,22 @@ describe('resolveQuality', () => {
 
 describe('readNetworkHints', () => {
   it('lee navigator.connection y el ancho de la ventana', () => {
-    vi.stubGlobal('navigator', { connection: { effectiveType: '3g', saveData: false } });
-    expect(readNetworkHints()).toEqual({ effectiveType: '3g', saveData: false, viewportWidth: window.innerWidth });
+    vi.stubGlobal('navigator', { connection: { effectiveType: '3g', saveData: false, downlink: 1.5 } });
+    expect(readNetworkHints()).toEqual({
+      effectiveType: '3g',
+      saveData: false,
+      downlink: 1.5,
+      viewportWidth: window.innerWidth,
+    });
   });
 
   it('sin Network Information API solo informa el ancho', () => {
     vi.stubGlobal('navigator', {});
-    expect(readNetworkHints()).toEqual({ effectiveType: undefined, saveData: undefined, viewportWidth: window.innerWidth });
+    expect(readNetworkHints()).toEqual({
+      effectiveType: undefined,
+      saveData: undefined,
+      downlink: undefined,
+      viewportWidth: window.innerWidth,
+    });
   });
 });

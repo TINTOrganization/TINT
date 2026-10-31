@@ -1,6 +1,6 @@
 
 import { useParams, Link, useNavigate } from 'react-router-dom';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { m, useReducedMotion } from 'framer-motion';
 
 import { ReactionBar } from '../components/ReactionBar';
@@ -160,12 +160,35 @@ export default function WatchRoom() {
     () => (videoRef.current ? videoRef.current.currentTime * 1000 : null),
     [],
   );
-  const sync = useSyncSocket({ roomId: roomId ?? '', role, getPositionMs, enabled: hasAccess });
+  // Tras un LOAD, hasta que llega la URL nueva el <video> aún tiene el vídeo anterior: su
+  // posición no dice nada del nuevo. Entonces el heartbeat no la informa (null) y
+  // useSyncSocket responde con la posición esperada del estado maestro (sin corrección).
+  const roomMediaRef = useRef('');
+  const loadedMediaRef = useRef<string | null>(null);
+  const getHeartbeatPositionMs = useCallback(() => {
+    const roomMedia = roomMediaRef.current;
+    if (roomMedia && roomMedia !== loadedMediaRef.current) return null;
+    return getPositionMs();
+  }, [getPositionMs]);
+  const sync = useSyncSocket({ roomId: roomId ?? '', role, getPositionMs: getHeartbeatPositionMs, enabled: hasAccess });
   const playback = useRoomPlayback(roomId ?? '', sync.state ? sync.state.media_id : undefined, {
     role,
     enabled: hasAccess && !sync.revoked,
   });
+  useEffect(() => {
+    roomMediaRef.current = sync.state?.media_id ?? '';
+    loadedMediaRef.current = playback.mediaId;
+  });
   const toasts = useSyncToasts(sync.lastBroadcast);
+  // Las URLs firmadas refrescadas se adoptan solo cuando el `src` cambia igualmente (otra
+  // calidad) o el vídeo falla (URL caducada): así el refresco no recarga el reproductor.
+  const { adoptFresh, recover: recoverPlayback } = playback;
+  const appliedQualityRef = useRef(sync.quality);
+  useEffect(() => {
+    if (appliedQualityRef.current === sync.quality) return;
+    appliedQualityRef.current = sync.quality;
+    adoptFresh();
+  }, [sync.quality, adoptFresh]);
   // Los controles los habilita el servidor (STATE.can_control / CONTROL), no el rol local.
   const canControl = sync.canControl;
   const delegated = isGuest && canControl;
@@ -206,6 +229,20 @@ export default function WatchRoom() {
     }
     recapGate.onEnded();
   };
+  // Props estables para el reproductor (memo): el chat y las reacciones re-renderizan la sala
+  // pero no deben re-renderizar el `<video>` ni su barra.
+  const onVideoEndedRef = useRef(onVideoEnded);
+  useEffect(() => {
+    onVideoEndedRef.current = onVideoEnded;
+  });
+  const handleVideoEnded = useCallback(() => onVideoEndedRef.current(), []);
+  const toggleLaser = useCallback(() => setLaserOn((on) => !on), []);
+  const openPollCreator = useCallback(() => setPollCreatorOpen(true), []);
+  // El láser a 30 Hz sí cambia esta capa (y re-renderiza el reproductor): es lo esperado.
+  const laserOverlay = useMemo(
+    () => <LaserOverlay points={laser} drawing={laserDrawing} onPoint={sendLaser} />,
+    [laser, laserDrawing, sendLaser],
+  );
   const replay = () => {
     recapGate.rearm();
     setVideoFinished(false);
@@ -469,10 +506,11 @@ export default function WatchRoom() {
                     videoRef={videoRef}
                     emptyMessage={emptyMessage}
                     laserOn={laserOn}
-                    onToggleLaser={isGuest ? undefined : () => setLaserOn((on) => !on)}
-                    onOpenPoll={isGuest ? undefined : () => setPollCreatorOpen(true)}
-                    onEnded={onVideoEnded}
-                    overlay={<LaserOverlay points={laser} drawing={laserDrawing} onPoint={sendLaser} />}
+                    onToggleLaser={isGuest ? undefined : toggleLaser}
+                    onOpenPoll={isGuest ? undefined : openPollCreator}
+                    onEnded={handleVideoEnded}
+                    onMediaError={recoverPlayback}
+                    overlay={laserOverlay}
                   />
                   <ReactionOverlay reactions={reactions} />
                   <TriviaPopup

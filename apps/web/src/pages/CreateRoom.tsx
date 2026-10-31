@@ -44,6 +44,8 @@ export default function CreateRoom() {
         if (cancelled) return;
         if (e instanceof ApiError && (e.status === 404 || e.status === 410)) {
           setGone(true);
+        } else if (e instanceof ApiError && e.status === 403) {
+          navigate('/403?reason=not_host', { replace: true });
         } else {
           setError(e instanceof Error ? e.message : 'No se pudo cargar la sala');
         }
@@ -54,7 +56,7 @@ export default function CreateRoom() {
     return () => {
       cancelled = true;
     };
-  }, [roomId]);
+  }, [roomId, navigate]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();

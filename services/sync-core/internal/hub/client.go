@@ -9,6 +9,7 @@ import (
 
 	"github.com/HanamDavid/tint-monorepo/services/sync-core/internal/auth"
 	"github.com/HanamDavid/tint-monorepo/services/sync-core/internal/codec"
+	"github.com/HanamDavid/tint-monorepo/services/sync-core/internal/drift"
 	"github.com/HanamDavid/tint-monorepo/services/sync-core/internal/syncevent"
 )
 
@@ -32,10 +33,13 @@ type Client struct {
 	rttMs       atomic.Int64 // RTT suavizado (EWMA), medido con el reloj del servidor
 	lastCheckMs atomic.Int64 // último SYNC_CHECK recibido
 	lastDriftMs atomic.Int64 // último drift medido (se informa en HEARTBEAT)
+	lastSeekMs  atomic.Int64 // último SYNC_CORRECTION por seek enviado (0 = nunca)
 
-	// Rate limit por ventana fija; solo lo toca la goroutine lectora.
-	windowStartMs int64
-	windowCount   int
+	// Rate limits por ventana fija; solo los toca la goroutine lectora.
+	// SYNC_CHECK tiene el suyo para que un host que agota el general con
+	// comandos no deje de responder latidos (y acabe cerrado como stale).
+	msgs   fixedWindow
+	checks fixedWindow
 	// Último BUFFERING aceptado (unix ms); solo lo toca la goroutine lectora.
 	lastBufferingMs int64
 
@@ -119,12 +123,37 @@ func (c *Client) enqueue(msg []byte) {
 
 func (c *Client) close(cause error) { c.cancel(cause) }
 
-func (c *Client) allow(nowMs int64) bool {
-	if nowMs-c.windowStartMs >= 1000 {
-		c.windowStartMs, c.windowCount = nowMs, 0
+// fixedWindow es un rate limit por ventana fija de 1 s.
+type fixedWindow struct {
+	startMs int64
+	count   int
+}
+
+func (w *fixedWindow) allow(nowMs int64, limit int) bool {
+	if nowMs-w.startMs >= 1000 {
+		w.startMs, w.count = nowMs, 0
 	}
-	c.windowCount++
-	return c.windowCount <= MaxMsgsPerSecond
+	w.count++
+	return w.count <= limit
+}
+
+// allow aplica el límite general de mensajes entrantes (todo salvo SYNC_CHECK).
+func (c *Client) allow(nowMs int64) bool { return c.msgs.allow(nowMs, MaxMsgsPerSecond) }
+
+// allowSyncCheck aplica el límite propio de SYNC_CHECK.
+func (c *Client) allowSyncCheck(nowMs int64) bool {
+	return c.checks.allow(nowMs, MaxSyncChecksPerSecond)
+}
+
+// allowSeek indica si se le puede enviar un seek al cliente: no más de uno
+// cada drift.SeekCooldownMs. Si lo permite, registra nowMs como el último.
+func (c *Client) allowSeek(nowMs int64) bool {
+	last := c.lastSeekMs.Load()
+	if last != 0 && nowMs-last < drift.SeekCooldownMs {
+		return false
+	}
+	c.lastSeekMs.Store(nowMs)
+	return true
 }
 
 // allowBuffering acepta como máximo un BUFFERING por BufferingInterval.

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { apiFetch } from '../lib/api';
 import { errorStatus } from '../lib/errorStatus';
 import type { Correction } from '../lib/drift';
@@ -27,6 +27,7 @@ import {
   DEFAULT_VOLUME,
   type CommandExtra,
   type CommandType,
+  type CorrectionMessage,
   type QualityPref,
   type SyncSnapshot,
   type SyncState,
@@ -216,6 +217,12 @@ export function useSyncSocket({
     let renewedAfterExpiry = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let socket: WebSocket | null = null;
+    /**
+     * El socket actual aún no recibió su primer STATE. Ese siempre aplica (la sala pudo
+     * reiniciarse, p. ej. tras el TTL de Redis, con una versión menor); los siguientes STATE
+     * de la misma conexión con versión menor a la aplicada se descartan.
+     */
+    let awaitingFirstState = true;
 
     const applyControl = (value: boolean) => {
       canControlRef.current = value;
@@ -246,6 +253,39 @@ export function useSyncSocket({
       return snapshot;
     };
 
+    /**
+     * Una corrección con `status` y `rate` describe el estado de la sala en su `version`: si
+     * difiere del aplicado (p. ej. se perdió un PAUSE o un RATE), se adopta. El ancla queda en
+     * `target_ms` "ahora" según el reloj de servidor estimado, así `SyncedPlayer` no hace un
+     * seek extra (la corrección ya posiciona y el estado cae dentro de su tolerancia).
+     */
+    const reconcileFromCorrection = (msg: CorrectionMessage) => {
+      const prev = stateRef.current;
+      if (!prev || (msg.status !== 'playing' && msg.status !== 'paused')) return;
+      if (typeof msg.rate !== 'number' || !Number.isFinite(msg.rate)) return;
+      const mediaId = typeof msg.media_id === 'string' ? msg.media_id : prev.media_id;
+      const differs =
+        msg.version > prev.version || msg.status !== prev.status || msg.rate !== prev.rate || mediaId !== prev.media_id;
+      if (!differs) return;
+      const perfNow = nowRef.current();
+      const serverNow = estimateServerNow(prev, perfNow);
+      const snapshot: SyncSnapshot = {
+        ...prev,
+        status: msg.status,
+        rate: msg.rate,
+        media_id: mediaId,
+        version: msg.version,
+        position_ms: msg.target_ms,
+        updated_at_ms: serverNow,
+        server_time_ms: serverNow,
+        received_at_perf: perfNow,
+        volume: msg.volume !== undefined ? normalizeVolume(msg.volume) : prev.volume,
+        quality: msg.quality !== undefined ? normalizeQuality(msg.quality) : prev.quality,
+      };
+      stateRef.current = snapshot;
+      setState(snapshot);
+    };
+
     const currentPosition = (): number => {
       const local = getPositionRef.current?.() ?? null;
       if (local !== null) return local;
@@ -259,7 +299,10 @@ export function useSyncSocket({
       if (!msg) return;
       switch (msg.type) {
         case 'STATE':
-          // Snapshot completo: siempre reemplaza (p. ej. tras reconectar).
+          // Snapshot completo: el primero de cada conexión siempre reemplaza (p. ej. tras
+          // reconectar); después, uno con versión menor llegó tarde y no pisa el estado.
+          if (!awaitingFirstState && stateRef.current && msg.version < stateRef.current.version) break;
+          awaitingFirstState = false;
           acceptState(msg);
           renewedAfterExpiry = false;
           if (typeof msg.online === 'boolean') setHostOnline(msg.online);
@@ -297,7 +340,12 @@ export function useSyncSocket({
             // v2 omite drift_ms cuando vale 0.
             setDriftMs(typeof msg.drift_ms === 'number' ? msg.drift_ms : 0);
           }
-          ws.send(encodeFrame(buildSyncCheck(roomId, currentPosition(), msg.server_time_ms), wireRef.current));
+          ws.send(
+            encodeFrame(
+              buildSyncCheck(roomId, currentPosition(), msg.server_time_ms, new Date(), stateRef.current?.version),
+              wireRef.current,
+            ),
+          );
           break;
         case 'SYNC_CORRECTION':
           if (stateRef.current && msg.version < stateRef.current.version) break;
@@ -306,12 +354,14 @@ export function useSyncSocket({
           // Las correcciones son parciales: solo pisan volumen/calidad si los traen.
           if (msg.volume !== undefined) setVolume(normalizeVolume(msg.volume));
           if (msg.quality !== undefined) setQuality(normalizeQuality(msg.quality));
+          reconcileFromCorrection(msg);
           setCorrection({
             seq: seqRef.current,
             target_ms: msg.target_ms,
             strategy: msg.strategy,
             drift_ms: msg.drift_ms,
             version: msg.version,
+            ...(typeof msg.rate === 'number' && Number.isFinite(msg.rate) ? { rate: msg.rate } : {}),
           });
           break;
         case 'HOST_STATUS':
@@ -371,6 +421,7 @@ export function useSyncSocket({
       socket = ws;
       wsRef.current = ws;
       wireRef.current = 'json';
+      awaitingFirstState = true;
       ws.onopen = () => {
         // Si el servidor no aceptó el subprotocolo, seguimos en JSON.
         wireRef.current = ws.protocol === MSGPACK_SUBPROTOCOL ? 'msgpack' : 'json';
@@ -448,23 +499,45 @@ export function useSyncSocket({
     [roomId],
   );
 
-  return {
-    connected,
-    state,
-    hostOnline,
-    lastError,
-    correction,
-    canControl,
-    rttMs,
-    driftMs,
-    revoked,
-    expired,
-    fatalError,
-    reconnect,
-    lastBroadcast,
-    volume,
-    quality,
-    sendCommand,
-    sendBuffering,
-  };
+  // Objeto estable mientras nada cambie: `SyncedPlayer` es memo y lo recibe entero.
+  return useMemo(
+    () => ({
+      connected,
+      state,
+      hostOnline,
+      lastError,
+      correction,
+      canControl,
+      rttMs,
+      driftMs,
+      revoked,
+      expired,
+      fatalError,
+      reconnect,
+      lastBroadcast,
+      volume,
+      quality,
+      sendCommand,
+      sendBuffering,
+    }),
+    [
+      connected,
+      state,
+      hostOnline,
+      lastError,
+      correction,
+      canControl,
+      rttMs,
+      driftMs,
+      revoked,
+      expired,
+      fatalError,
+      reconnect,
+      lastBroadcast,
+      volume,
+      quality,
+      sendCommand,
+      sendBuffering,
+    ],
+  );
 }

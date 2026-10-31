@@ -111,17 +111,29 @@ class FakeEventStore:
         self.fail_times = fail_times
         self.invalid_ids = set(invalid_ids)
         self.saves = 0
+        self.batches = []
         self.purges = 0
+        self.grace_closes = []
+        self.dau_refreshes = []
 
     def save(self, event):
+        return self.save_many([event]) == 1
+
+    def save_many(self, events):
+        """Todo o nada, como la transacción real: si un evento falla no se guarda ninguno."""
         from analytics.sanitize import InvalidEvent
 
+        events = list(events)
         self.saves += 1
+        self.batches.append([event["event_id"] for event in events])
         if self.fail_times:
             self.fail_times -= 1
             raise RuntimeError("postgres caído")
-        if event["event_id"] in self.invalid_ids:
+        if any(event["event_id"] in self.invalid_ids for event in events):
             raise InvalidEvent("dato inválido para la BD")
+        return sum(self.stored(event) for event in events)
+
+    def stored(self, event):
         if event["event_id"] in self.events:
             return False
         self.events[event["event_id"]] = event
@@ -131,9 +143,18 @@ class FakeEventStore:
         self.purges += 1
         return 0
 
+    def close_idle_rooms(self, grace):
+        self.grace_closes.append(grace)
+        return 0
+
+    def refresh_daily_active_users(self, timezone, days):
+        self.dau_refreshes.append((timezone, days))
+        return days
+
 
 class FakeReadRepository:
-    def __init__(self, kpis=None, events=None, fail=False):
+    def __init__(self, kpis=None, events=None, fail=False, overview=None):
+        self.overview = overview
         self.kpis = dict(kpis or {})
         self.events = dict(events or {})
         self.fail = fail
@@ -144,6 +165,12 @@ class FakeReadRepository:
         if self.fail:
             raise RuntimeError("postgres caído")
         return self.kpis.get(room_id)
+
+    def business_overview(self, days, rooms):
+        self.calls.append(("business_overview", days, rooms))
+        if self.fail:
+            raise RuntimeError("postgres caído")
+        return self.overview
 
     def room_events(self, room_id, types):
         self.calls.append(("room_events", room_id, tuple(types)))

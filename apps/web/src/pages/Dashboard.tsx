@@ -34,9 +34,11 @@ export default function Dashboard() {
     apiFetch('/rooms')
       .then((r) => setRooms(r.rooms || []))
       .catch((e: unknown) => {
-        if (e instanceof ApiError && (e.status === 401 || e.status === 403)) {
+        if (e instanceof ApiError && e.status === 401) {
           localStorage.removeItem('tint_token');
           navigate(loginRedirectPath('/dashboard'));
+        } else if (e instanceof ApiError && e.status === 403) {
+          navigate('/403?reason=not_host', { replace: true });
         } else {
           setError(e instanceof Error ? e.message : 'Error desconocido');
         }

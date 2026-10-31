@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { formatClockTime, formatNumber, heatLevel, HEAT_LEVELS, niceTicks } from './chartScale';
+import { formatClockTime, formatDuration, formatNumber, heatLevel, HEAT_LEVELS, niceTicks } from './chartScale';
 
 describe('niceTicks', () => {
   it('redondea el máximo a 1, 2 o 5 × 10^k y reparte ticks limpios desde 0', () => {
@@ -51,5 +51,14 @@ describe('heatLevel', () => {
     expect(heatLevel(7, 10)).toBe(3);
     expect(heatLevel(10, 10)).toBe(HEAT_LEVELS);
     expect(heatLevel(3, 0)).toBe(0);
+  });
+});
+
+describe('formatDuration', () => {
+  it('elige ms, segundos o minutos según la magnitud', () => {
+    expect(formatDuration(0)).toBe('0 ms');
+    expect(formatDuration(639.6)).toBe('640 ms');
+    expect(formatDuration(2_904)).toBe('2,9 s');
+    expect(formatDuration(1_529_943)).toBe('25,5 min');
   });
 });

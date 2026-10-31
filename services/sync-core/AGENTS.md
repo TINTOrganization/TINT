@@ -5,10 +5,12 @@ Eres el agente encargado del corazón de reproducción en tiempo real de **TINT*
 
 > Diagramas de flujo, secuencia y datos del dominio: [`docs/dominio-reproduccion.md`](../../docs/dominio-reproduccion.md).
 
+> Funcionamiento interno (componentes, flujos paso a paso, claves Redis, concurrencia y ejecución): [`README.md`](README.md).
+
 ## Stack Técnico
 - Go 1.22 (`net/http` con patrones de ruta de Go 1.22). Dependencias externas, cada una justificada por su impacto en latencia:
   - `github.com/coder/websocket` — WebSocket con `context`, sin goroutines ocultas por conexión y con `SetReadLimit`; la librería estándar no implementa WebSocket.
-  - `github.com/redis/go-redis/v9` — cliente Redis con pool de conexiones, `WATCH/MULTI/EXEC` y Pub/Sub sobre una única conexión por réplica.
+  - `github.com/redis/go-redis/v9` — cliente Redis con pool de conexiones, compare-and-set atómico con script Lua (`casScript` en `internal/store/store.go`; reemplazó a `WATCH/MULTI/EXEC`, ver [ADR 0004](../../docs/adr/0004-scripts-lua-en-lugar-de-watch-multi.md)), `MULTI` en pipeline para `Init` y Pub/Sub sobre una única conexión por réplica.
   - `github.com/golang-jwt/jwt/v5` — validación HS256 de tokens de identity-api restringiendo algoritmo, `iss`, `aud` y `exp` (evita reimplementar criptografía).
   - `github.com/google/uuid` — `event_id` y `id` de conexión (UUID v4).
   - `github.com/vmihailenco/msgpack/v5` — codificación MessagePack opcional (subprotocolo `tint.sync.msgpack`); sin cgo.
@@ -91,11 +93,11 @@ Todos los mensajes son JSON con `event_id`, `type`, `room_id`, `position_ms`, `o
 | `QUALITY` | C → S (quien tenga control) | lo anterior + `quality` ∈ {`auto`, `source`, `720p`, `360p`}. Igual que `VOLUME`: re-ancla sin saltos y conserva status y velocidad. |
 | `PLAY` / `PAUSE` / `SEEK` / `RATE` / `LOAD` / `VOLUME` / `QUALITY` | S → todos (broadcast vía Pub/Sub, incluido el emisor) | mismo `event_id` y `occurred_at` del emisor, `received_at`, `version`, ancla: `status`, `position_ms`, `rate`, `updated_at_ms`, `server_time_ms`, `media_id`, `volume` (siempre presente, también si es `0`) y `quality` |
 | `ACK` | S → emisor | `ref_event_id`, `version` resultante, `duplicate` |
-| `STATE` | S → cliente al conectar | ancla completa + `media_id` + `volume` + `quality` + `online` (hay host vivo) + `can_control` |
+| `STATE` | S → cliente al conectar | ancla completa + `media_id` + `volume` + `quality` + `online` (hay host vivo) + `can_control`; `server_time_ms` se sella justo antes de encolarlo (después de las idas y vueltas a Redis del alta) |
 | `HEARTBEAT` | S → C cada 1 s | `server_time_ms`, `rtt_ms` (RTT suavizado de ese cliente), `drift_ms` (último drift medido; se omite si es 0) |
 | `CONTROL` | S → participantes | `can_control` cuando cambia la delegación (ver abajo) |
 | `BUFFERING` | C → S (cualquier rol) | `event_id`, `room_id`, `position_ms` (≥ 0), `duration_ms` (0–120000, duración del stall), `occurred_at`. Sin `ACK` ni broadcast: solo se publica `buffering` en `analytics:events`. Máximo 1 por segundo y conexión (el exceso se descarta en silencio); inválido → `ERROR{INVALID}`. |
-| `SYNC_CHECK` | C → S (respuesta a cada `HEARTBEAT`) | `event_id`, `room_id`, `position_ms` (posición local actual), `echo_server_ts` (= `server_time_ms` del HEARTBEAT), `occurred_at` |
+| `SYNC_CHECK` | C → S (respuesta a cada `HEARTBEAT`) | `event_id`, `room_id`, `position_ms` (posición local actual), `echo_server_ts` (= `server_time_ms` del HEARTBEAT), `occurred_at` + opcional `version` (última `version` aplicada por el cliente; si es > 0 y menor que la de la sala, el servidor no corrige ese `SYNC_CHECK`). Límite propio de 5/s, fuera de los 20 msg/s. |
 | `SYNC_CORRECTION` | S → C (solo si \|drift\| > 500 ms) | `target_ms` (= `position_ms`), `strategy` (`rate`/`seek`), `drift_ms` (+ adelantado, − atrasado), `version` + opcionales `status`, `rate` (velocidad de la sala, no la de corrección), `media_id`, `volume` y `quality` del estado en esa `version`, para que un cliente que perdió un broadcast se reconcilie (la web aún no los usa) |
 | `HOST_STATUS` | S → todos (vía Pub/Sub) | `online`; solo en transiciones, incluida la caída de la réplica del host (detectada por el barrido) |
 | `REVOKED` | identity-api → réplicas (solo bus) | `jti`: cada réplica cierra esas conexiones con `4001`; nunca llega a los clientes |
@@ -103,11 +105,13 @@ Todos los mensajes son JSON con `event_id`, `type`, `room_id`, `position_ms`, `o
 
 ### Heartbeat, RTT y drift
 1. El servidor envía `HEARTBEAT{server_time_ms}`; el cliente responde `SYNC_CHECK` con `echo_server_ts` y su posición.
-2. RTT = `ahora − echo_server_ts` medido **solo con el reloj del servidor** (el skew del cliente no afecta), suavizado con EWMA α = 0.2; muestras negativas se descartan.
+2. RTT = `ahora − echo_server_ts` medido **solo con el reloj del servidor** (el skew del cliente no afecta), suavizado con EWMA α = 0.2; muestras negativas se descartan. Tras la primera muestra, cada una se recorta a `min(muestra, 2·RTT_previo + 200)` antes de la EWMA (un `SYNC_CHECK` retrasado por una pestaña en segundo plano o un stall no infla el RTT).
 3. El cliente leyó su posición ~RTT/2 antes de la llegada: `drift = posición_cliente − posición_maestra(recepción − RTT/2)`.
-4. `|drift| ≤ 500 ms` → sin respuesta. `> 500 ms` → `SYNC_CORRECTION` con `target_ms = posición_maestra(ahora + RTT/2)`; estrategia `rate` si la sala reproduce y `|drift| ≤ 2000 ms`, `seek` si no. Cada corrección se emite como `drift_correction` a `analytics:events` (con `position_ms` = `target_ms`).
-5. Los comandos fijan el ancla en `received_at − RTT/2` del Host. Cada comando aplicado (no duplicado) se emite como `playback_command` con el `event_id` del cliente.
-6. El `SYNC_CHECK` no escribe en Redis: la presencia se renueva en lote en el barrido de cada réplica (1 s).
+4. Si el `SYNC_CHECK` trae `version` > 0 y menor que la `version` del estado usado, se ignora (ni corrección ni drift): el cliente aún no aplicó el último broadcast y corregirlo duplicaría el seek de un `SEEK`/`LOAD`. Sin `version` (o `0`) se corrige como siempre.
+5. `|drift| ≤ 500 ms` → sin respuesta. `> 500 ms` → `SYNC_CORRECTION` con `target_ms = posición_maestra(ahora + RTT/2)`; estrategia `rate` si la sala reproduce y `|drift| ≤ 2000 ms`, `seek` si no. Cada corrección se emite como `drift_correction` a `analytics:events` (con `position_ms` = `target_ms`).
+6. **Enfriamiento de seek:** tras enviar un `seek` a un cliente no se le envía otro durante 3 s (`drift.SeekCooldownMs`); las correcciones `rate` siguen permitidas. El seek suprimido no emite telemetría ni cuenta en `sync_corrections_total`. Evita el bucle seek→stall→seek de un cliente en buffering que reporta una posición congelada.
+7. Los comandos fijan el ancla en `received_at − RTT/2` del Host. Cada comando aplicado (no duplicado) se emite como `playback_command` con el `event_id` del cliente.
+8. El `SYNC_CHECK` no escribe en Redis: la presencia se renueva en lote en el barrido de cada réplica (1 s).
 
 ### Presencia y delegación de control
 - Cada réplica ejecuta un **barrido** por segundo: renueva `hosts_online` y `members` de sus clientes locales y reevalúa cada sala. Un único script Lua por sala (`Store.Sweep`, 1 ida y vuelta) registra el latido, lee la presencia y guarda el último `HOST_STATUS` para publicar solo transiciones; así la caída de la réplica del host también se avisa (cuando su presencia expira a los 5 s).
@@ -122,7 +126,8 @@ Todos los mensajes son JSON con `event_id`, `type`, `room_id`, `position_ms`, `o
 | Límite | Valor | Consecuencia |
 | :--- | :--- | :--- |
 | Tamaño de mensaje entrante | 4 KB | cierre `1009` |
-| Mensajes entrantes | 20 msg/s por conexión (ventana fija) | `ERROR{RATE_LIMITED}` |
+| Mensajes entrantes (salvo `SYNC_CHECK`) | 20 msg/s por conexión (ventana fija) | `ERROR{RATE_LIMITED}` |
+| `SYNC_CHECK` | 5 por segundo por conexión (ventana propia, no cuenta en los 20 msg/s) | se descarta en silencio |
 | `BUFFERING` | 1 por segundo por conexión | se descarta en silencio |
 | Cola de salida | 64 mensajes por cliente | cliente lento → cierre `1008` |
 | Latidos sin `SYNC_CHECK` | 3 intervalos | cierre `1008` |
@@ -148,7 +153,7 @@ Todos los mensajes son JSON con `event_id`, `type`, `room_id`, `position_ms`, `o
 | `internal/ws` | Handshake y transporte WebSocket. |
 | `internal/server` | Rutas HTTP (`/healthz`, `/ws/sync`, `/metrics`). |
 
-**Modelo de concurrencia:** cada conexión tiene una goroutine **lectora** (la del handler HTTP, llama a `hub.Handle`) y una **escritora** (única dueña de `conn.Write`, drena la cola). `hub.Run` mantiene por réplica un solo temporizador de `HEARTBEAT` (que también cierra a los clientes sin respuesta) y el barrido de presencia. Cada cliente tiene una cola con buffer (64); `enqueue` nunca bloquea, así un cliente lento no frena a los demás. La réplica emisora no difunde localmente: todo comando pasa por Redis Pub/Sub, lo que da un único camino y orden consistente entre réplicas. `hub.rooms` se protege con `sync.Mutex`; RTT y último latido son `atomic`.
+**Modelo de concurrencia:** cada conexión tiene una goroutine **lectora** (la del handler HTTP, llama a `hub.Handle`) y una **escritora** (única dueña de `conn.Write`, drena la cola). `hub.Run` mantiene por réplica un solo temporizador de `HEARTBEAT` (que también cierra a los clientes sin respuesta) y el barrido de presencia. Cada cliente tiene una cola con buffer (64); `enqueue` nunca bloquea, así un cliente lento no frena a los demás. La réplica emisora no difunde localmente: todo comando pasa por Redis Pub/Sub, lo que da un único camino y orden consistente entre réplicas. `hub.rooms` se protege con `sync.Mutex` (`h.mu`), que **nunca** se mantiene durante I/O de red: `Subscribe`/`Unsubscribe` del bus se serializan con otro mutex (`subMu`, orden `subMu → mu`) y una sala está en `hub.rooms` solo mientras su suscripción está activa (se inserta tras `Subscribe`, se borra antes de `Unsubscribe` y la baja re-comprueba que nadie la volvió a crear). RTT, último latido, último drift y último seek son `atomic`.
 
 ## Reglas de Dominio
 1. **Aislamiento:** El canal WebSocket `/ws/sync` es exclusivo para comandos de reproducción (`PLAY`, `PAUSE`, `SEEK`, `RATE`, `LOAD`, `VOLUME`, `QUALITY`), latidos y el aviso de `BUFFERING` (solo telemetría). No proceses mensajes de chat aquí.

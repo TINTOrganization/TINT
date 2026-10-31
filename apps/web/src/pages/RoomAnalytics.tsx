@@ -108,6 +108,7 @@ function StatusBadge({ kpis }: { kpis: RoomKpis }) {
     <span className="inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/5 px-3 py-1 text-[12px] font-medium text-white">
       <span aria-hidden="true" className="h-2 w-2 rounded-full bg-tint-muted" />
       Sesión cerrada
+      {kpis.close_reason === 'grace_expired' && <span className="font-normal text-tint-muted">por inactividad</span>}
       {kpis.closed_at && <span className="font-normal text-tint-muted">· {formatDateTime(kpis.closed_at)}</span>}
     </span>
   );
@@ -239,7 +240,12 @@ export default function RoomAnalytics() {
               <KpiTile
                 label="Drift promedio"
                 value={<CountUp value={kpis.avg_drift_ms} format={milliseconds} />}
-                hint="Desfase medio corregido"
+                hint={kpis.p95_drift_ms > 0 ? `p95 ${formatNumber(kpis.p95_drift_ms, 0)} ms` : 'Desfase medio corregido'}
+              />
+              <KpiTile
+                label="Latencia de red"
+                value={<CountUp value={kpis.avg_rtt_ms} format={milliseconds} />}
+                hint="RTT promedio"
               />
               <KpiTile label="Mensajes" value={<CountUp value={kpis.messages} format={integer} />} />
               <KpiTile label="Reacciones" value={<CountUp value={kpis.reactions} format={integer} />} />
@@ -247,7 +253,11 @@ export default function RoomAnalytics() {
               <KpiTile
                 label="Buffering"
                 value={<CountUp value={kpis.buffering_events} format={bufferingEvents} />}
-                hint={kpis.buffering_events > 0 ? `promedio ${formatNumber(kpis.avg_buffering_ms, 0)} ms` : undefined}
+                hint={
+                  kpis.buffering_events > 0
+                    ? `promedio ${formatNumber(kpis.avg_buffering_ms, 0)} ms · total ${formatNumber(kpis.total_buffering_ms / 1000)} s`
+                    : undefined
+                }
               />
               <KpiTile
                 label="Aciertos de trivia"

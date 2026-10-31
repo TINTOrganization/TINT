@@ -1,7 +1,9 @@
 # 🤖 AGENT Guidelines — Domain: Core Social & Gamificación (`services/social-core`)
 
 ## Contexto & Responsabilidad
-Gestionas la interactividad de la audiencia en **TINT**: chat, reacciones con control de spam, puntero láser del host, encuestas en vivo, el resumen (recap) de la sesión, agregación de Heatmaps, emisión de Ambilight en vivo y motor de Trivias con Leaderboards.
+Gestionas la interactividad de la audiencia en **TINT**: chat, reacciones con control de spam, puntero láser del host, encuestas en vivo, el resumen (recap) de la sesión, moderación del chat (modo lento, silencio), spoilers y motor de Trivias con Leaderboards. *Previsto (sin implementar):* heatmap en vivo y retransmisión de Ambilight.
+
+> Funcionamiento interno (componentes, flujos paso a paso, claves Redis, concurrencia y ejecución): [`README.md`](README.md).
 
 ## Stack Técnico
 - Go 1.22
@@ -15,8 +17,8 @@ Gestionas la interactividad de la audiencia en **TINT**: chat, reacciones con co
 - Puntero láser del host/cohost (efímero, 30/s por usuario).
 - Encuestas en vivo (`internal/polls`): una activa por sala, voto cambiable, cierre por tiempo o manual.
 - Métricas de la sala y mensaje `recap` (`internal/recap`).
-- Heatmaps de emoción por buckets de 5 s.
-- Retransmisión de colores Ambilight sincronizados con la posición del vídeo.
+- Conteo de reacciones por buckets de 5 s (en memoria con `reactions.Buckets` y en el recap en Redis). *Previsto:* heatmap en vivo.
+- *Previsto (sin implementar):* retransmisión de colores Ambilight. Hoy la web interpola `ambilight.json` directamente (ver [ADR 0011](../../docs/adr/0011-ambilight-precalculado-por-media-worker.md)).
 - Motor de trivias y puntuación (`internal/trivia`): preguntas programadas por posición del vídeo, respuestas y rankings.
 - Moderación del chat (`internal/moderation`): modo lento y silencio; spoilers en los mensajes.
 
@@ -28,8 +30,8 @@ Gestionas la interactividad de la audiencia en **TINT**: chat, reacciones con co
 ## Modelo de Datos Involucrado
 | Clave / Entidad | Tipo | Descripción |
 | :--- | :--- | :--- |
-| `room:{id}:heatmap` | Redis Hash | `bucket_index → {emoji: count}` (buckets de 5 s) |
-| `video:{id}:heatmap:history` | Redis/SQL | Histórico acumulado entre sesiones |
+| `room:{id}:heatmap` | Redis Hash | *Previsto, sin implementar:* `bucket_index → {emoji: count}` (buckets de 5 s) |
+| `video:{id}:heatmap:history` | Redis/SQL | *Previsto, sin implementar:* histórico acumulado entre sesiones |
 | `room:{id}:chat:settings` | Redis Hash, TTL 12 h | `slow_mode_s` (0 = apagado) |
 | `room:{id}:chat:muted` | Redis Set, TTL 12 h | `user_id` silenciados |
 | `room:{id}:chat:last:{sub}` | Redis String, PX = modo lento | Último mensaje aceptado de ese `sub` (`SET NX PX`; vale entre réplicas y pestañas) |
@@ -150,7 +152,7 @@ Contrato: [docs/contrato-eventos-analitica.md](../../docs/contrato-eventos-anali
 
 ## Reglas de Dominio
 1. **Bucketing & Rate Limiting:** Limita las reacciones a 5/s por usuario, el láser a 30/s y votos/recap a 10/s. Agrupa datos en buckets de 5 segundos.
-2. **Heatmaps:** Emite el evento de Heatmap en vivo cada 1 s. Consulta el histórico acumulado si existen ≥ 3 sesiones previas.
+2. **Heatmaps (previsto, sin implementar):** emitir el evento de Heatmap en vivo cada 1 s. Consulta el histórico acumulado si existen ≥ 3 sesiones previas.
 3. **Trivias:** Calcula el puntaje bonificando la velocidad (hasta 10 000 ms) con el reloj del servidor. Persiste los Leaderboards en Sorted Sets de Redis con TTL de 1 hora post-cierre de sala (12 h de gracia + 1 h, renovado en cada respuesta).
 4. **TDD:** Pruebas rigurosas (prueba primero) de algoritmos de puntuación y límites de tasa, con relojes inyectados (nunca `time.Sleep` en tests). Cobertura mínima: **85%**.
 

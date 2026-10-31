@@ -3,7 +3,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from unittest.mock import Mock
 
 import jwt
@@ -39,8 +39,9 @@ def token(**overrides):
     return jwt.encode(claims, secret, algorithm="HS256")
 
 
-def make_api(repo=None, redis=None, origins=(ORIGIN,)):
+def make_api(repo=None, redis=None, origins=(ORIGIN,), admin_password=None):
     return AnalyticsApi(
+        admin_password=admin_password,
         repo=repo or FakeReadRepository(),
         redis=redis or FakeRedis(),
         secret=SECRET,
@@ -180,6 +181,10 @@ def test_kpis_of_a_closed_room_come_from_room_kpis():
         "playback_commands": 3,
         "buffering_events": 2,
         "avg_buffering_ms": 400,
+        "avg_rtt_ms": 35,
+        "p95_drift_ms": 900,
+        "total_buffering_ms": 800,
+        "close_reason": "grace_expired",
         "closed_at": datetime(2026, 10, 11, 11, 0, tzinfo=UTC),
         "computed_at": datetime(2026, 10, 11, 11, 0, 1, tzinfo=UTC),
     }
@@ -198,6 +203,10 @@ def test_kpis_of_a_closed_room_come_from_room_kpis():
         "playback_commands": 3,
         "buffering_events": 2,
         "avg_buffering_ms": 400.0,
+        "avg_rtt_ms": 35.0,
+        "p95_drift_ms": 900.0,
+        "total_buffering_ms": 800,
+        "close_reason": "grace_expired",
         "closed_at": "2026-10-11T11:00:00.000Z",
         "computed_at": "2026-10-11T11:00:01.000Z",
     }
@@ -210,6 +219,8 @@ def test_kpis_of_an_open_room_are_computed_live_from_telemetry():
         {"type": "presence", "connected_users": "2"},
         {"type": "presence", "connected_users": "4"},
         {"type": "chat_message", "message_length": "3"},
+        {"type": "drift_correction", "drift_ms": "-700", "rtt_ms": "45"},
+        {"type": "buffering", "duration_ms": "250"},
     ]
     repo = FakeReadRepository(events={ROOM: events})
     response = get(make_api(repo=repo), kpis_path(), bearer=token())
@@ -219,13 +230,17 @@ def test_kpis_of_an_open_room_are_computed_live_from_telemetry():
         "live": True,
         "peak_users": 4,
         "avg_users": 3.0,
-        "avg_drift_ms": 0.0,
+        "avg_drift_ms": 700.0,
         "trivia_accuracy_pct": 0.0,
         "messages": 1,
         "reactions": 0,
         "playback_commands": 0,
-        "buffering_events": 0,
-        "avg_buffering_ms": 0.0,
+        "buffering_events": 1,
+        "avg_buffering_ms": 250.0,
+        "avg_rtt_ms": 45.0,
+        "p95_drift_ms": 700.0,
+        "total_buffering_ms": 250,
+        "close_reason": None,
         "closed_at": None,
         "computed_at": "2026-10-11T12:00:00.000Z",
     }
@@ -244,6 +259,102 @@ def test_unexpected_errors_are_500():
     repo.room_kpis.side_effect = KeyError("bug")
     response = get(make_api(repo=repo), kpis_path(), bearer=token())
     assert response.status == 500
+
+
+# --- panel de negocio ---------------------------------------------------------------------------
+
+OVERVIEW = "/api/v1/analytics/overview"
+PASSWORD = "clave-del-grupo"
+
+
+def overview_data():
+    closed = {
+        "room_id": ROOM,
+        "peak_users": 7,
+        "avg_users": 4.5,
+        "avg_drift_ms": 120,
+        "trivia_accuracy_pct": 50,
+        "messages": 10,
+        "reactions": 20,
+        "playback_commands": 3,
+        "buffering_events": 2,
+        "avg_buffering_ms": 400,
+        "avg_rtt_ms": 35,
+        "p95_drift_ms": 900,
+        "total_buffering_ms": 800,
+        "close_reason": "grace_expired",
+        "closed_at": datetime(2026, 10, 11, 11, 0, tzinfo=UTC),
+        "computed_at": datetime(2026, 10, 11, 12, 0, tzinfo=UTC),
+    }
+    return {
+        "daily": [(date(2026, 10, 11), 1, 1), (date(2026, 10, 12), 3, 4)],
+        "events": [("drift_correction", "sync-core", 1173), ("presence", "social-core", 16)],
+        "active_rooms": 5,
+        "rooms": [closed, {**closed, "room_id": "sin-heatmap", "close_reason": None}],
+        "heatmaps": {ROOM: [(0, 2, 0.4), (5000, 5, 1.0)]},
+    }
+
+
+def test_overview_returns_only_aggregates():
+    repo = FakeReadRepository(overview=overview_data())
+    response = get(make_api(repo=repo, admin_password=PASSWORD), OVERVIEW, bearer=PASSWORD)
+    assert response.status == 200
+    body = response.body
+    assert body["generated_at"] == "2026-10-11T12:00:00.000Z"
+    assert body["daily"] == [
+        {"day": "2026-10-11", "dau": 1, "mau": 1},
+        {"day": "2026-10-12", "dau": 3, "mau": 4},
+    ]
+    assert body["events"] == {
+        "total": 1189,
+        "rooms": 5,
+        "by_type": [
+            {"type": "drift_correction", "source": "sync-core", "count": 1173},
+            {"type": "presence", "source": "social-core", "count": 16},
+        ],
+    }
+    first, second = body["rooms"]
+    assert first["room_id"] == ROOM
+    assert (first["peak_users"], first["avg_rtt_ms"], first["p95_drift_ms"]) == (7, 35.0, 900.0)
+    assert first["close_reason"] == "grace_expired"
+    assert first["closed_at"] == "2026-10-11T11:00:00.000Z"
+    assert first["heatmap"] == [
+        {"bucket_start_ms": 0, "reactions": 2, "density": 0.4},
+        {"bucket_start_ms": 5000, "reactions": 5, "density": 1.0},
+    ]
+    assert (second["close_reason"], second["heatmap"]) == (None, [])
+    assert "user_id" not in json.dumps(body)
+    assert ("business_overview", 30, 50) in repo.calls
+
+
+@pytest.mark.parametrize("bearer", [None, "", "otra", PASSWORD + "x", token()])
+def test_overview_rejects_a_missing_or_wrong_password(bearer):
+    repo = FakeReadRepository(overview=overview_data())
+    response = get(make_api(repo=repo, admin_password=PASSWORD), OVERVIEW, bearer=bearer)
+    assert response.status == 401
+    assert response.body == {"error": "contraseña incorrecta"}
+    assert repo.calls == []
+    assert response.headers["Access-Control-Allow-Origin"] == ORIGIN
+
+
+@pytest.mark.parametrize("configured", [None, ""])
+def test_overview_does_not_exist_without_a_configured_password(configured):
+    repo = FakeReadRepository(overview=overview_data())
+    api = make_api(repo=repo, admin_password=configured)
+    assert get(api, OVERVIEW, bearer="").status == 404
+    assert get(api, OVERVIEW, bearer="cualquiera").status == 404
+    assert repo.calls == []
+
+
+def test_overview_method_and_database_errors():
+    api = make_api(repo=FakeReadRepository(fail=True), admin_password=PASSWORD)
+    assert get(api, OVERVIEW, bearer=PASSWORD, method="POST").status == 405
+    assert get(api, OVERVIEW, bearer=PASSWORD).status == 503
+
+
+def test_the_admin_password_is_not_a_room_ticket():
+    api = make_api(admin_password=PASSWORD)
+    assert get(api, kpis_path(), bearer=PASSWORD).status == 401
 
 
 # --- heatmap y timeline ------------------------------------------------------------------------
@@ -266,6 +377,10 @@ def test_heatmap_with_default_bucket():
             {"bucket_start_ms": 0, "emoji": "👏", "count": 1},
             {"bucket_start_ms": 0, "emoji": "😂", "count": 1},
             {"bucket_start_ms": 5000, "emoji": "👏", "count": 1},
+        ],
+        "density": [
+            {"bucket_start_ms": 0, "count": 2, "density": 1.0},
+            {"bucket_start_ms": 5000, "count": 1, "density": 0.5},
         ],
         "by_emoji": [{"emoji": "👏", "count": 2}, {"emoji": "😂", "count": 1}],
     }

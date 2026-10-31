@@ -53,6 +53,23 @@ describe('Dashboard', () => {
     expect(localStorage.getItem('tint_token')).toBeNull();
   });
 
+  it('redirige a /403?reason=not_host si la API responde 403 Forbidden', async () => {
+    mockedApi.mockRejectedValueOnce(new ApiError(403, 'Forbidden'));
+    function ForbiddenProbe() {
+      return <p>{`forbidden${useLocation().search}`}</p>;
+    }
+    render(
+      <MemoryRouter initialEntries={['/dashboard']}>
+        <Routes>
+          <Route path="/dashboard" element={<Dashboard />} />
+          <Route path="/403" element={<ForbiddenProbe />} />
+          <Route path="/login" element={<Login />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+    expect(await screen.findByText('forbidden?reason=not_host')).toBeInTheDocument();
+  });
+
   it('al expirar la sesión vuelve al login con ?next=/dashboard', async () => {
     localStorage.setItem('tint_token', 'viejo');
     mockedApi.mockRejectedValueOnce(new ApiError(401, 'Unauthorized'));

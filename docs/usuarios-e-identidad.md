@@ -216,7 +216,7 @@ Se firma con HS256 y `JWT_SECRET`. La web lo guarda en `localStorage.tint_guest_
   "sub": "<users.id>",
   "room_id": "<uuid sala>",
   "role": "host",
-  "nick": "display_name o email, o 'Host'",
+  "nick": "display_name, o la parte local del email, o 'Host'",
   "jti": "<uuid>",
   "iss": "tint-identity", "aud": "tint:room",
   "iat": 1791655200, "exp": 1791655800   // + SYNC_TICKET_TTL_SECONDS (600)
@@ -240,7 +240,7 @@ No se guarda: la web pide uno nuevo en cada (re)conexión del WebSocket.
 | Revocable | En Firebase | ✅ (`guest_sessions` + `token:revoked:{jti}`) | No (vida corta) | No (vida corta) |
 | Dónde vive en la web | `localStorage.tint_token` | `localStorage.tint_guest_token` | Memoria | Memoria |
 
-> `JWT_SECRET`, `JWT_ISSUER` y `JWT_AUDIENCE` **deben ser idénticos** en identity-api y sync-core.
+> `JWT_SECRET`, `JWT_ISSUER` y `JWT_AUDIENCE` **deben ser idénticos** en identity-api, sync-core, social-core y analytics.
 
 ---
 
@@ -387,7 +387,7 @@ sequenceDiagram
     API->>PG: INSERT room_bans por cada device_id (ON CONFLICT DO NOTHING)
     API->>R: SET token:revoked:{jti} EXAT exp + PUBLISH REVOKED (cada sesión vigente)
     alt Redis falla
-        API-->>H: 503 (el ban ya está guardado; repetir el POST termina de revocar)
+        API-->>H: 503, el ban ya está guardado y repetir el POST termina de revocar
     else
         API->>PG: guest_sessions.revoked = true
         API-->>H: { ban: { id, nick, createdAt } }
@@ -467,12 +467,10 @@ Respuestas de error de identity-api: `{ "error": "<texto>" }`. Los 400 de zod a�
 
 | Tema | Situación actual | Riesgo |
 | :--- | :--- | :--- |
-| Unicidad de `users` | No hay índice `UNIQUE (provider, provider_sub)`; el *upsert* es "buscar y luego insertar" | Dos primeros inicios de sesión simultáneos podrían duplicar al usuario |
-| Perfil desactualizado | El *upsert* no actualiza `email`/`display_name`/`avatar_url` si cambian en Google | Datos viejos en `users` |
-| ID token de Firebase | Se guarda en `localStorage` y no se renueva solo (~1 h) | Al vencer, la API responde 401 y hay que volver a iniciar sesión |
 | Cohost | sync-core lo acepta, pero no hay endpoint ni UI que lo emita | Funcionalidad incompleta |
 | Revocar una invitación | No retira a los invitados que ya entraron con ella | Hay que retirarlos uno por uno |
 | Bloqueo por dispositivo | Se ata a un `deviceId` en `localStorage` que elige el cliente (§6.6) | Borrar los datos del navegador, otra ventana privada u otro dispositivo lo evaden; sesiones sin `deviceId` solo quedan registradas por `sub` |
 | CORS | `cors()` sin lista de orígenes | Conviene restringirlo en producción |
-| Manejador de errores | Devuelve `err.message` en los 500 | Puede filtrar detalles internos |
 | Usuario sin token en `/watch` | La web lo trata como Host y pide un ticket (falla si no es el dueño) | Mensaje de error poco claro |
+
+> Resueltas en el bug hunting de 2026-10 y retiradas de esta tabla: la unicidad de `users` (índice único `(provider, provider_sub)` de la migración `0005` + *upsert* atómico `INSERT … ON CONFLICT DO UPDATE` que además refresca email, nombre y avatar), la renovación del ID token de Firebase en la web (`onIdTokenChanged`, `src/lib/authSession.ts`) y el manejador de errores, que ahora responde siempre `{ "error": "Internal error" }` en los 500.

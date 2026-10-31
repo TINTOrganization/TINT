@@ -3,8 +3,9 @@ PY_SERVICES := services/media-worker services/analytics
 COVERAGE_MIN := 85
 
 NODE_SERVICES := services/identity-api
+CPP_SERVICES := services/voice-core
 
-.PHONY: up down test-all test-go test-python test-web test-node
+.PHONY: up down test-all test-go test-python test-web test-node test-cpp
 
 up:
 	docker compose up -d
@@ -12,7 +13,7 @@ up:
 down:
 	docker compose down
 
-test-all: test-go test-python test-web test-node
+test-all: test-go test-python test-web test-node test-cpp
 
 test-go:
 	@for svc in $(GO_SERVICES); do \
@@ -36,4 +37,13 @@ test-node:
 	@for svc in $(NODE_SERVICES); do \
 		echo "==> $$svc"; \
 		(cd $$svc && npm ci && npm run typecheck && npx vitest run --coverage) || exit 1; \
+	done
+
+# C++: compila con cobertura, corre ctest y exige ≥ 85 % de líneas en src/ (gcovr).
+test-cpp:
+	@for svc in $(CPP_SERVICES); do \
+		echo "==> $$svc"; \
+		(cd $$svc && cmake -S . -B build-cov -G Ninja -DCMAKE_BUILD_TYPE=Debug -DVOICE_COVERAGE=ON && \
+		 cmake --build build-cov && ctest --test-dir build-cov --output-on-failure && \
+		 gcovr --root . --filter src/ --exclude src/main.cpp build-cov --fail-under-line $(COVERAGE_MIN)) || exit 1; \
 	done

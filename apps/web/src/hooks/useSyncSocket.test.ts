@@ -241,13 +241,42 @@ describe('useSyncSocket — mensajes', () => {
     expect(result.current.state?.status).toBe('playing');
   });
 
-  it('STATE siempre reemplaza el snapshot (p. ej. tras reconectar)', () => {
+  it('en la misma conexión, un STATE con versión menor no pisa el estado; igual o mayor sí', () => {
     const { result, ws } = connected();
     act(() => ws.receive({ ...snapshot, version: 9 }));
     act(() => ws.receive({ ...snapshot, version: 2, position_ms: 77 }));
+    expect(result.current.state?.position_ms).toBe(10_000);
+    expect(result.current.state?.version).toBe(9);
+    act(() => ws.receive({ ...snapshot, version: 9, position_ms: 55 }));
+    expect(result.current.state?.position_ms).toBe(55);
+  });
+
+  it('el primer STATE de una conexión nueva siempre aplica (sala reiniciada tras el TTL)', () => {
+    vi.useFakeTimers();
+    const { result, ws } = connected();
+    act(() => ws.receive({ ...snapshot, version: 9 }));
+    act(() => ws.close());
+    act(() => vi.advanceTimersByTime(500));
+    const ws2 = MockWebSocket.last();
+    expect(ws2).not.toBe(ws);
+    act(() => ws2.open());
+    act(() => ws2.receive({ ...snapshot, version: 2, position_ms: 77 }));
     expect(result.current.state?.position_ms).toBe(77);
-    act(() => ws.receive({ ...snapshot, type: 'PLAY', version: 3, position_ms: 88 }));
+    // Y desde ahí se filtra por versión como siempre.
+    act(() => ws2.receive({ ...snapshot, type: 'PLAY', version: 3, position_ms: 88 }));
     expect(result.current.state?.position_ms).toBe(88);
+    act(() => ws2.receive({ ...snapshot, version: 1, position_ms: 1 }));
+    expect(result.current.state?.position_ms).toBe(88);
+  });
+
+  it('SYNC_CHECK lleva la version del estado aplicado', () => {
+    const { ws } = connected({ getPositionMs: () => 1_000 });
+    act(() => ws.receive({ type: 'HEARTBEAT', server_time_ms: 1 }));
+    expect(ws.sentJson()[0]).not.toHaveProperty('version');
+    act(() => ws.receive(snapshot));
+    act(() => ws.receive({ ...snapshot, type: 'SEEK', version: 6 }));
+    act(() => ws.receive({ type: 'HEARTBEAT', server_time_ms: 2 }));
+    expect(ws.sentJson()[1]).toMatchObject({ type: 'SYNC_CHECK', version: 6 });
   });
 
   it('responde HEARTBEAT con SYNC_CHECK usando la posición del getter', () => {
@@ -291,6 +320,78 @@ describe('useSyncSocket — mensajes', () => {
     expect(result.current.correction?.seq).toBe(2);
     act(() => ws.receive({ ...corr, version: 4, target_ms: 1 }));
     expect(result.current.correction?.seq).toBe(2);
+  });
+
+  it('una SYNC_CORRECTION con status/rate reconcilia el estado (broadcast perdido)', () => {
+    let perf = 0;
+    const { result, ws } = connected({ now: () => perf });
+    act(() => ws.receive(snapshot));
+    perf = 1_000;
+    act(() =>
+      ws.receive({
+        type: 'SYNC_CORRECTION',
+        target_ms: 12_000,
+        strategy: 'seek',
+        drift_ms: -900,
+        version: 7,
+        status: 'paused',
+        rate: 1.5,
+        media_id: 'm2',
+      }),
+    );
+    expect(result.current.state).toMatchObject({
+      status: 'paused',
+      rate: 1.5,
+      media_id: 'm2',
+      version: 7,
+      position_ms: 12_000,
+      received_at_perf: 1_000,
+    });
+    expect(result.current.correction).toMatchObject({ rate: 1.5, version: 7 });
+    // El ancla usa el reloj de servidor estimado: la posición esperada es target_ms.
+    expect(result.current.state?.server_time_ms).toBe(2_200);
+    expect(result.current.state?.updated_at_ms).toBe(2_200);
+    // El broadcast perdido que llega tarde con esa versión ya no cambia nada.
+    act(() => ws.receive({ ...snapshot, type: 'PLAY', version: 7 }));
+    expect(result.current.state?.status).toBe('paused');
+  });
+
+  it('una SYNC_CORRECTION sin status/rate (servidor previo) no toca el estado', () => {
+    const { result, ws } = connected();
+    act(() => ws.receive(snapshot));
+    const before = result.current.state;
+    act(() => ws.receive({ type: 'SYNC_CORRECTION', target_ms: 12_000, strategy: 'rate', drift_ms: -900, version: 7 }));
+    expect(result.current.state).toBe(before);
+    expect(result.current.correction?.rate).toBeUndefined();
+  });
+
+  it('una SYNC_CORRECTION que coincide con el estado no lo reemplaza', () => {
+    const { result, ws } = connected();
+    act(() => ws.receive({ ...snapshot, media_id: 'm1' }));
+    const before = result.current.state;
+    act(() =>
+      ws.receive({
+        type: 'SYNC_CORRECTION',
+        target_ms: 12_000,
+        strategy: 'rate',
+        drift_ms: -900,
+        version: 5,
+        status: 'playing',
+        rate: 1,
+        media_id: 'm1',
+      }),
+    );
+    expect(result.current.state).toBe(before);
+  });
+
+  it('devuelve el mismo objeto mientras nada cambie (props estables para el reproductor memo)', () => {
+    const { result, rerender, ws } = connected();
+    act(() => ws.receive(snapshot));
+    const api = result.current;
+    rerender({ roomId: 'r1', role: 'guest', url: WS });
+    expect(result.current).toBe(api);
+    act(() => ws.receive({ type: 'HOST_STATUS', online: false }));
+    expect(result.current).not.toBe(api);
   });
 
   it('HOST_STATUS actualiza hostOnline', () => {

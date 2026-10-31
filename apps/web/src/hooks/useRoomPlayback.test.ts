@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { apiFetch } from '../lib/api';
 import {
   PLAYBACK_PROCESSING_POLL_MS,
+  PLAYBACK_RECOVER_COOLDOWN_MS,
   useRoomPlayback,
   type UseRoomPlaybackOptions,
 } from './useRoomPlayback';
@@ -115,7 +116,7 @@ describe('useRoomPlayback', () => {
     expect(result.current.url).toBe('https://minio/m2');
   });
 
-  it('refresca la URL un minuto antes de que expire', async () => {
+  it('refresca la URL un minuto antes de que expire sin cambiar el src en reproducción', async () => {
     mockedApiFetch.mockResolvedValue(playback('m1', 'https://minio/m1?sig=1', 5 * 60_000));
     const { result } = setup({ roomId: 'r1', mediaId: 'm1' });
     await flush();
@@ -128,7 +129,111 @@ describe('useRoomPlayback', () => {
       await vi.advanceTimersByTimeAsync(1);
     });
     expect(mockedApiFetch).toHaveBeenCalledTimes(2);
+    // Cambiar el src recargaría el vídeo (fotograma negro): se guarda la URL nueva aparte.
+    expect(result.current.url).toBe('https://minio/m1?sig=1');
+    expect(result.current.loading).toBe(false);
+  });
+
+  it('recover() adopta la URL refrescada sin volver a pedirla', async () => {
+    mockedApiFetch.mockResolvedValue({
+      ...playback('m1', 'https://minio/m1?sig=1', 5 * 60_000),
+      qualities: [{ id: '720p', label: '720p', url: 'https://minio/m1/720p?sig=1' }],
+    });
+    const { result } = setup({ roomId: 'r1', mediaId: 'm1' });
+    await flush();
+    mockedApiFetch.mockResolvedValue({
+      ...playback('m1', 'https://minio/m1?sig=2', 5 * 60_000),
+      qualities: [{ id: '720p', label: '720p', url: 'https://minio/m1/720p?sig=2' }],
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(4 * 60_000);
+    });
+    act(() => result.current.recover());
+    await flush();
+    expect(mockedApiFetch).toHaveBeenCalledTimes(2);
     expect(result.current.url).toBe('https://minio/m1?sig=2');
+    expect(result.current.qualities).toEqual([
+      { id: '720p', label: '720p', url: 'https://minio/m1/720p?sig=2' },
+      { id: 'source', label: 'Original', url: 'https://minio/m1?sig=2' },
+    ]);
+  });
+
+  it('el siguiente refresco se programa con la caducidad de la URL refrescada', async () => {
+    mockedApiFetch.mockResolvedValue(playback('m1', 'https://minio/m1?sig=1', 5 * 60_000));
+    setup({ roomId: 'r1', mediaId: 'm1' });
+    await flush();
+    mockedApiFetch.mockResolvedValue(playback('m1', 'https://minio/m1?sig=2', 10 * 60_000));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(4 * 60_000);
+    });
+    expect(mockedApiFetch).toHaveBeenCalledTimes(2);
+    // La URL refrescada caduca a los 10 min (absolutos): siguiente refresco a los 9 min.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5 * 60_000 - 1);
+    });
+    expect(mockedApiFetch).toHaveBeenCalledTimes(2);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1);
+    });
+    expect(mockedApiFetch).toHaveBeenCalledTimes(3);
+  });
+
+  it('recover() sin URL refrescada la pide y la adopta; no repite antes del enfriamiento', async () => {
+    mockedApiFetch.mockResolvedValue(playback('m1', 'https://minio/m1?sig=1', 60 * 60_000));
+    const { result } = setup({ roomId: 'r1', mediaId: 'm1' });
+    await flush();
+    mockedApiFetch.mockResolvedValue(playback('m1', 'https://minio/m1?sig=2', 60 * 60_000));
+    act(() => result.current.recover());
+    await flush();
+    expect(mockedApiFetch).toHaveBeenCalledTimes(2);
+    expect(result.current.url).toBe('https://minio/m1?sig=2');
+    // Un archivo dañado fallaría siempre: no se entra en un bucle de peticiones.
+    act(() => result.current.recover());
+    await flush();
+    expect(mockedApiFetch).toHaveBeenCalledTimes(2);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(PLAYBACK_RECOVER_COOLDOWN_MS);
+    });
+    act(() => result.current.recover());
+    await flush();
+    expect(mockedApiFetch).toHaveBeenCalledTimes(3);
+  });
+
+  it('adoptFresh() sin URL refrescada no hace nada', async () => {
+    mockedApiFetch.mockResolvedValue(playback('m1', 'https://minio/m1?sig=1'));
+    const { result } = setup({ roomId: 'r1', mediaId: 'm1' });
+    await flush();
+    act(() => result.current.adoptFresh());
+    await flush();
+    expect(mockedApiFetch).toHaveBeenCalledTimes(1);
+    expect(result.current.url).toBe('https://minio/m1?sig=1');
+  });
+
+  it('si el refresco trae otro vídeo lo adopta entero', async () => {
+    mockedApiFetch.mockResolvedValue(playback('m1', 'https://minio/m1?sig=1', 2 * 60_000));
+    const { result } = setup({ roomId: 'r1', mediaId: undefined });
+    await flush();
+    mockedApiFetch.mockResolvedValue(playback('m2', 'https://minio/m2?sig=1'));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_000);
+    });
+    expect(result.current).toMatchObject({ mediaId: 'm2', url: 'https://minio/m2?sig=1' });
+  });
+
+  it('al pasar a ready, recover() adopta las URLs publicadas por el worker', async () => {
+    mockedApiFetch
+      .mockResolvedValueOnce({ ...playback('m1', 'https://minio/incoming/m1/original.mp4?sig=1'), status: 'processing' })
+      .mockResolvedValueOnce({ ...playback('m1', 'https://minio/m1/source.mp4?sig=1'), status: 'ready', ambilightUrl: 'https://a' });
+    const { result } = setup({ roomId: 'r1', mediaId: 'm1' });
+    await flush();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(PLAYBACK_PROCESSING_POLL_MS);
+    });
+    expect(result.current.url).toBe('https://minio/incoming/m1/original.mp4?sig=1');
+    act(() => result.current.recover());
+    await flush();
+    expect(mockedApiFetch).toHaveBeenCalledTimes(2);
+    expect(result.current).toMatchObject({ url: 'https://minio/m1/source.mp4?sig=1', status: 'ready', ambilightUrl: 'https://a' });
   });
 
   it('espera un mínimo antes de refrescar URLs casi vencidas', async () => {

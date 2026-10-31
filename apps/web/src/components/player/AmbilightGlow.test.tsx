@@ -48,6 +48,13 @@ describe('AmbilightGlow', () => {
     });
   });
 
+  it('separa la clase responsive de la transición (sm:-top-8 y transition-[…] son clases distintas)', () => {
+    renderGlow();
+    const glow = screen.getByTestId('ambilight-glow');
+    expect(glow.classList.contains('sm:-top-8')).toBe(true);
+    expect(glow.classList.contains('transition-[background-color,opacity]')).toBe(true);
+  });
+
   it('sin URL no hay brillo ni interruptor', () => {
     mockedUseAmbilight.mockReturnValue(null);
     renderGlow(null);

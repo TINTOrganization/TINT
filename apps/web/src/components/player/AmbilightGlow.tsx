@@ -54,7 +54,7 @@ export function AmbilightGlow({ url, videoRef, children }: AmbilightGlowProps) {
         aria-hidden="true"
         data-testid="ambilight-glow"
         data-visible={visible}
-        className={`pointer-events-none absolute -inset-x-3 -bottom-3 -top-5 -z-10 overflow-hidden sm:-inset-x-4 sm:-bottom-4 sm:-top-8${transition} ${
+        className={`pointer-events-none absolute -inset-x-3 -bottom-3 -top-5 -z-10 overflow-hidden sm:-inset-x-4 sm:-bottom-4 sm:-top-8 ${transition} ${
           visible ? 'opacity-70' : 'opacity-0'
         }`}
       >

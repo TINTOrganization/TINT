@@ -71,17 +71,22 @@ def run_main(env=ENV, rec=None):
     return code, rec
 
 
-def test_main_migrates_then_starts_consumer_purge_and_api_and_shuts_down():
+def test_main_migrates_then_starts_consumer_maintenance_and_api_and_shuts_down():
     code, rec = run_main()
     assert code == 0
     migrations = rec.conns[0].statements("INSERT INTO schema_migrations")
-    assert [params for _sql, params in migrations] == [("001_init",)]
+    assert [params for _sql, params in migrations] == [("001_init",), ("002_business_kpis",)]
     assert rec.conns[0].closed
+    # El mantenimiento corre una vez al arrancar, con su propia conexión, y la cierra al apagar.
+    (maintenance,) = (conn for conn in rec.conns if conn.statements("DELETE FROM telemetry_events"))
+    assert maintenance.statements("INSERT INTO daily_active_users")
+    assert maintenance.closed
     assert (STREAM_KEY, CONSUMER_GROUP) in rec.redis.groups
     (server,) = rec.servers
     assert server.address == ("0.0.0.0", 8084)
     assert server.served.is_set() and server.stopped.is_set() and server.closed
     assert server.api.issuer == "tint-identity"
+    assert server.api.admin_password is None, "sin ANALYTICS_ADMIN_PASSWORD no hay panel"
     # La API usa un cliente con timeout corto para fallar rápido (503) si Redis se cuelga.
     consumer_kwargs, api_kwargs = (kwargs for _url, kwargs in rec.redis_calls)
     assert consumer_kwargs == {"decode_responses": True}
@@ -115,3 +120,8 @@ def test_install_signal_handlers_sets_stop(monkeypatch):
     assert set(handlers) == {signal.SIGTERM, signal.SIGINT}
     handlers[signal.SIGTERM](signal.SIGTERM, None)
     assert stop.is_set()
+
+
+def test_main_passes_the_admin_password_to_the_api():
+    _code, rec = run_main(env={**ENV, "ANALYTICS_ADMIN_PASSWORD": "clave-del-grupo"})
+    assert rec.servers[0].api.admin_password == "clave-del-grupo"

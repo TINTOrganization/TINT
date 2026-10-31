@@ -1,5 +1,5 @@
 import { act, fireEvent, render, screen } from '@testing-library/react';
-import { createRef } from 'react';
+import { createRef, Profiler } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SyncedPlayer, type SyncedPlayerProps } from './SyncedPlayer';
 import type { SyncSocketApi } from '../hooks/useSyncSocket';
@@ -194,7 +194,7 @@ describe('SyncedPlayer — aplicar estado', () => {
   });
 
   it('si unirse también falla mantiene el botón', async () => {
-    playSpy.mockRejectedValue(new Error('blocked'));
+    playSpy.mockRejectedValue(new DOMException('blocked', 'NotAllowedError'));
     renderPlayer({ sync: makeSync({ state: playingState }) });
     const join = await screen.findByRole('button', { name: 'Unirse a la reproducción' });
     await act(async () => {
@@ -232,10 +232,76 @@ describe('SyncedPlayer — aplicar estado', () => {
     expect(video().currentTime).toBeCloseTo(15);
     expect(playSpy).toHaveBeenCalledTimes(2);
   });
+  it('un play() interrumpido (AbortError, p. ej. PLAY → PAUSE) no pide un gesto', async () => {
+    playSpy.mockRejectedValueOnce(new DOMException('interrupted', 'AbortError'));
+    renderPlayer({ sync: makeSync({ state: playingState }) });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(screen.queryByRole('button', { name: 'Unirse a la reproducción' })).not.toBeInTheDocument();
+  });
+
+  it('otros errores de play() (sin nombre) tampoco piden un gesto', async () => {
+    playSpy.mockRejectedValueOnce(new Error('boom'));
+    renderPlayer({ sync: makeSync({ state: playingState }) });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(screen.queryByRole('button', { name: 'Unirse a la reproducción' })).not.toBeInTheDocument();
+  });
+
   it('tolera play() sin promesa (navegadores antiguos)', () => {
     playSpy.mockReturnValue(undefined as unknown as Promise<void>);
     renderPlayer({ sync: makeSync({ state: playingState }) });
     expect(screen.queryByRole('button', { name: 'Unirse a la reproducción' })).not.toBeInTheDocument();
+  });
+});
+
+describe('SyncedPlayer — tolerancia al aplicar estado (sin saltos innecesarios)', () => {
+  function rerenderState(
+    rerender: (ui: React.ReactElement) => void,
+    videoRef: React.RefObject<HTMLVideoElement>,
+    state: SyncSnapshot,
+  ) {
+    rerender(<SyncedPlayer src={SRC} canControl sync={makeSync({ state })} videoRef={videoRef} now={() => 0} />);
+  }
+
+  it('un broadcast que no mueve el ancla (VOLUME/QUALITY) no reposiciona si la deriva es < 250 ms', () => {
+    const { rerender, videoRef } = renderPlayer({ sync: makeSync({ state: playingState }) });
+    expect(video().currentTime).toBe(10);
+    video().currentTime = 10.2;
+    rerenderState(rerender, videoRef, { ...playingState, version: 3, volume: 0.4 });
+    expect(video().currentTime).toBe(10.2);
+  });
+
+  it('reproduciendo, una deriva > 250 ms sí reposiciona', () => {
+    const { rerender, videoRef } = renderPlayer({ sync: makeSync({ state: playingState }) });
+    video().currentTime = 10.3;
+    rerenderState(rerender, videoRef, { ...playingState, version: 3 });
+    expect(video().currentTime).toBe(10);
+  });
+
+  it('en pausa la tolerancia es de 50 ms', () => {
+    const paused = { ...playingState, status: 'paused' as const };
+    const { rerender, videoRef } = renderPlayer({ sync: makeSync({ state: paused }) });
+    video().currentTime = 10.04;
+    rerenderState(rerender, videoRef, { ...paused, version: 3 });
+    expect(video().currentTime).toBe(10.04);
+    video().currentTime = 10.08;
+    rerenderState(rerender, videoRef, { ...paused, version: 4 });
+    expect(video().currentTime).toBe(10);
+  });
+
+  it('dentro de la tolerancia igual aplica la velocidad y el play/pausa', () => {
+    const { rerender, videoRef } = renderPlayer({ sync: makeSync({ state: playingState }) });
+    video().currentTime = 10.1;
+    pauseSpy.mockClear();
+    rerenderState(rerender, videoRef, { ...playingState, version: 3, rate: 1.5 });
+    expect(video().playbackRate).toBe(1.5);
+    expect(video().currentTime).toBe(10.1);
+    rerenderState(rerender, videoRef, { ...playingState, version: 4, status: 'paused', position_ms: 10_100 });
+    expect(pauseSpy).toHaveBeenCalled();
+    expect(video().currentTime).toBe(10.1);
   });
 });
 
@@ -290,6 +356,87 @@ describe('SyncedPlayer — correcciones', () => {
     expect(video().playbackRate).toBe(1);
   });
 
+  it('a 2× la corrección de velocidad es relativa (2.1) y restaura a la velocidad de la sala', () => {
+    vi.useFakeTimers();
+    let perf = 0;
+    renderPlayer({
+      sync: makeSync({
+        state: { ...playingState, rate: 2 },
+        correction: { seq: 1, target_ms: 10_000, strategy: 'rate', drift_ms: -300, version: 2 },
+      }),
+      now: () => perf,
+    });
+    expect(video().playbackRate).toBeCloseTo(2.1);
+    perf = 5_000;
+    act(() => vi.advanceTimersByTime(5_000));
+    expect(video().playbackRate).toBe(2);
+  });
+
+  it('usa la velocidad de sala que trae la corrección si la hay', () => {
+    renderPlayer({
+      sync: makeSync({
+        state: playingState,
+        correction: { seq: 1, target_ms: 10_000, strategy: 'rate', drift_ms: 300, version: 2, rate: 1.5 },
+      }),
+    });
+    expect(video().playbackRate).toBeCloseTo(1.425);
+  });
+
+  it('no aplica un seek de corrección mientras el vídeo hace buffering', () => {
+    const { rerender, videoRef } = renderPlayer();
+    Object.defineProperty(video(), 'readyState', { configurable: true, value: 2 });
+    Object.defineProperty(video(), 'paused', { configurable: true, value: false });
+    video().currentTime = 5;
+    rerender(
+      <SyncedPlayer
+        src={SRC}
+        canControl
+        videoRef={videoRef}
+        now={() => 0}
+        sync={makeSync({ correction: { seq: 1, target_ms: 42_000, strategy: 'seek', drift_ms: -900, version: 1 } })}
+      />,
+    );
+    expect(video().currentTime).toBe(5);
+    expect(screen.getByTestId('sync-fade')).toHaveAttribute('data-active', 'false');
+  });
+
+  it('no aplica un seek de corrección con el autoplay bloqueado', async () => {
+    playSpy.mockRejectedValueOnce(new DOMException('blocked', 'NotAllowedError'));
+    const { rerender, videoRef } = renderPlayer({ sync: makeSync({ state: playingState }) });
+    await screen.findByRole('button', { name: 'Unirse a la reproducción' });
+    video().currentTime = 10;
+    rerender(
+      <SyncedPlayer
+        src={SRC}
+        canControl
+        videoRef={videoRef}
+        now={() => 0}
+        sync={makeSync({
+          state: playingState,
+          correction: { seq: 1, target_ms: 42_000, strategy: 'seek', drift_ms: -900, version: 2 },
+        })}
+      />,
+    );
+    expect(video().currentTime).toBe(10);
+  });
+
+  it('no re-posiciona cerca del final un vídeo que ya terminó', () => {
+    const { rerender, videoRef } = renderPlayer();
+    Object.defineProperty(video(), 'duration', { configurable: true, value: 60 });
+    Object.defineProperty(video(), 'ended', { configurable: true, value: true });
+    video().currentTime = 60;
+    rerender(
+      <SyncedPlayer
+        src={SRC}
+        canControl
+        videoRef={videoRef}
+        now={() => 0}
+        sync={makeSync({ correction: { seq: 1, target_ms: 61_000, strategy: 'seek', drift_ms: -900, version: 1 } })}
+      />,
+    );
+    expect(video().currentTime).toBe(60);
+  });
+
   it('un nuevo estado cancela la corrección de velocidad', () => {
     vi.useFakeTimers();
     const correction = { seq: 1, target_ms: 0, strategy: 'rate' as const, drift_ms: 300, version: 1 };
@@ -305,6 +452,63 @@ describe('SyncedPlayer — correcciones', () => {
       />,
     );
     expect(video().playbackRate).toBe(1);
+  });
+});
+
+describe('SyncedPlayer — rendimiento del progreso', () => {
+  function renderCounted() {
+    const videoRef = createRef<HTMLVideoElement>();
+    const commits = { count: 0 };
+    render(
+      <Profiler id="player" onRender={() => (commits.count += 1)}>
+        <SyncedPlayer src={SRC} canControl={false} sync={makeSync()} videoRef={videoRef} now={() => 0} />
+      </Profiler>,
+    );
+    Object.defineProperty(video(), 'duration', { configurable: true, value: 100 });
+    fireEvent.durationChange(video());
+    return commits;
+  }
+
+  it('es un componente memo (los mensajes del chat no lo re-renderizan)', () => {
+    expect((SyncedPlayer as unknown as { $$typeof: symbol }).$$typeof).toBe(Symbol.for('react.memo'));
+  });
+
+  it('timeupdate solo re-renderiza si la posición avanzó ≥ 250 ms', () => {
+    const commits = renderCounted();
+    video().currentTime = 10;
+    fireEvent.timeUpdate(video());
+    const base = commits.count;
+    video().currentTime = 10.1;
+    fireEvent.timeUpdate(video());
+    video().currentTime = 10.2;
+    fireEvent.timeUpdate(video());
+    expect(commits.count).toBe(base);
+    video().currentTime = 10.3;
+    fireEvent.timeUpdate(video());
+    expect(commits.count).toBe(base + 1);
+  });
+
+  it('un seek actualiza la posición aunque el salto sea pequeño', () => {
+    const commits = renderCounted();
+    video().currentTime = 10;
+    fireEvent.timeUpdate(video());
+    const base = commits.count;
+    video().currentTime = 10.1;
+    fireEvent.seeked(video());
+    expect(commits.count).toBe(base + 1);
+  });
+
+  it('progress y durationchange sin cambios no re-renderizan', () => {
+    const commits = renderCounted();
+    Object.defineProperty(video(), 'buffered', {
+      configurable: true,
+      value: { length: 1, start: () => 0, end: () => 40 },
+    });
+    fireEvent.progress(video());
+    const base = commits.count;
+    fireEvent.progress(video());
+    fireEvent.durationChange(video());
+    expect(commits.count).toBe(base);
   });
 });
 

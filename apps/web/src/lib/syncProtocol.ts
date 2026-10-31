@@ -101,6 +101,11 @@ export interface CorrectionMessage {
   /** Volumen/calidad maestros vigentes (servidores con VOLUME/QUALITY). */
   volume?: number;
   quality?: QualityPref;
+  /** Estado de la sala en esa `version` (opcionales): reconcilian un broadcast perdido. */
+  status?: PlaybackStatus;
+  /** Velocidad de la sala (no la de corrección). */
+  rate?: number;
+  media_id?: string;
 }
 
 export interface HostStatusMessage {
@@ -154,6 +159,12 @@ export interface SyncCheckMessage {
   position_ms: number;
   occurred_at: string;
   echo_server_ts: number;
+  /**
+   * `version` del estado aplicado por el cliente (ausente antes del primer STATE). sync-core
+   * no corrige a un cliente con una versión más vieja que la de la sala: su broadcast está
+   * en camino y corregirlo contra el estado nuevo provocaría un salto doble.
+   */
+  version?: number;
 }
 
 /**
@@ -246,8 +257,9 @@ export function buildSyncCheck(
   positionMs: number,
   echoServerTs: number,
   now: Date = new Date(),
+  version?: number,
 ): SyncCheckMessage {
-  return {
+  const msg: SyncCheckMessage = {
     event_id: crypto.randomUUID(),
     type: 'SYNC_CHECK',
     room_id: roomId,
@@ -255,6 +267,8 @@ export function buildSyncCheck(
     occurred_at: now.toISOString(),
     echo_server_ts: echoServerTs,
   };
+  if (version !== undefined) msg.version = version;
+  return msg;
 }
 
 export function buildBuffering(

@@ -1,7 +1,8 @@
 """Punto de entrada (`python -m analytics`).
 
 1. Aplica las migraciones pendientes (`migrations/*.sql`).
-2. Arranca en hilos el consumidor de `analytics:events`, la purga de 90 días y la API de lectura.
+2. Arranca en hilos el consumidor de `analytics:events`, el mantenimiento (cierre por gracia,
+   purga de 90 días y DAU/MAU) y la API de lectura.
 3. Con SIGTERM/SIGINT detiene la API, espera al consumidor y cierra las conexiones.
 """
 
@@ -20,7 +21,7 @@ import redis
 
 from analytics.api import AnalyticsApi, create_server
 from analytics.config import ConfigError, Settings
-from analytics.consumer import StreamConsumer, run_purge_loop
+from analytics.consumer import StreamConsumer, run_maintenance_loop
 from analytics.db import EventStore, ReadRepository, apply_migrations
 
 logger = logging.getLogger("analytics")
@@ -64,6 +65,8 @@ def main(
         install_signal_handlers(stop)
 
     store = EventStore(connect_db)
+    # Conexión propia: `EventStore` no es seguro entre hilos y el consumidor ya usa la suya.
+    maintenance = EventStore(connect_db)
     consumer = StreamConsumer(
         redis_factory(settings.redis_url, decode_responses=True), store, settings.consumer
     )
@@ -80,11 +83,17 @@ def main(
         issuer=settings.jwt_issuer,
         audience=settings.jwt_audience,
         allowed_origins=settings.allowed_origins,
+        admin_password=settings.admin_password,
     )
     server = server_factory(api, "0.0.0.0", settings.port)
     workers = [
         threading.Thread(target=consumer.run, args=(stop,), name="consumer"),
-        threading.Thread(target=run_purge_loop, args=(store, stop), name="purge"),
+        threading.Thread(
+            target=run_maintenance_loop,
+            args=(maintenance, stop),
+            kwargs={"room_grace": settings.room_grace, "timezone": settings.timezone},
+            name="maintenance",
+        ),
     ]
     api_thread = threading.Thread(target=server.serve_forever, name="api", daemon=True)
     for thread in (*workers, api_thread):
@@ -98,6 +107,7 @@ def main(
     for thread in workers:
         thread.join(SHUTDOWN_TIMEOUT_S)
     store.close()
+    maintenance.close()
     return 0
 
 

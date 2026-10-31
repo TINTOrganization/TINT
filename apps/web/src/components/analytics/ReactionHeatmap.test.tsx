@@ -11,6 +11,10 @@ const heatmap: Heatmap = {
     { bucket_start_ms: 10_000, emoji: '👏', count: 4 },
     { bucket_start_ms: 10_000, emoji: '😂', count: 2 },
   ],
+  density: [
+    { bucket_start_ms: 0, count: 1, density: 0.1667 },
+    { bucket_start_ms: 10_000, count: 6, density: 1 },
+  ],
   by_emoji: [
     { emoji: '👏', count: 5 },
     { emoji: '😂', count: 2 },

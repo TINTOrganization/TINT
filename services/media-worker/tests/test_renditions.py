@@ -9,6 +9,7 @@ from fakes import FakeBlobStore
 
 from media_worker.renditions import (
     DEFAULT_TIMEOUT_S,
+    RENDITION_ENCODING,
     RENDITION_HEIGHTS,
     ffmpeg_rendition_cmd,
     generate_renditions,
@@ -53,6 +54,65 @@ def test_ffmpeg_rendition_cmd_scales_to_height_keeping_even_width():
     assert cmd[cmd.index("-f") + 1] == "mp4"
     assert "-nostdin" in cmd and "-y" in cmd
     assert cmd[-1] == "out.mp4"
+
+
+@pytest.mark.parametrize(
+    ("height", "profile", "level", "maxrate", "bufsize"),
+    [(720, "high", "4.1", "3000k", "6000k"), (360, "main", "3.1", "1000k", "2000k")],
+)
+def test_ffmpeg_rendition_cmd_exact_args_per_height(height, profile, level, maxrate, bufsize):
+    assert ffmpeg_rendition_cmd("in.mp4", "out.mp4", height) == [
+        "ffmpeg",
+        "-v",
+        "error",
+        "-nostdin",
+        "-y",
+        "-i",
+        "in.mp4",
+        "-map",
+        "0:v:0",
+        "-map",
+        "0:a:0?",
+        "-vf",
+        f"scale=-2:{height}",
+        "-c:v",
+        "libx264",
+        "-preset",
+        "veryfast",
+        "-crf",
+        "23",
+        "-pix_fmt",
+        "yuv420p",
+        "-profile:v",
+        profile,
+        "-level:v",
+        level,
+        "-maxrate",
+        maxrate,
+        "-bufsize",
+        bufsize,
+        "-force_key_frames",
+        "expr:gte(t,n_forced*2)",
+        "-sc_threshold",
+        "0",
+        "-c:a",
+        "aac",
+        "-b:a",
+        "128k",
+        "-ac",
+        "2",
+        "-ar",
+        "48000",
+        "-movflags",
+        "+faststart",
+        "-f",
+        "mp4",
+        "out.mp4",
+    ]
+
+
+def test_every_planned_height_has_encoding_settings():
+    assert set(RENDITION_ENCODING) == set(RENDITION_HEIGHTS)
 
 
 def rendition_runner(fail_heights=(), errors=None):

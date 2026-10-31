@@ -84,7 +84,10 @@ type Event struct {
 	PositionMs int64     `json:"position_ms"`
 	OccurredAt time.Time `json:"occurred_at"`
 	ReceivedAt time.Time `json:"received_at"`
-	Version    int64     `json:"version"`
+	// Version es el orden total del estado de la sala. En SYNC_CHECK
+	// (opcional) es la última versión aplicada por el cliente: si es menor
+	// que la del servidor, ese SYNC_CHECK no se corrige.
+	Version int64 `json:"version"`
 
 	// Ancla del Reloj Maestro (STATE y broadcasts de comandos).
 	Status       string  `json:"status,omitempty"`
