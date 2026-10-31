@@ -234,7 +234,7 @@ sequenceDiagram
     and Canal Social
         SO->>ID: "POST /rooms/:id/sync-ticket (solo host)"
         SO->>SOC: WS /ws/social
-        SOC-->>SO: "history, chat_settings, poll_state, trivia_schedule_state (host), trivia_question abierta"
+        SOC-->>SO: "history, chat_settings, poll_state, trivia_leaderboard, trivia_schedule_state (host), trivia_question abierta"
     end
 
     loop Cada latido
@@ -385,7 +385,7 @@ sequenceDiagram
     POP->>SO: answerTrivia
     SO->>SOC: trivia_answer
     SOC-->>POP: "trivia_ack (solo Respuesta enviada, no revela si acertó)"
-    SOC-->>POP: "trivia_result {correct, top, leaderboard, my_score, my_total}"
+    SOC-->>POP: "trivia_result {correct, top, leaderboard, my_score, my_total, my_rank}"
 ```
 
 El puntaje lo calcula social-core. La cuenta regresiva se ancla al reloj local de llegada para **no comparar relojes** de cliente y servidor.

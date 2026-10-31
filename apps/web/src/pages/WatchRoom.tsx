@@ -138,6 +138,7 @@ export default function WatchRoom() {
     muteUser,
     trivia,
     triviaSchedule,
+    triviaLeaderboard,
     scheduleTrivia,
     updateTrivia,
     deleteTrivia,
@@ -585,6 +586,7 @@ export default function WatchRoom() {
             <TriviaPanel
               isHost={!isGuest}
               schedule={triviaSchedule}
+              leaderboard={triviaLeaderboard}
               getCurrentMs={getPositionMs}
               onSchedule={scheduleTrivia}
               onUpdate={updateTrivia}

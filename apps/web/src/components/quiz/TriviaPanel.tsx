@@ -1,6 +1,6 @@
 import { useEffect, useId, useRef, useState, type FormEvent } from 'react';
 import { useCountdown } from '../../hooks/useCountdown';
-import type { TriviaView } from '../../hooks/useSocialSocket';
+import type { TriviaLeaderboardView, TriviaView } from '../../hooks/useSocialSocket';
 import {
   formatMmSs,
   parseMmSs,
@@ -38,6 +38,28 @@ function Ranking({ label, entries }: { label: string; entries: { user_id: string
   );
 }
 
+/** Ranking en vivo: se actualiza al cierre de cada pregunta y llega al entrar (persiste en el servidor). */
+function LiveLeaderboard({ leaderboard, isHost }: { leaderboard: TriviaLeaderboardView; isHost: boolean }) {
+  const { entries, myRank, myTotal } = leaderboard;
+  return (
+    <div className="mt-4 border-t border-white/10 pt-3">
+      <h3 className="text-[13px] font-semibold text-white">Ranking de la sala</h3>
+      {entries.length === 0 ? (
+        <p className="mt-1 text-[13px] text-tint-muted">Aún nadie ha puntuado.</p>
+      ) : (
+        <Ranking label="Ranking de la sala" entries={entries} />
+      )}
+      {!isHost && (
+        <p className="mt-2 text-[13px] text-white">
+          {myRank !== null
+            ? `Tu puesto: ${myRank} · ${myTotal ?? 0} puntos`
+            : 'Responde una trivia para entrar al ranking.'}
+        </p>
+      )}
+    </div>
+  );
+}
+
 const inputClass =
   'w-full rounded-xl border border-white/10 bg-tint-bg px-3 py-2 text-sm text-white placeholder:text-tint-muted/60 focus:border-tint-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-tint-accent/60';
 
@@ -45,6 +67,8 @@ export interface TriviaPanelProps {
   isHost: boolean;
   /** Agenda del host (ordenada por `at_ms`). */
   schedule: ScheduledTrivia[];
+  /** Ranking acumulado de la sala (visible para todos, siempre). */
+  leaderboard: TriviaLeaderboardView;
   /** Posición actual del vídeo en ms (null si no hay vídeo). */
   getCurrentMs: () => number | null;
   onSchedule: (draft: TriviaDraft) => boolean;
@@ -220,7 +244,7 @@ function TriviaForm({
 }
 
 /** Tarjeta de trivia: el host programa preguntas por momento del vídeo; el invitado ve cómo jugar. */
-export function TriviaPanel({ isHost, schedule, getCurrentMs, onSchedule, onUpdate, onDelete, error }: TriviaPanelProps) {
+export function TriviaPanel({ isHost, schedule, leaderboard, getCurrentMs, onSchedule, onUpdate, onDelete, error }: TriviaPanelProps) {
   const [form, setForm] = useState<FormTarget | null>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const channelError = error && TRIVIA_ERRORS.has(error) ? socialErrorMessage(error) : '';
@@ -232,6 +256,7 @@ export function TriviaPanel({ isHost, schedule, getCurrentMs, onSchedule, onUpda
         <p className="mt-1 text-[13px] leading-relaxed">
           Durante la película aparecerán preguntas sobre el reproductor. ¡Responde rápido para sumar más puntos!
         </p>
+        <LiveLeaderboard leaderboard={leaderboard} isHost={false} />
       </div>
     );
   }
@@ -311,6 +336,7 @@ export function TriviaPanel({ isHost, schedule, getCurrentMs, onSchedule, onUpda
           ))}
         </ul>
       )}
+      <LiveLeaderboard leaderboard={leaderboard} isHost />
     </div>
   );
 }

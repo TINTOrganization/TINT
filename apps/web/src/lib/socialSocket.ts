@@ -81,6 +81,16 @@ export interface TriviaResult {
   my_score?: number;
   /** Total acumulado propio en la sala. */
   my_total?: number;
+  /** Puesto propio en el acumulado (ausente si aún no tiene puntos). */
+  my_rank?: number;
+}
+
+/** Ranking acumulado de la sala al entrar (persiste en Redis; ≤ 10 filas). */
+export interface TriviaLeaderboard {
+  type: 'trivia_leaderboard';
+  leaderboard: TriviaRankEntry[];
+  my_rank?: number;
+  my_total?: number;
 }
 
 /** Pregunta programada por el host (solo el host la recibe, con `correct`). */
@@ -233,6 +243,7 @@ export type SocialIncoming =
   | TriviaQuestion
   | TriviaAck
   | TriviaResult
+  | TriviaLeaderboard
   | TriviaScheduleState
   | SocialError;
 
@@ -421,6 +432,7 @@ export function parseSocialMessage(raw: string): SocialIncoming | null {
     type === 'trivia_question' ||
     type === 'trivia_ack' ||
     type === 'trivia_result' ||
+    type === 'trivia_leaderboard' ||
     type === 'trivia_schedule_state'
   ) {
     return data as SocialIncoming;

@@ -158,6 +158,50 @@ describe('useSocialSocket — trivia', () => {
     expect(result.current.trivia).toMatchObject({ ack: null, result: null });
   });
 
+  it('el ranking acumulado persiste: llega al entrar, se reordena con cada resultado y sobrevive a dismissTrivia', () => {
+    const { result, ws } = connected('guest');
+    expect(result.current.triviaLeaderboard).toEqual({ entries: [], myRank: null, myTotal: null });
+    act(() =>
+      ws.receive({
+        type: 'trivia_leaderboard',
+        leaderboard: [
+          { user_id: 'u1', nick: 'Ana', score: 2000 },
+          { user_id: 'me', nick: 'Yo', score: 1500 },
+        ],
+        my_rank: 2,
+        my_total: 1500,
+      }),
+    );
+    expect(result.current.triviaLeaderboard.entries.map((e) => e.nick)).toEqual(['Ana', 'Yo']);
+    expect(result.current.triviaLeaderboard).toMatchObject({ myRank: 2, myTotal: 1500 });
+
+    // A result reorders it, even with no question on screen.
+    act(() =>
+      ws.receive({
+        type: 'trivia_result',
+        trivia_id: 'otra',
+        correct: 0,
+        top: [],
+        leaderboard: [
+          { user_id: 'me', nick: 'Yo', score: 3400 },
+          { user_id: 'u1', nick: 'Ana', score: 2000 },
+        ],
+        my_total: 3400,
+        my_rank: 1,
+      }),
+    );
+    expect(result.current.triviaLeaderboard.entries.map((e) => e.nick)).toEqual(['Yo', 'Ana']);
+    expect(result.current.triviaLeaderboard).toMatchObject({ myRank: 1, myTotal: 3400 });
+
+    act(() => ws.receive(question));
+    act(() => result.current.dismissTrivia());
+    expect(result.current.triviaLeaderboard.entries).toHaveLength(2);
+
+    // A result without my_rank (no points yet) clears the previous rank.
+    act(() => ws.receive({ type: 'trivia_result', trivia_id: 'x', correct: 0, top: [], leaderboard: [], my_total: 0 }));
+    expect(result.current.triviaLeaderboard).toEqual({ entries: [], myRank: null, myTotal: 0 });
+  });
+
   it('dismissTrivia oculta la tarjeta', () => {
     const { result, ws } = connected('guest');
     act(() => ws.receive(question));
