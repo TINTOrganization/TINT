@@ -454,6 +454,13 @@ flowchart LR
 | Redis | 6379 | |
 | MinIO | 9000 (API) · 9001 (consola) | |
 
+El servicio `gateway` publica `80/443` como entrada única. Redirige HTTP a
+HTTPS, termina TLS con Caddy y enruta `/api/*`, `/ws/sync` y `/ws/social` a
+los servicios correspondientes; las rutas de KPIs, heatmap y timeline bajo
+`/api/v1/rooms/*` se envían a analytics. Las rutas no reconocidas responden
+404. Su política `restart: unless-stopped` permite recuperar automáticamente
+el punto de entrada después de una caída.
+
 ## 9. Calidad, CI y CD
 
 - **CI** (`.github/workflows/ci-pipeline.yml`): ver el diagrama de la [§7.3](#73-pipeline-de-ci-y-cd). Cobertura mínima `COVERAGE_MIN = 85` en todos los jobs (en Go con `scripts/check-go-coverage.sh`; en web e identity-api con los umbrales de `vitest.config.ts`). El job `ci-gate` corre siempre y falla si algún job no termina en `success`.
