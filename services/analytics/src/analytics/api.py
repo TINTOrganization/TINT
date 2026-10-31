@@ -150,7 +150,11 @@ class AnalyticsApi:
         except Exception:
             logger.exception(
                 "error no controlado",
-                extra={"correlation_id": request_id, "method": method, "path": urlsplit(target).path},
+                extra={
+                    "correlation_id": request_id,
+                    "method": method,
+                    "path": urlsplit(target).path,
+                },
             )
             body = {"error": "error interno"}
             if include_in_body:
