@@ -50,3 +50,31 @@ func TestDepsDefaults(t *testing.T) {
 	}
 	_ = time.Now
 }
+
+func TestDefaultDepsConfiguresReactionLimits(t *testing.T) {
+	env := map[string]string{
+		"SOCIAL_REACTION_LIMIT":     "2",
+		"SOCIAL_REACTION_IP_LIMIT":  "3",
+		"SOCIAL_REACTION_WINDOW_MS": "2000",
+	}
+	d := DefaultDeps(func(key string) string { return env[key] })
+	base := time.Date(2026, 10, 8, 12, 0, 0, 0, time.UTC)
+
+	for i := 0; i < 2; i++ {
+		if !d.ReactionLimit.Allow("user", base) {
+			t.Fatalf("user reaction %d should be allowed", i+1)
+		}
+	}
+	if allowed, retry := d.ReactionLimit.AllowWithRetry("user", base); allowed || retry != 2*time.Second {
+		t.Fatalf("user config = allowed %v, retry %v; want false, 2s", allowed, retry)
+	}
+
+	for i := 0; i < 3; i++ {
+		if !d.ReactionIPLimit.Allow("ip", base) {
+			t.Fatalf("IP reaction %d should be allowed", i+1)
+		}
+	}
+	if allowed, retry := d.ReactionIPLimit.AllowWithRetry("ip", base); allowed || retry != 2*time.Second {
+		t.Fatalf("IP config = allowed %v, retry %v; want false, 2s", allowed, retry)
+	}
+}

@@ -40,6 +40,13 @@ func NewLimiterWith(limit int, window time.Duration) *Limiter {
 
 // Allow indica si el usuario puede emitir una reacción en el instante now.
 func (l *Limiter) Allow(userID string, now time.Time) bool {
+	allowed, _ := l.AllowWithRetry(userID, now)
+	return allowed
+}
+
+// AllowWithRetry indica si el evento puede pasar y, si no, cuánto debe esperar
+// el cliente antes de reintentarlo.
+func (l *Limiter) AllowWithRetry(userID string, now time.Time) (bool, time.Duration) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
@@ -52,10 +59,14 @@ func (l *Limiter) Allow(userID string, now time.Time) bool {
 	}
 	if len(recent) >= l.limit {
 		l.history[userID] = recent
-		return false
+		retry := recent[0].Add(l.window).Sub(now)
+		if retry < time.Millisecond {
+			retry = time.Millisecond
+		}
+		return false, retry
 	}
 	l.history[userID] = append(recent, now)
-	return true
+	return true, 0
 }
 
 // BucketIndex devuelve el índice del bucket de 5s para una posición del vídeo.

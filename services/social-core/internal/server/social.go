@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"net"
 	"net/http"
 	"sync"
 	"time"
@@ -64,6 +65,9 @@ type Deps struct {
 	// ReactionLimit frena el spam de reacciones (5/s por conexión, en memoria).
 	// Nil = limitador propio por conexión (igual que el chat).
 	ReactionLimit *reactions.Limiter
+	// ReactionIPLimit frena el spam de reacciones por IP de origen.
+	// Nil = sin límite adicional por IP.
+	ReactionIPLimit *reactions.Limiter
 	// ReactionBuckets acumula conteos por sala y ventana de 5s (base del
 	// heatmap). Nil = no se agregan (solo broadcast en vivo).
 	ReactionBuckets *reactions.Buckets
@@ -315,6 +319,21 @@ func writeError(ctx context.Context, c *websocket.Conn, code, ref string) {
 	_ = writeMsg(ctx, c, raw, DefaultWriteTimeout)
 }
 
+func writeRateLimited(ctx context.Context, c *websocket.Conn, ref string, retry time.Duration) {
+	retryMS := retry / time.Millisecond
+	if retry%time.Millisecond != 0 {
+		retryMS++
+	}
+	if retryMS < 1 {
+		retryMS = 1
+	}
+	raw, _ := json.Marshal(socialevent.ErrorEnvelope{
+		Type: socialevent.TypeError, Code: "RATE_LIMITED", EventIDRef: ref,
+		RetryAfterMS: int64(retryMS),
+	})
+	_ = writeMsg(ctx, c, raw, DefaultWriteTimeout)
+}
+
 // authenticate elige el verificador por el alg del header: HS256 = guest
 // token de identity-api; RS256 = Firebase ID token del host. Un token HS256
 // inválido nunca cae al camino de host, y nada se acepta sin firma válida.
@@ -371,6 +390,7 @@ func handleSocial(w http.ResponseWriter, r *http.Request, d *Deps) {
 	c.SetReadLimit(8 * 1024)
 
 	connID := d.newID()
+	clientIP := remoteIP(r.RemoteAddr)
 	send := make(chan []byte, 64)
 	untrack := d.trackConn(roomID, connID, liveConn{jti: claims.JTI, sub: claims.Subject, send: send, close: func() {
 		go func() { _ = c.Close(StatusRevoked, "token revocado") }()
@@ -457,7 +477,7 @@ func handleSocial(w http.ResponseWriter, r *http.Request, d *Deps) {
 		}
 		switch envelope.Type {
 		case socialevent.TypeReactionSend:
-			d.handleReaction(ctx, c, roomID, claims, raw, reactLimiter)
+			d.handleReaction(ctx, c, roomID, claims, raw, reactLimiter, d.ReactionIPLimit, clientIP)
 			continue
 		case socialevent.TypeLaserPoint:
 			d.handleLaser(ctx, c, roomID, claims, raw, laserLimiter)
@@ -561,7 +581,7 @@ func handleSocial(w http.ResponseWriter, r *http.Request, d *Deps) {
 
 // handleReaction valida, limita (5/s en memoria), agrega al bucket de 5s,
 // emite la reacción en vivo y la registra en analítica. Sin historial.
-func (d *Deps) handleReaction(ctx context.Context, c *websocket.Conn, roomID string, claims auth.Claims, raw []byte, limiter *reactions.Limiter) {
+func (d *Deps) handleReaction(ctx context.Context, c *websocket.Conn, roomID string, claims auth.Claims, raw []byte, limiter, ipLimiter *reactions.Limiter, clientIP string) {
 	var in socialevent.ReactionSend
 	if err := json.Unmarshal(raw, &in); err != nil {
 		writeError(ctx, c, "INVALID_PAYLOAD", "")
@@ -582,9 +602,16 @@ func (d *Deps) handleReaction(ctx context.Context, c *websocket.Conn, roomID str
 		writeError(ctx, c, "INVALID_PAYLOAD", in.EventID)
 		return
 	}
-	if !limiter.Allow(claims.Subject, d.now()) {
-		writeError(ctx, c, "RATE_LIMITED", in.EventID)
+	now := d.now()
+	if allowed, retry := limiter.AllowWithRetry(claims.Subject, now); !allowed {
+		writeRateLimited(ctx, c, in.EventID, retry)
 		return
+	}
+	if ipLimiter != nil {
+		if allowed, retry := ipLimiter.AllowWithRetry(clientIP, now); !allowed {
+			writeRateLimited(ctx, c, in.EventID, retry)
+			return
+		}
 	}
 	received := d.now()
 	out := socialevent.Reaction{
@@ -611,6 +638,17 @@ func (d *Deps) handleReaction(ctx context.Context, c *websocket.Conn, roomID str
 	}
 	// broadcastRawOnce traga el eco de Redis si el relay lo vio primero.
 	d.broadcastRawOnce(roomID, out.EventID, out)
+}
+
+func remoteIP(remoteAddr string) string {
+	host, _, err := net.SplitHostPort(remoteAddr)
+	if err == nil && host != "" {
+		return host
+	}
+	if remoteAddr == "" {
+		return "unknown"
+	}
+	return remoteAddr
 }
 
 func bucketPosition(ms int64) time.Duration {

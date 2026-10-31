@@ -87,9 +87,9 @@ JSON sobre `/ws/social`. Todo lo que se emite a la sala viaja también por `room
 | `trivia_ack` | `{type, room_id, event_id_ref, trivia_id, option, score}` |
 | `trivia_result` | `{event_id, type, room_id, trivia_id, correct, top: [{user_id, nick, score}] (≤ 10, de esta pregunta), leaderboard: [{user_id, nick, score}] (≤ 10, acumulado de la sala), my_score, my_total}` |
 | `recap` | `{type, room_id, event_id_ref, top_emoji_user: {user_id, nick, count}\|null, most_paused: {position_ms, count}\|null, peak_reactions: {position_ms, count, laughs}\|null, totals: {reactions, pauses, rewinds, polls}}` |
-| `error` | `{type, code, event_id_ref?, retry_after_ms?}` (`retry_after_ms` solo con `SLOW_MODE`) |
+| `error` | `{type, code, event_id_ref?, retry_after_ms?}` (`retry_after_ms` acompaña `SLOW_MODE` y `RATE_LIMITED`) |
 
-Códigos de `error`: `INVALID_PAYLOAD` (también opción de trivia fuera de rango o más de 50 trivias programadas), `TEXT_TOO_LONG`, `INVALID_EMOJI`, `RATE_LIMITED`, `FORBIDDEN` (láser, encuestas, moderación del chat o programación de trivias sin ser host o cohost), `POLL_ACTIVE`, `POLL_CLOSED` (votar o cerrar una encuesta ya cerrada o vencida), `POLL_NOT_FOUND` (`poll_id` que no es la encuesta actual), `SLOW_MODE` (con `retry_after_ms`), `MUTED`, `TRIVIA_NOT_FOUND` (no existe o todavía no se abrió), `TRIVIA_CLOSED` (responder tras `closes_at_ms` o borrar una que ya salió), `ALREADY_ANSWERED`, `UNAVAILABLE` (sin Redis o Redis caído: encuestas, recap, moderación y trivias; con Redis caído, el `chat_send` de los participantes falla cerrado porque no se puede comprobar el silencio).
+Códigos de `error`: `INVALID_PAYLOAD` (también opción de trivia fuera de rango o más de 50 trivias programadas), `TEXT_TOO_LONG`, `INVALID_EMOJI`, `RATE_LIMITED` (con `retry_after_ms`; reacciones limitadas por `sub` e IP), `FORBIDDEN` (láser, encuestas, moderación del chat o programación de trivias sin ser host o cohost), `POLL_ACTIVE`, `POLL_CLOSED` (votar o cerrar una encuesta ya cerrada o vencida), `POLL_NOT_FOUND` (`poll_id` que no es la encuesta actual), `SLOW_MODE` (con `retry_after_ms`), `MUTED`, `TRIVIA_NOT_FOUND` (no existe o todavía no se abrió), `TRIVIA_CLOSED` (responder tras `closes_at_ms` o borrar una que ya salió), `ALREADY_ANSWERED`, `UNAVAILABLE` (sin Redis o Redis caído: encuestas, recap, moderación y trivias; con Redis caído, el `chat_send` de los participantes falla cerrado porque no se puede comprobar el silencio).
 
 **Host/cohost** = un HS256 de identity-api ligado a la sala con `role` `host` o `cohost` (el sync-ticket). Un Firebase ID token no dice de qué sala es dueño el usuario, así que **no** da permisos de moderación (falla cerrado): la web debe abrir `/ws/social` con el sync-ticket para usar láser, encuestas, moderación del chat y trivias (y para quedar exenta del modo lento y del silencio).
 
@@ -149,6 +149,9 @@ Contrato: [docs/contrato-eventos-analitica.md](../../docs/contrato-eventos-anali
 | `FIREBASE_PROJECT_ID` | — (vacía = se rechazan los host tokens) | Proyecto Firebase de los host tokens |
 | `ALLOWED_ORIGINS` | `localhost:5173,127.0.0.1:5173` | Patrones de origen (host[:puerto]) aceptados en el handshake; en compose sale de `SOCIAL_ALLOWED_ORIGINS` |
 | `REDIS_URL` | — (vacía = memoria, una réplica) | Historial, Pub/Sub entre réplicas, revocación, encuestas, recap, moderación del chat, trivias y analítica |
+| `SOCIAL_REACTION_LIMIT` | `5` | Reacciones por segundo por usuario (`sub`) |
+| `SOCIAL_REACTION_IP_LIMIT` | `5` | Reacciones por segundo por IP de origen |
+| `SOCIAL_REACTION_WINDOW_MS` | `1000` | Ventana deslizante compartida por ambos límites, en milisegundos |
 
 ## Reglas de Dominio
 1. **Bucketing & Rate Limiting:** Limita las reacciones a 5/s por usuario, el láser a 30/s y votos/recap a 10/s. Agrupa datos en buckets de 5 segundos.

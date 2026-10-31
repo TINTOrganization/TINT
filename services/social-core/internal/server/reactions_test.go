@@ -97,8 +97,52 @@ func TestSocialReactionRateLimited(t *testing.T) {
 		Emoji: "❤️", PositionMS: 0, OccurredAt: time.Now().UTC(),
 	})
 	m, ok := col.next(5 * time.Second)
-	if !ok || m["type"] != "error" || m["code"] != "RATE_LIMITED" {
+	if !ok || m["type"] != "error" || m["code"] != "RATE_LIMITED" || m["retry_after_ms"].(float64) <= 0 {
 		t.Fatalf("sexta reacción = %v, want RATE_LIMITED", m)
+	}
+}
+
+func TestSocialReactionRateLimitedPerIP(t *testing.T) {
+	secret := "s3cr3t"
+	deps := testDeps(secret)
+	deps.LeaveGrace = 300 * time.Millisecond
+	deps.ReactionLimit = reactions.NewLimiter()
+	deps.ReactionIPLimit = reactions.NewLimiter()
+	srv := httptest.NewServer(NewRouterWithDeps(deps))
+	defer srv.Close()
+	wsBase := "ws://" + strings.TrimPrefix(srv.URL, "http://") + "/ws/social?room_id=r1"
+	exp := exp0()
+
+	a := dial(t, wsBase, guestTokenAs(t, secret, "guest:ana", "Ana", "r1", exp))
+	defer a.Close(websocket.StatusNormalClosure, "")
+	colA := collectConn(a)
+	colA.next(5 * time.Second)
+	expectNoticeCol(t, colA, "joined", "Ana")
+
+	for i := 0; i < reactions.MaxPerSecond; i++ {
+		sendRaw(t, a, socialevent.ReactionSend{
+			EventID: "a-" + itoa(int64(i)), Type: socialevent.TypeReactionSend, RoomID: "r1",
+			Emoji: "👏", PositionMS: 0, OccurredAt: time.Now().UTC(),
+		})
+		if m, ok := colA.next(5 * time.Second); !ok || m["type"] != "reaction" {
+			t.Fatalf("reacción de Ana %d = %v, want reaction", i+1, m)
+		}
+	}
+
+	b := dial(t, wsBase, guestTokenAs(t, secret, "guest:pedro", "Pedro", "r1", exp))
+	defer b.Close(websocket.StatusNormalClosure, "")
+	colB := collectConn(b)
+	colB.next(5 * time.Second)
+	expectNoticeCol(t, colB, "joined", "Pedro")
+	expectNoticeCol(t, colA, "joined", "Pedro")
+
+	sendRaw(t, b, socialevent.ReactionSend{
+		EventID: "ip-spam", Type: socialevent.TypeReactionSend, RoomID: "r1",
+		Emoji: "👏", PositionMS: 0, OccurredAt: time.Now().UTC(),
+	})
+	m, ok := colB.next(5 * time.Second)
+	if !ok || m["type"] != "error" || m["code"] != "RATE_LIMITED" || m["retry_after_ms"].(float64) <= 0 {
+		t.Fatalf("reacción de Pedro = %v, want per-IP RATE_LIMITED con retry", m)
 	}
 }
 
