@@ -462,8 +462,11 @@ El servicio `gateway` publica `80/443` como entrada única. Redirige HTTP a
 HTTPS, termina TLS con Caddy y enruta `/api/*`, `/ws/sync` y `/ws/social` a
 los servicios correspondientes; las rutas de KPIs, heatmap y timeline bajo
 `/api/v1/rooms/*` se envían a analytics. Las rutas no reconocidas responden
-404. Su política `restart: unless-stopped` permite recuperar automáticamente
-el punto de entrada después de una caída.
+404. Cada upstream tiene un timeout de conexión y de cabeceras de 5 s; si un
+servicio está caído o excede ese límite, el gateway responde 503 con el error
+JSON `service_unavailable`, sin conservar un estado de circuito que impida
+atenderlo cuando se recupere. Su política `restart: unless-stopped` permite
+recuperar automáticamente el punto de entrada después de una caída.
 
 ## 9. Calidad, CI y CD
 
