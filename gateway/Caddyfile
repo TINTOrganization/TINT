@@ -3,6 +3,16 @@ http://{$GATEWAY_HOST:localhost} {
 }
 
 https://{$GATEWAY_HOST:localhost} {
+    @public path / /healthz /api/v1/healthz /api/v1/invitations/claim
+    @protected {
+        not path / /healthz /api/v1/healthz /api/v1/invitations/claim
+    }
+
+    forward_auth @protected {$IDENTITY_API_UPSTREAM:host.docker.internal:8081} {
+        uri /api/v1/internal/auth/check
+        copy_headers X-User-Id X-User-Sub X-User-Role X-User-Room-Id X-User-Nick
+    }
+
     @root path /
     respond @root 200
 

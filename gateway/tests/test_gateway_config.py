@@ -20,6 +20,10 @@ class GatewayConfigTests(unittest.TestCase):
     def test_gateway_routes_all_public_service_connectors(self):
         caddyfile = CONFIG.read_text(encoding="utf-8")
 
+        self.assertIn("@public path / /healthz /api/v1/healthz /api/v1/invitations/claim", caddyfile)
+        self.assertIn("forward_auth @protected {$IDENTITY_API_UPSTREAM:host.docker.internal:8081}", caddyfile)
+        self.assertIn("uri /api/v1/internal/auth/check", caddyfile)
+        self.assertIn("copy_headers X-User-Id X-User-Sub X-User-Role X-User-Room-Id X-User-Nick", caddyfile)
         self.assertIn(
             "reverse_proxy @identity {$IDENTITY_API_UPSTREAM:host.docker.internal:8081}",
             caddyfile,
