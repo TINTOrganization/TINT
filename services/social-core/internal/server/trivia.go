@@ -218,6 +218,7 @@ func (d *Deps) sendTriviaOnJoin(ctx context.Context, c *websocket.Conn, roomID s
 	if d.Trivia == nil {
 		return
 	}
+	d.sendLeaderboardOnJoin(ctx, c, roomID, claims)
 	list, err := d.Trivia.List(ctx, roomID)
 	if err != nil {
 		return
@@ -240,6 +241,30 @@ func (d *Deps) sendTriviaOnJoin(ctx context.Context, c *websocket.Conn, roomID s
 		d.observeTriviaClose(roomID, q.ID, q.State.ClosesAtMS)
 	}
 	d.armTrivia(roomID)
+}
+
+// sendLeaderboardOnJoin entrega el ranking acumulado persistido (con el
+// puesto y los puntos de quien entra). Sin puntos en la sala no se envía.
+func (d *Deps) sendLeaderboardOnJoin(ctx context.Context, c *websocket.Conn, roomID string, claims auth.Claims) {
+	board, err := d.Trivia.TotalTop(ctx, roomID, socialevent.TriviaTopN)
+	if err != nil || len(board) == 0 {
+		return
+	}
+	out := socialevent.TriviaLeaderboard{
+		EventID: d.newID(), Type: socialevent.TypeTriviaLeaderboard, RoomID: roomID, Leaderboard: toScores(board),
+	}
+	if ranks, err := d.Trivia.Ranks(ctx, roomID, []string{claims.Subject}); err == nil {
+		if r, ok := ranks[claims.Subject]; ok {
+			out.MyRank = &r
+		}
+	}
+	if _, totals, err := d.Trivia.Scores(ctx, roomID, "", []string{claims.Subject}); err == nil {
+		t := totals[claims.Subject]
+		out.MyTotal = &t
+	}
+	if msg, err := json.Marshal(out); err == nil {
+		_ = writeMsg(ctx, c, msg, d.writeTimeout())
+	}
 }
 
 func (d *Deps) triviaQuestion(roomID string, q trivia.Question, st trivia.State) socialevent.TriviaQuestion {
@@ -451,11 +476,17 @@ func (d *Deps) deliverTriviaResult(ctx context.Context, roomID string, res socia
 		return
 	}
 	scores, totals, err := d.Trivia.Scores(ctx, roomID, res.TriviaID, users)
+	ranks, rankErr := d.Trivia.Ranks(ctx, roomID, users)
 	for _, t := range targets {
 		out := res
 		if err == nil {
 			s, tot := scores[t.sub], totals[t.sub]
 			out.MyScore, out.MyTotal = &s, &tot
+		}
+		if rankErr == nil {
+			if r, ok := ranks[t.sub]; ok {
+				out.MyRank = &r
+			}
 		}
 		msg, mErr := json.Marshal(out)
 		if mErr != nil {
@@ -483,7 +514,7 @@ func (d *Deps) deliverRemoteResult(roomID string, payload []byte) {
 	if d.Trivia == nil || json.Unmarshal(payload, &res) != nil || res.TriviaID == "" {
 		return
 	}
-	res.MyScore, res.MyTotal = nil, nil
+	res.MyScore, res.MyTotal, res.MyRank = nil, nil, nil
 	ctx, cancel := context.WithTimeout(context.Background(), triviaOpTimeout)
 	defer cancel()
 	d.deliverTriviaResult(ctx, roomID, res)

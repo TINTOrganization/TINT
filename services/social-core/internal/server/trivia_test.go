@@ -260,10 +260,11 @@ func TestTriviaFiresAtPositionScoresAndCloses(t *testing.T) {
 	for name, c := range map[string]struct {
 		col  *collector
 		mine float64
-	}{"host": {colH, 0}, "A": {colA, float64(fast)}, "B": {colB, 0}} {
+		rank any
+	}{"host": {colH, 0, nil}, "A": {colA, float64(fast), float64(1)}, "B": {colB, 0, float64(2)}} {
 		m := nextOfType(t, c.col, "trivia_result")
 		top, _ := m["top"].([]any)
-		if m["trivia_id"] != tid || m["correct"] != float64(1) || len(top) != 2 || m["my_score"] != c.mine {
+		if m["trivia_id"] != tid || m["correct"] != float64(1) || len(top) != 2 || m["my_score"] != c.mine || m["my_rank"] != c.rank {
 			t.Fatalf("%s trivia_result = %v", name, m)
 		}
 		first, _ := top[0].(map[string]any)
@@ -279,6 +280,28 @@ func TestTriviaFiresAtPositionScoresAndCloses(t *testing.T) {
 	answer(t, late, "l1", tid, 1)
 	if m := nextOfType(t, colL, "error"); m["code"] != "TRIVIA_CLOSED" {
 		t.Fatalf("respuesta tras el cierre = %v, want TRIVIA_CLOSED", m)
+	}
+
+	// The ranking is persistent: anyone who joins afterwards (even through a
+	// replica that never saw the game, i.e. after a restart) gets it at once,
+	// personalised with their own place.
+	restarted := triviaReplica(t, mr, secret, clock, &fakeTimers{}, &processed, nil)
+	for name, c := range map[string]struct {
+		token string
+		rank  any
+		total float64
+	}{
+		"A":        {guestTokenAs(t, secret, "guest:rapido", "Rápido", "r1", exp0()), float64(1), float64(fast)},
+		"newcomer": {guestTokenAs(t, secret, "guest:nuevo", "Nuevo", "r1", exp0()), nil, 0},
+	} {
+		conn, col := joinCol(t, restarted, c.token)
+		m := nextOfType(t, col, "trivia_leaderboard")
+		board, _ := m["leaderboard"].([]any)
+		first, _ := board[0].(map[string]any)
+		if len(board) != 2 || first["user_id"] != "guest:rapido" || m["room_id"] != "r1" || m["my_rank"] != c.rank || m["my_total"] != c.total {
+			t.Fatalf("%s trivia_leaderboard = %v", name, m)
+		}
+		conn.Close(websocket.StatusNormalClosure, "")
 	}
 	sendRaw(t, h, map[string]any{"event_id": "tl2", "type": "trivia_list"})
 	if q := questions(nextOfType(t, colH, "trivia_schedule_state"))[0]; q["status"] != "closed" {
