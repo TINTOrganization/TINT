@@ -18,6 +18,7 @@ import {
   type ScheduledTrivia,
   type TriviaAck,
   type TriviaDraft,
+  type TriviaRankEntry,
   type TriviaQuestion,
   type TriviaResult,
   buildLaserPoint,
@@ -72,6 +73,14 @@ export interface TriviaView {
   myOption: number | null;
 }
 
+/** Ranking acumulado de la sala: visible siempre, no depende de la pregunta en pantalla. */
+export interface TriviaLeaderboardView {
+  entries: TriviaRankEntry[];
+  myRank: number | null;
+  myTotal: number | null;
+}
+
+const EMPTY_LEADERBOARD: TriviaLeaderboardView = { entries: [], myRank: null, myTotal: null };
 const EMPTY_TRIVIA: TriviaView = { question: null, receivedAt: null, ack: null, result: null, myOption: null };
 const DEFAULT_CHAT_SETTINGS: ChatSettingsView = { slow_mode_s: 0, muted_user_ids: [] };
 
@@ -137,6 +146,7 @@ export function useSocialSocket(roomId: string | undefined, opts: UseSocialSocke
   // Cierres terminales de social-core: el host retiró o bloqueó al participante (4001) o su token caducó (4003).
   const [revoked, setRevoked] = useState(false);
   const [expired, setExpired] = useState(false);
+  const [triviaLeaderboard, setTriviaLeaderboard] = useState<TriviaLeaderboardView>(EMPTY_LEADERBOARD);
   /** Último voto propio visto por poll_id: los broadcasts no traen my_vote. */
   const myVotesRef = useRef<Map<string, number>>(new Map());
   const wsRef = useRef<WebSocket | null>(null);
@@ -271,6 +281,17 @@ export function useSocialSocket(roomId: string | undefined, opts: UseSocialSocke
           );
         } else if (parsed.type === 'trivia_result') {
           setTrivia((prev) => (prev.question?.trivia_id === parsed.trivia_id ? { ...prev, result: parsed } : prev));
+          setTriviaLeaderboard({
+            entries: parsed.leaderboard ?? [],
+            myRank: parsed.my_rank ?? null,
+            myTotal: parsed.my_total ?? null,
+          });
+        } else if (parsed.type === 'trivia_leaderboard') {
+          setTriviaLeaderboard({
+            entries: parsed.leaderboard ?? [],
+            myRank: parsed.my_rank ?? null,
+            myTotal: parsed.my_total ?? null,
+          });
         } else if (parsed.type === 'trivia_schedule_state') {
           const list = Array.isArray(parsed.questions) ? parsed.questions : [];
           setTriviaSchedule([...list].sort((a, b) => a.at_ms - b.at_ms));
@@ -490,6 +511,7 @@ export function useSocialSocket(roomId: string | undefined, opts: UseSocialSocke
     triviaSchedule,
     revoked,
     expired,
+    triviaLeaderboard,
     scheduleTrivia,
     updateTrivia,
     deleteTrivia,

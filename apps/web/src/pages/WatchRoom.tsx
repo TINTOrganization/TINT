@@ -142,6 +142,7 @@ export default function WatchRoom() {
     triviaSchedule,
     revoked: socialRevoked,
     expired: socialExpired,
+    triviaLeaderboard,
     scheduleTrivia,
     updateTrivia,
     deleteTrivia,
@@ -599,6 +600,7 @@ export default function WatchRoom() {
             <TriviaPanel
               isHost={!isGuest}
               schedule={triviaSchedule}
+              leaderboard={triviaLeaderboard}
               getCurrentMs={getPositionMs}
               onSchedule={scheduleTrivia}
               onUpdate={updateTrivia}

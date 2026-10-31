@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { TriviaView } from '../../hooks/useSocialSocket';
 import type { ScheduledTrivia } from '../../lib/socialSocket';
+import type { TriviaLeaderboardView } from '../../hooks/useSocialSocket';
 import { TriviaPanel, TriviaPopup } from './TriviaPanel';
 
 const schedule: ScheduledTrivia[] = [
@@ -20,6 +21,16 @@ const question = {
   closes_at_ms: 520_000,
 };
 
+const noBoard: TriviaLeaderboardView = { entries: [], myRank: null, myTotal: null };
+const board: TriviaLeaderboardView = {
+  entries: [
+    { user_id: 'u1', nick: 'Ana', score: 2400 },
+    { user_id: 'me', nick: 'Yo', score: 1800 },
+  ],
+  myRank: 2,
+  myTotal: 1800,
+};
+
 const empty: TriviaView = { question: null, receivedAt: null, ack: null, result: null, myOption: null };
 
 beforeEach(() => {
@@ -35,6 +46,7 @@ describe('TriviaPanel — host', () => {
       schedule,
       getCurrentMs: () => 83_400,
       onSchedule: vi.fn(() => true),
+      leaderboard: noBoard,
       onUpdate: vi.fn(() => true),
       onDelete: vi.fn(() => true),
       error: null,
@@ -156,9 +168,36 @@ describe('TriviaPanel — host', () => {
   });
 });
 
+describe('TriviaPanel — ranking en vivo', () => {
+  const guest = (leaderboard: TriviaLeaderboardView) =>
+    render(<TriviaPanel isHost={false} schedule={[]} getCurrentMs={() => 0} onSchedule={vi.fn()} onUpdate={vi.fn()} onDelete={vi.fn()} leaderboard={leaderboard} error={null} />);
+
+  it('el invitado ve el ranking de la sala en todo momento, en orden, con su puesto', () => {
+    guest(board);
+    const rows = within(screen.getByRole('list', { name: 'Ranking de la sala' })).getAllByRole('listitem');
+    expect(rows[0]).toHaveTextContent('Ana');
+    expect(rows[0]).toHaveTextContent('2400');
+    expect(rows[1]).toHaveTextContent('Yo');
+    expect(screen.getByText('Tu puesto: 2 · 1800 puntos')).toBeInTheDocument();
+  });
+
+  it('sin puntos todavía: estado vacío y aviso para entrar al ranking', () => {
+    guest(noBoard);
+    expect(screen.getByText('Aún nadie ha puntuado.')).toBeInTheDocument();
+    expect(screen.queryByRole('list', { name: 'Ranking de la sala' })).not.toBeInTheDocument();
+    expect(screen.getByText('Responde una trivia para entrar al ranking.')).toBeInTheDocument();
+  });
+
+  it('el host también ve el ranking, sin "tu puesto"', () => {
+    render(<TriviaPanel isHost schedule={[]} getCurrentMs={() => 0} onSchedule={vi.fn()} onUpdate={vi.fn()} onDelete={vi.fn()} leaderboard={board} error={null} />);
+    expect(within(screen.getByRole('list', { name: 'Ranking de la sala' })).getAllByRole('listitem')).toHaveLength(2);
+    expect(screen.queryByText(/Tu puesto/)).not.toBeInTheDocument();
+  });
+});
+
 describe('TriviaPanel — invitado', () => {
   it('explica cómo funciona, sin herramientas del host', () => {
-    render(<TriviaPanel isHost={false} schedule={[]} getCurrentMs={() => 0} onSchedule={vi.fn()} onUpdate={vi.fn()} onDelete={vi.fn()} error={null} />);
+    render(<TriviaPanel isHost={false} schedule={[]} getCurrentMs={() => 0} onSchedule={vi.fn()} onUpdate={vi.fn()} onDelete={vi.fn()} leaderboard={noBoard} error={null} />);
     expect(screen.getByText(/aparecerán preguntas/)).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Agregar pregunta en este momento' })).not.toBeInTheDocument();
   });
