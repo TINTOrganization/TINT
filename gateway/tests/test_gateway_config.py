@@ -40,3 +40,12 @@ class GatewayConfigTests(unittest.TestCase):
         self.assertIn('"${GATEWAY_HTTP_PORT:-80}:80"', compose)
         self.assertIn('"${GATEWAY_HTTPS_PORT:-443}:443"', compose)
         self.assertIn("restart: unless-stopped", compose)
+
+    def test_gateway_preserves_or_generates_correlation_id(self):
+        caddyfile = CONFIG.read_text(encoding="utf-8")
+
+        self.assertIn("@missing_correlation not header X-Correlation-ID *", caddyfile)
+        self.assertIn("request_header @missing_correlation X-Correlation-ID {http.request.uuid}", caddyfile)
+        self.assertIn("header X-Correlation-ID {http.request.header.X-Correlation-ID}", caddyfile)
+        self.assertIn("format json", caddyfile)
+        self.assertIn("log_append correlation_id {http.request.header.X-Correlation-ID}", caddyfile)

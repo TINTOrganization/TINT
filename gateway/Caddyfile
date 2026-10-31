@@ -3,6 +3,14 @@ http://{$GATEWAY_HOST:localhost} {
 }
 
 https://{$GATEWAY_HOST:localhost} {
+    @missing_correlation not header X-Correlation-ID *
+    request_header @missing_correlation X-Correlation-ID {http.request.uuid}
+    header X-Correlation-ID {http.request.header.X-Correlation-ID}
+    log {
+        format json
+        log_append correlation_id {http.request.header.X-Correlation-ID}
+    }
+
     @public path / /healthz /api/v1/healthz /api/v1/invitations/claim
     @protected {
         not path / /healthz /api/v1/healthz /api/v1/invitations/claim

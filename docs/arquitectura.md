@@ -465,6 +465,19 @@ los servicios correspondientes; las rutas de KPIs, heatmap y timeline bajo
 404. Su política `restart: unless-stopped` permite recuperar automáticamente
 el punto de entrada después de una caída.
 
+### 8.1 Trazabilidad de solicitudes
+
+El gateway administra el encabezado `X-Correlation-ID`: conserva un valor
+entrante seguro o genera un UUID cuando falta, lo reenvía a cada upstream y lo
+devuelve al cliente. Caddy registra ese mismo valor en logs JSON mediante el
+campo `correlation_id`.
+
+Identity API, analytics, sync-core y social-core mantienen el contrato: cada
+request responde con `X-Correlation-ID`, registra una línea JSON con
+`correlation_id` y, ante errores HTTP, incluye también `correlation_id` en el
+JSON de respuesta. Así el cliente puede entregar el identificador de un fallo
+al equipo y las búsquedas de logs pueden seguir el request entre conectores.
+
 ## 9. Calidad, CI y CD
 
 - **CI** (`.github/workflows/ci-pipeline.yml`): ver el diagrama de la [§7.3](#73-pipeline-de-ci-y-cd). Cobertura mínima `COVERAGE_MIN = 85` en todos los jobs (en Go con `scripts/check-go-coverage.sh`; en web e identity-api con los umbrales de `vitest.config.ts`). El job `ci-gate` corre siempre y falla si algún job no termina en `success`.

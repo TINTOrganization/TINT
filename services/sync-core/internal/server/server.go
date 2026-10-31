@@ -95,7 +95,7 @@ func NewRouter(sync, metrics http.Handler) http.Handler {
 	mux.HandleFunc("GET /healthz", healthz)
 	mux.Handle("GET /ws/sync", sync)
 	mux.Handle("GET /metrics", metrics)
-	return mux
+	return withCorrelation(mux)
 }
 
 func healthz(w http.ResponseWriter, _ *http.Request) {

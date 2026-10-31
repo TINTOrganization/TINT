@@ -71,6 +71,22 @@ def test_healthz_needs_no_token():
     assert (response.status, response.body) == (200, {"status": "ok"})
 
 
+def test_correlation_id_is_preserved_in_headers_and_error_body():
+    response = make_api().handle(
+        "GET",
+        kpis_path(),
+        {"X-Correlation-ID": "trace-123"},
+    )
+    assert response.status == 401
+    assert response.headers["X-Correlation-ID"] == "trace-123"
+    assert response.body["correlation_id"] == "trace-123"
+
+
+def test_correlation_id_is_generated_when_missing():
+    response = make_api().handle("GET", kpis_path(), {})
+    assert response.headers["X-Correlation-ID"]
+
+
 def test_unknown_route_is_404():
     response = get(make_api(), "/api/v1/rooms/x/raw-events", bearer=token())
     assert response.status == 404
@@ -332,7 +348,7 @@ def test_overview_rejects_a_missing_or_wrong_password(bearer):
     repo = FakeReadRepository(overview=overview_data())
     response = get(make_api(repo=repo, admin_password=PASSWORD), OVERVIEW, bearer=bearer)
     assert response.status == 401
-    assert response.body == {"error": "contraseña incorrecta"}
+    assert response.body["error"] == "contraseña incorrecta"
     assert repo.calls == []
     assert response.headers["Access-Control-Allow-Origin"] == ORIGIN
 

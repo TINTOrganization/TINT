@@ -55,6 +55,27 @@ func TestHealthzRejectsPost(t *testing.T) {
 	}
 }
 
+func TestCorrelationIDIsReturnedOnHTTPError(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/ws/social", nil)
+	req.Header.Set("X-Correlation-ID", "trace-123")
+	rec := httptest.NewRecorder()
+	NewRouterWithDeps(testDeps("secret")).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+	if got := rec.Header().Get("X-Correlation-ID"); got != "trace-123" {
+		t.Fatalf("correlation ID = %q, want trace-123", got)
+	}
+	var body map[string]string
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if body["correlation_id"] != "trace-123" {
+		t.Fatalf("error correlation ID = %q, want trace-123", body["correlation_id"])
+	}
+}
+
 func TestAddr(t *testing.T) {
 	empty := func(string) string { return "" }
 	if got := Addr(empty); got != defaultAddr {

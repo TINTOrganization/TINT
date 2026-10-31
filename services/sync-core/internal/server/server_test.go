@@ -19,7 +19,9 @@ import (
 
 func TestHealthz(t *testing.T) {
 	rec := httptest.NewRecorder()
-	NewRouter(http.NotFoundHandler(), http.NotFoundHandler()).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	req.Header.Set("X-Correlation-ID", "trace-123")
+	NewRouter(http.NotFoundHandler(), http.NotFoundHandler()).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
@@ -30,6 +32,20 @@ func TestHealthz(t *testing.T) {
 	}
 	if body["status"] != "ok" || body["service"] != "sync-core" {
 		t.Errorf("unexpected body: %v", body)
+	}
+	if got := rec.Header().Get("X-Correlation-ID"); got != "trace-123" {
+		t.Errorf("correlation ID = %q, want trace-123", got)
+	}
+}
+
+func TestHealthzGeneratesCorrelationID(t *testing.T) {
+	rec := httptest.NewRecorder()
+	NewRouter(http.NotFoundHandler(), http.NotFoundHandler()).ServeHTTP(
+		rec,
+		httptest.NewRequest(http.MethodGet, "/healthz", nil),
+	)
+	if got := rec.Header().Get("X-Correlation-ID"); got == "" {
+		t.Fatal("expected generated correlation ID")
 	}
 }
 

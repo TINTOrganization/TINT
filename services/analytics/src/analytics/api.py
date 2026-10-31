@@ -19,6 +19,7 @@ import hmac
 import json
 import logging
 import re
+import uuid
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -41,6 +42,8 @@ from analytics.kpis import (
 )
 
 logger = logging.getLogger(__name__)
+CORRELATION_HEADER = "X-Correlation-ID"
+SAFE_CORRELATION_ID = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
 
 DEFAULT_PORT = 8084
 DEFAULT_ALLOWED_ORIGINS = ("http://localhost:5173",)
@@ -85,6 +88,10 @@ class ApiError(Exception):
         self.headers = headers or {}
 
 
+def correlation_id(value: str | None) -> str:
+    return value if value and SAFE_CORRELATION_ID.fullmatch(value) else str(uuid.uuid4())
+
+
 def _iso(value: datetime | None) -> str | None:
     return None if value is None else format_timestamp(value)
 
@@ -122,17 +129,34 @@ class AnalyticsApi:
 
     def handle(self, method: str, target: str, headers: Mapping[str, str]) -> Response:
         headers = {key.lower(): value for key, value in headers.items()}
+        incoming_id = headers.get(CORRELATION_HEADER.lower())
+        request_id = correlation_id(incoming_id)
+        include_in_body = bool(incoming_id and SAFE_CORRELATION_ID.fullmatch(incoming_id))
         cors = self._cors_headers(headers.get("origin"))
+        response_headers = {**cors, CORRELATION_HEADER: request_id}
         if method == "OPTIONS":
-            return Response(204, None, {**cors, **self._preflight_headers()})
+            return Response(204, None, {**response_headers, **self._preflight_headers()})
         try:
             status, body = self._route(method, target, headers)
         except ApiError as exc:
-            return Response(exc.status, {"error": exc.message}, {**cors, **exc.headers})
+            body = {"error": exc.message}
+            if include_in_body:
+                body["correlation_id"] = request_id
+            return Response(
+                exc.status,
+                body,
+                {**response_headers, **exc.headers},
+            )
         except Exception:
-            logger.exception("error no controlado en %s %s", method, urlsplit(target).path)
-            return Response(500, {"error": "error interno"}, cors)
-        return Response(status, body, cors)
+            logger.exception(
+                "error no controlado",
+                extra={"correlation_id": request_id, "method": method, "path": urlsplit(target).path},
+            )
+            body = {"error": "error interno"}
+            if include_in_body:
+                body["correlation_id"] = request_id
+            return Response(500, body, response_headers)
+        return Response(status, body, response_headers)
 
     # --- enrutamiento -------------------------------------------------------------------------
 
@@ -324,7 +348,13 @@ def make_handler(api: AnalyticsApi) -> type[BaseHTTPRequestHandler]:
 
         def log_message(self, format: str, *args: Any) -> None:
             # Solo método, ruta y estado: nunca cabeceras (el token va en Authorization).
-            logger.info("%s %s", self.address_string(), format % args)
+            logger.info(
+                "%s %s correlation_id=%s",
+                self.address_string(),
+                format % args,
+                self.headers.get(CORRELATION_HEADER, ""),
+                extra={"correlation_id": self.headers.get(CORRELATION_HEADER, "")},
+            )
 
     return Handler
 
