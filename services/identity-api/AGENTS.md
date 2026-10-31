@@ -16,6 +16,7 @@ Documentación de referencia: [README del servicio (cómo funciona por dentro)](
 
 ## Responsabilidades
 - Crear o recuperar el usuario en cada inicio de sesión: *upsert* atómico `INSERT … ON CONFLICT (provider, provider_sub) DO UPDATE` que refresca email, nombre y avatar.
+- Verificar en `/internal/auth/check` los Bearer tokens recibidos por el gateway y devolver únicamente headers de identidad verificada.
 - Salas (`rooms`) e invitaciones (`invitations`, código `nanoid(12)`).
 - **Guest token** (`role: participant`, 4 h) al reclamar una invitación, registrado en `guest_sessions`.
 - **Sync-ticket** (`role: host`, 10 min) para el Canal Sync y **analytics-ticket** (mismos claims y TTL) para la API de lectura de analytics.
@@ -56,6 +57,7 @@ Prefijo `/api/v1`. Los errores siempre tienen la forma `{ "error": "<texto>" }`;
 | Método y ruta | Autorización | Descripción |
 | :--- | :--- | :--- |
 | `GET /healthz` | — | Estado del servicio |
+| `GET /internal/auth/check` | Gateway | Verifica Firebase RS256 o tokens propios HS256, comprueba revocación y devuelve 204 con headers `X-User-*`; responde 401 si el token no es válido |
 | `POST /auth/verify` | Firebase | Verifica el token y crea o recupera el usuario |
 | `POST /rooms` | Firebase | Crea sala (`title` 1–150) + invitación inicial |
 | `GET /rooms` | Firebase | Salas activas del usuario, con su invitación vigente |

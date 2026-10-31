@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { env } from '../config/env.js';
 import { validate } from '../middlewares/validate.js';
 import { requireAuthHost } from '../middlewares/auth.js';
+import { centralTokenCheck } from '../middlewares/centralAuth.js';
 import { requireRoomOwner } from '../middlewares/requireRoomOwner.js';
 import { upsertByProvider } from '../modules/users/users.repo.js';
 import { requireRoomHostOrGuest } from '../middlewares/guestAuth.js';
@@ -57,6 +58,8 @@ function paramId(raw: string | string[]) {
 router.get('/healthz', (req, res) => {
   res.json({ status: 'ok', service: 'identity-api' });
 });
+
+router.get('/internal/auth/check', centralTokenCheck);
 
 const verifySchema = z.object({});
 router.post('/auth/verify', requireAuthHost, validate(verifySchema), async (req, res) => {

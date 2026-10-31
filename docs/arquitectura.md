@@ -40,6 +40,7 @@ flowchart TB
     end
 
     subgraph servicios["Servicios"]
+        GW["gateway<br/>Caddy :80/:443"]
         ID["identity-api<br/>TypeScript/Express :8081"]
         SYNC["sync-core<br/>Go :8083 · N réplicas"]
         SOCIAL["social-core<br/>Go :8082 · N réplicas"]
@@ -58,11 +59,12 @@ flowchart TB
     FB["Firebase Auth"]
 
     WEB -- "login con Google" --> FB
-    WEB -- "HTTP /api/v1" --> ID
-    WEB -- "WebSocket /ws/sync" --> SYNC
-    WEB -- "WebSocket /ws/social" --> SOCIAL
-    WEB -- "HTTP KPIs, solo lectura" --> AN
-    WEB -- "WebSocket /ws/voice, señalización" --> VOICE
+    WEB -- "HTTP/WebSocket público" --> GW
+    GW -- "token check + HTTP /api/v1" --> ID
+    GW -- "token check + WebSocket /ws/sync" --> SYNC
+    GW -- "token check + WebSocket /ws/social" --> SOCIAL
+    GW -- "token check + HTTP KPIs" --> AN
+    GW -- "token check + WebSocket /ws/voice" --> VOICE
     WEB -. "audio WebRTC P2P entre navegadores, STUN/TURN" .-> TURN
     VOICE -- "revocación, PSUBSCRIBE REVOKED" --> RD
     WEB -- "PUT y GET de vídeo y ambilight.json, URLs firmadas" --> MI
@@ -127,10 +129,11 @@ flowchart LR
     end
 
     WEB -- "C1 · Firebase JS SDK · ID token RS256" --> FB
-    WEB -- "C2 · REST/HTTP /api/v1 · Bearer Firebase o guest token" --> ID
-    WEB == "C3 · WebSocket Canal Sync v2 · JSON o MessagePack" ==> SYNC
-    WEB == "C4 · WebSocket Canal Social · JSON" ==> SOCIAL
-    WEB -- "C5 · REST/HTTP KPIs · Bearer analytics-ticket" --> AN
+    WEB -- "C2 · REST/HTTP /api/v1 · Bearer Firebase o guest token" --> GW
+    GW -- "C0 · forward_auth + headers X-User-*" --> ID
+    GW == "C3 · WebSocket Canal Sync v2 · JSON o MessagePack" ==> SYNC
+    GW == "C4 · WebSocket Canal Social · JSON" ==> SOCIAL
+    GW -- "C5 · REST/HTTP KPIs · Bearer analytics-ticket" --> AN
     WEB -- "C6 · S3 HTTP con URL firmada · PUT y GET" --> MI
     ID -- "C7 · HTTPS JWKS · verifica ID token" --> FB
     SOCIAL -- "C8 · HTTPS certificados x509 · verifica ID token" --> FB
@@ -168,6 +171,7 @@ flowchart LR
 
 | Id | Tipo | Origen → destino | Protocolo | Sincronía | Contrato o fuente de verdad |
 | :--- | :--- | :--- | :--- | :--- | :--- |
+| C0 | Autenticación central | gateway → identity-api | Caddy `forward_auth` a `GET /api/v1/internal/auth/check`; copia `X-User-Id`, `X-User-Sub`, `X-User-Role`, `X-User-Room-Id`, `X-User-Nick` solo tras validar el Bearer | Síncrono (caché JWKS) | AC1–AC3 de GW-02; tokens inválidos se rechazan con 401 antes del upstream |
 | C1 | Autenticación externa | web → Firebase Auth | Firebase JS SDK (`signInWithPopup`), ID token RS256 | Síncrono | [usuarios-e-identidad §4](usuarios-e-identidad.md#4-esquemas-de-tokens) |
 | C2 | REST | web → identity-api | HTTP/JSON `/api/v1`, `Authorization: Bearer` (ID token de Firebase o guest token) | Síncrono | [identity-api/AGENTS.md § API](../services/identity-api/AGENTS.md#api) |
 | C3 | WebSocket Canal Sync v2 | web ↔ sync-core | `GET /ws/sync?room_id&token`; JSON o MessagePack (`tint.sync.msgpack`); cierres terminales `4001`/`4003` | Asíncrono bidireccional (latido 1 s) | [sync-core/AGENTS.md § Protocolo](../services/sync-core/AGENTS.md#protocolo-del-canal-sync) · [dominio-reproduccion](dominio-reproduccion.md) |
