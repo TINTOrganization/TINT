@@ -45,12 +45,14 @@ flowchart TB
         SOCIAL["social-core<br/>Go :8082 · N réplicas"]
         MEDIA["media-worker<br/>Python + FFmpeg"]
         AN["analytics<br/>Python :8084"]
+        VOICE["voice-core<br/>C++ :8085"]
     end
 
     subgraph datos["Infraestructura - docker compose"]
         PG[("PostgreSQL :5432")]
         RD[("Redis :6379")]
         MI[("MinIO :9000 / :9001")]
+        TURN["coturn :3478<br/>STUN/TURN"]
     end
 
     FB["Firebase Auth"]
@@ -60,6 +62,9 @@ flowchart TB
     WEB -- "WebSocket /ws/sync" --> SYNC
     WEB -- "WebSocket /ws/social" --> SOCIAL
     WEB -- "HTTP KPIs, solo lectura" --> AN
+    WEB -- "WebSocket /ws/voice, señalización" --> VOICE
+    WEB -. "audio WebRTC P2P entre navegadores, STUN/TURN" .-> TURN
+    VOICE -- "revocación, PSUBSCRIBE REVOKED" --> RD
     WEB -- "PUT y GET de vídeo y ambilight.json, URLs firmadas" --> MI
     ID -- "JWKS" --> FB
     SOCIAL -- "certificados x509" --> FB
@@ -85,6 +90,7 @@ flowchart TB
 | `services/sync-core` | Reloj Maestro, Canal Sync v2 (`PLAY`/`PAUSE`/`SEEK`/`RATE`/`LOAD`/`VOLUME`/`QUALITY`), drift, presencia, delegación, revocación, métricas | ✅ Implementado (v2) | [README](../services/sync-core/README.md) · [AGENTS](../services/sync-core/AGENTS.md) |
 | `services/social-core` | Chat en vivo (`/ws/social`) con moderación (modo lento y silencio) y spoilers, reacciones, puntero láser, encuestas, recap y trivias con rankings | 🟢 Chat, moderación, spoilers, reacciones, láser, encuestas, recap y trivias implementados. Heatmap: solo los buckets de 5 s en memoria (`internal/reactions/buckets.go`); las claves `room:{id}:heatmap` y `video:{id}:heatmap:history` y el evento de heatmap en vivo cada 1 s están **previstos**. La retransmisión de Ambilight en vivo también está **prevista** (hoy la web descarga `ambilight.json` por HTTP) | [README](../services/social-core/README.md) · [AGENTS](../services/social-core/AGENTS.md) |
 | `services/media-worker` | Consume `media:uploads`: valida con `ffprobe`, normaliza a MP4 H.264 + AAC, extrae el Ambilight, publica el vídeo, las calidades 720p/360p y `ambilight.json`; estado de `videos`; publica `media_processed` | ✅ Implementado (servicio de docker compose, verificado de punta a punta) | [README](../services/media-worker/README.md) · [AGENTS](../services/media-worker/AGENTS.md) |
+| `services/voice-core` | Canal de voz (`/ws/voice`): salas de voz, membresía con cupo, autorización con JWT y revocación, señalización WebRTC P2P, silencio propio y del host (WS y REST) | 🟢 Fases 1 a 3 (unirse, señalización, salida, revocación en vivo, silencios persistidos, TURN efímero). Web: **prevista** ([dominio-voz §7](dominio-voz.md#7-plan-por-fases)) | [README](../services/voice-core/README.md) · [AGENTS](../services/voice-core/AGENTS.md) |
 | `services/analytics` | Ingesta de `analytics:events`, sanitización, KPIs por sala, retención de 90 días y API de solo lectura de KPIs, heatmap de reacciones y línea de tiempo para el host | ✅ Implementado (consumidor, migraciones y API; servicio de docker compose) | [README](../services/analytics/README.md) · [AGENTS](../services/analytics/AGENTS.md) · [contrato de eventos](contrato-eventos-analitica.md) |
 
 <a id="vista-de-componentes-y-conectores"></a>
@@ -109,7 +115,10 @@ flowchart LR
         SOCIAL["social-core<br/>réplicas 1..N"]
         MW["media-worker"]
         AN["analytics"]
+        VC["voice-core<br/>1 réplica"]
     end
+
+    TURN["coturn<br/>STUN/TURN"]
 
     subgraph store["Almacenes"]
         PG[("PostgreSQL")]
@@ -137,7 +146,12 @@ flowchart LR
     RD -. "C14 · Stream XREADGROUP media-workers" .-> MW
     ID & SYNC & SOCIAL & MW -. "C15 · Stream XADD analytics:events" .-> RD
     RD -. "C15 · Stream XREADGROUP analytics-workers" .-> AN
-    SYNC & SOCIAL & AN -. "C11 · EXISTS token:revoked:jti" .-> RD
+    SYNC & SOCIAL & AN & VC -. "C11 · EXISTS token:revoked:jti" .-> RD
+    WEB == "C16 · WebSocket Canal de Voz · JSON · señalización y silencios" ==> VC
+    WEB -- "C18 · REST silencios del host · Bearer sync-ticket" --> VC
+    VC -- "C18 · SISMEMBER/SADD room:id:voice:muted" --> RD
+    WEB -. "C17 · WebRTC P2P entre navegadores · STUN/TURN" .-> TURN
+    RD -. "C11 · PSUBSCRIBE room:*:sync · REVOKED" .-> VC
 ```
 
 **Leyenda**
@@ -164,10 +178,13 @@ flowchart LR
 | C8 | Verificación de token | social-core → Google | HTTPS certificados x509 públicos por `kid` (caché por `Cache-Control`) | Síncrono (con caché) | [social-core/AGENTS.md § Autenticación](../services/social-core/AGENTS.md#autenticación-de-wssocial) |
 | C9 | SQL | identity-api, media-worker, analytics → PostgreSQL | Drizzle ORM (identity-api), `psycopg` 3 (Python) | Síncrono | [usuarios-e-identidad §3](usuarios-e-identidad.md#3-esquema-de-datos-postgresql) · [analytics/AGENTS.md](../services/analytics/AGENTS.md#modelo-de-datos-involucrado) |
 | C10 | S3 API | identity-api, media-worker → MinIO | `@aws-sdk/client-s3` (HEAD, DELETE) · `boto3` (GET, PUT) | Síncrono | [media-worker/AGENTS.md](../services/media-worker/AGENTS.md#modelo-de-datos-involucrado) |
-| C11 | Clave Redis + Pub/Sub | identity-api → sync-core, social-core, analytics | `SET token:revoked:{jti} 1 EXAT exp` + `PUBLISH room:{id}:sync REVOKED{jti}`; los consumidores hacen `EXISTS` en el handshake o en cada petición | Asíncrono (aviso) + consulta síncrona | [dominio-reproduccion §6.6](dominio-reproduccion.md#66-retirar-a-un-invitado-f5) · [ADR 0007](adr/0007-revocacion-por-clave-redis-y-cierre-4001.md) |
+| C11 | Clave Redis + Pub/Sub | identity-api → sync-core, social-core, analytics, voice-core | `SET token:revoked:{jti} 1 EXAT exp` + `PUBLISH room:{id}:sync REVOKED{jti}`; los consumidores hacen `EXISTS` en el handshake o en cada petición | Asíncrono (aviso) + consulta síncrona | [dominio-reproduccion §6.6](dominio-reproduccion.md#66-retirar-a-un-invitado-f5) · [ADR 0007](adr/0007-revocacion-por-clave-redis-y-cierre-4001.md) |
 | C12 | Redis Pub/Sub + claves | sync-core ↔ sync-core (réplicas) | `room:{id}:sync` (JSON), CAS Lua sobre `room:{id}:sync_state`, ZSET de presencia | Asíncrono (fan-out) | [dominio-reproduccion §7](dominio-reproduccion.md#7-modelo-de-datos-en-redis) · [ADR 0003](adr/0003-redis-pubsub-para-fanout-entre-replicas.md) |
 | C13 | Redis Pub/Sub + claves | social-core ↔ social-core; sync-core → social-core (solo lectura) | `room:{id}:social` (dedup por `event_id`); suscripción de solo lectura a `room:{id}:sync` (comandos para recap y trivias, `REVOKED`) | Asíncrono | [social-core/AGENTS.md § Modelo de datos](../services/social-core/AGENTS.md#modelo-de-datos-involucrado) |
 | C14 | Redis Stream | identity-api → media-worker | `XADD media:uploads * video_id <id>` → `XREADGROUP` grupo `media-workers` + `XACK` | Asíncrono (cola) | [dominio-reproduccion §6.7](dominio-reproduccion.md#67-subida-y-cambio-de-vídeo) · [ADR 0009](adr/0009-procesamiento-asincrono-con-redis-streams.md) |
+| C16 | WebSocket Canal de Voz | web ↔ voice-core | `GET /ws/voice?room_id&token`; JSON (`voice_state`, `peer_joined`/`peer_left`, `signal`, `self_mute`/`host_mute` → `peer_muted`, `leave`, `error`); cierres `4001`/`4003`/`4008`; keep-alive con ping (20 s) | Asíncrono bidireccional | [voice-core/AGENTS.md § Protocolo](../services/voice-core/AGENTS.md#protocolo-del-canal-de-voz) · [dominio-voz](dominio-voz.md) |
+| C18 | REST de moderación de voz | web → voice-core · voice-core → Redis | `PUT`/`DELETE /api/v1/voice/rooms/{id}/mutes/{user_id}` con `Bearer` sync-ticket de host/cohost (`403` sin rol); CORS; se guarda en `room:{id}:voice:muted` (SET, TTL 24 h) y se anuncia `peer_muted` | Síncrono | [voice-core/AGENTS.md § API REST](../services/voice-core/AGENTS.md#api-rest-de-moderación) |
+| C17 | WebRTC P2P + STUN/TURN | web ↔ web (mesh) · web → coturn | Audio Opus por DTLS-SRTP entre navegadores; ICE con STUN y relay TURN (`coturn` `:3478`) | Asíncrono (medios en tiempo real) | [ADR 0015](adr/0015-voice-core-en-cpp-con-webrtc-p2p.md) |
 | C15 | Redis Stream | identity-api, sync-core, social-core, media-worker → analytics | `XADD analytics:events MAXLEN ~ 100000` → `XREADGROUP` grupo `analytics-workers` + `XACK` tras el commit | Asíncrono, best-effort | [contrato-eventos-analitica](contrato-eventos-analitica.md) · [ADR 0010](adr/0010-eventos-de-analitica-sin-pii.md) |
 
 ### 4.2 C&C del flujo de reproducción
@@ -266,18 +283,20 @@ Son los únicos puntos en los que un PR puede necesitar coordinar dos dominios (
 
 | Contrato | Productor → consumidor | Definición |
 | :--- | :--- | :--- |
-| JWT HS256 (guest token, sync-ticket, analytics-ticket) | identity-api → sync-core, social-core, analytics | [usuarios-e-identidad §4](usuarios-e-identidad.md#4-esquemas-de-tokens) · `JWT_SECRET`/`JWT_ISSUER`/`JWT_AUDIENCE` iguales en los cuatro; social-core y analytics exigen `jti`, `iss`, `aud` y `exp` ([ADR 0006](adr/0006-tickets-jwt-hs256-emitidos-por-identity-api.md)) |
+| JWT HS256 (guest token, sync-ticket, analytics-ticket) | identity-api → sync-core, social-core, analytics, voice-core | [usuarios-e-identidad §4](usuarios-e-identidad.md#4-esquemas-de-tokens) · `JWT_SECRET`/`JWT_ISSUER`/`JWT_AUDIENCE` iguales en los cuatro; social-core y analytics exigen `jti`, `iss`, `aud` y `exp` ([ADR 0006](adr/0006-tickets-jwt-hs256-emitidos-por-identity-api.md)) |
 | Firebase ID token RS256 (host en `/ws/social`) | Firebase → social-core | Firma verificada con los certificados x509 públicos de Google por `kid`; `iss`/`aud` = `FIREBASE_PROJECT_ID` (sin él, se rechaza). No da permisos de moderación |
 | Protocolo del Canal Sync v2 | sync-core ↔ web | [sync-core/AGENTS.md](../services/sync-core/AGENTS.md#protocolo-del-canal-sync) · comandos `PLAY`/`PAUSE`/`SEEK`/`RATE`/`LOAD`/`VOLUME`/`QUALITY`; `volume` ∈ [0, 1] y `quality` ∈ {`auto`, `source`, `720p`, `360p`} viajan en broadcasts, `STATE` y `SYNC_CORRECTION` ([dominio-reproduccion §6.9](dominio-reproduccion.md#69-volumen-y-calidad-del-host-f8)); `SYNC_CHECK` acepta `version` opcional (última aplicada por el cliente; compatible hacia atrás) y tiene su propio límite de 5/s ([dominio-reproduccion §6.3](dominio-reproduccion.md#63-latido-rtt-y-drift)) |
 | Protocolo del Canal Social (`/ws/social`) | social-core ↔ web | [social-core/AGENTS.md](../services/social-core/AGENTS.md#protocolo-del-canal-social) · chat (con `spoiler`), reacciones, `laser_point`/`laser`, `poll_*`/`poll_state`, `recap_request`/`recap`, `chat_slow_mode`/`chat_mute`/`chat_settings`, `trivia_*`. Láser, encuestas, moderación del chat y programación de trivias exigen el **sync-ticket** del host (HS256, `role` host/cohost, `room_id` de la sala): un Firebase ID token no da permisos de moderación |
 | Comandos de reproducción en `room:{id}:sync` | sync-core → social-core (solo lectura) | social-core lee `PLAY`, `PAUSE`, `SEEK`, `RATE` y `LOAD` (`event_id`, `position_ms`, `status`, `rate`, `updated_at_ms`, `version`) para contar pausas y rebobinados del recap y para disparar las trivias en su posición (proyecta con su propio reloj, no con `updated_at_ms`); deduplica por `event_id` entre réplicas ([ADR 0012](adr/0012-trivia-con-reloj-del-servidor-y-ancla-del-recap.md)) |
-| Revocación (`token:revoked:{jti}` + `REVOKED`) | identity-api → sync-core, social-core, analytics, web | [dominio-reproduccion §6.6](dominio-reproduccion.md#66-retirar-a-un-invitado-f5) · sync-core y social-core leen `REVOKED` de `room:{id}:sync` y cierran con 4001; analytics consulta la clave en cada petición; retirar, bloquear (`room_bans`) y borrar la sala usan la misma vía ([ADR 0007](adr/0007-revocacion-por-clave-redis-y-cierre-4001.md), [ADR 0013](adr/0013-bloqueo-de-invitados-por-dispositivo.md)) |
+| Revocación (`token:revoked:{jti}` + `REVOKED`) | identity-api → sync-core, social-core, analytics, voice-core, web | [dominio-reproduccion §6.6](dominio-reproduccion.md#66-retirar-a-un-invitado-f5) · sync-core, social-core y voice-core leen `REVOKED` de `room:{id}:sync` y cierran con 4001; analytics consulta la clave en cada petición; retirar, bloquear (`room_bans`) y borrar la sala usan la misma vía ([ADR 0007](adr/0007-revocacion-por-clave-redis-y-cierre-4001.md), [ADR 0013](adr/0013-bloqueo-de-invitados-por-dispositivo.md)) |
 | `mediaId` / `media_id` | identity-api → web → sync-core | [dominio-reproduccion §6.7](dominio-reproduccion.md#67-subida-y-cambio-de-vídeo) · con la biblioteca, `mediaId = videos.id` |
 | API REST `/api/v1` | identity-api → web | [identity-api/AGENTS.md](../services/identity-api/AGENTS.md#api) (incluye `GET /videos`, `PATCH /videos/:id`, `PUT /rooms/:id/media {videoId}` y `/rooms/:id/bans`) |
 | `media:uploads` + tabla `videos` | identity-api → media-worker | Evento `{video_id}`; columnas `id`, `storage_key`, `duration_ms`, `status`, `renditions`; original en `incoming/{id}/original.*`, el worker publica `{id}/source.*` y reescribe `storage_key`, y además publica las calidades `{id}/720p.mp4` y `{id}/360p.mp4` y escribe sus alturas en `renditions` (jsonb, p. ej. `[720, 360]`), que identity-api expone como `qualities` en el playback ([dominio-reproduccion §6.7](dominio-reproduccion.md#67-subida-y-cambio-de-vídeo)) |
 | `analytics:events` | identity-api, social-core, sync-core, media-worker → analytics | [contrato-eventos-analitica](contrato-eventos-analitica.md) · obligatorios `event_id`, `type`, `source`, `occurred_at`, `received_at`; `room_id` en todo evento de sala; sin texto libre ni PII |
 | API de lectura de analytics + `analytics-ticket` | identity-api (emite el ticket) → web → analytics | `POST /api/v1/rooms/:id/analytics-ticket` (host dueño, también con la sala cerrada) → `GET /api/v1/rooms/{id}/kpis`, `/reactions/heatmap`, `/timeline` en el puerto 8084 ([analytics/AGENTS.md](../services/analytics/AGENTS.md#api-solo-lectura-puerto-analytics_port-por-defecto-8084)) · mismos `JWT_SECRET`/`JWT_ISSUER`/`JWT_AUDIENCE`; revocación con falla cerrado |
-| Puertos locales | infra ↔ web | social-core 8082, sync-core 8083, analytics 8084 (`docker-compose.yml`, `apps/web/.env.example`) |
+| Protocolo del Canal de Voz (`/ws/voice`) y REST de silencios (`/api/v1/voice/rooms/{id}/mutes/{user_id}`) | voice-core ↔ web | [voice-core/AGENTS.md](../services/voice-core/AGENTS.md#protocolo-del-canal-de-voz) · ver [dominio-voz](dominio-voz.md) |
+| `TURN_SECRET` | voice-core ↔ coturn | Credenciales TURN efímeras (REST API de TURN), `.env.example` raíz |
+| Puertos locales | infra ↔ web | social-core 8082, sync-core 8083, analytics 8084, voice-core 8085, coturn 3478 (`docker-compose.yml`, `apps/web/.env.example`) |
 
 ## 6. Almacenes de datos
 
@@ -286,7 +305,7 @@ Son los únicos puntos en los que un PR puede necesitar coordinar dos dominios (
 | PostgreSQL | identity-api | `users`, `rooms`, `invitations`, `guest_sessions` (con `device_id`), `room_bans`, `videos` (con `renditions` y `title`) ([esquema](usuarios-e-identidad.md#3-esquema-de-datos-postgresql)); media-worker lee y actualiza `videos` (no crea filas) y lee `users.provider_sub` |
 | PostgreSQL | analytics | `schema_migrations`, `telemetry_events` (90 días), `room_kpis`, `room_heatmap`, `daily_active_users` ([modelo](../services/analytics/AGENTS.md#modelo-de-datos-involucrado)) |
 | Redis | sync-core | `room:{id}:sync_state`, `:evt:{event_id}`, `:hosts_online`, `:members`, `:host_online`, `:hostless_since`, `:delegate` y Pub/Sub `room:{id}:sync` ([modelo](dominio-reproduccion.md#7-modelo-de-datos-en-redis)) |
-| Redis | identity-api → sync-core, social-core, analytics | `token:revoked:{jti}` |
+| Redis | identity-api → sync-core, social-core, analytics, voice-core | `token:revoked:{jti}` (voice-core además lee `REVOKED` de `room:*:sync` y guarda los silencios del host en `room:{id}:voice:muted`; su membresía vive en memoria) |
 | Redis | social-core | `room:{id}:chat:history`, `room:{id}:chat:settings`/`:muted`/`:last:{sub}` (moderación), `room:{id}:poll*` (encuestas), `room:{id}:recap:*` (métricas del recap y ancla de reproducción), `room:{id}:trivia:*` (trivias y rankings), Pub/Sub `room:{id}:social` (chat, reacciones, láser, `poll_state`, `chat_settings`, `trivia_question` y `trivia_result` entre réplicas) |
 | Redis Stream | identity-api → media-worker | `media:uploads` (grupo `media-workers`) |
 | Redis Stream | identity-api, social-core, sync-core, media-worker → analytics | `analytics:events` (grupo `analytics-workers`) |
@@ -326,7 +345,9 @@ flowchart TB
             AN["tint-analytics<br/>python:3.11-slim<br/>8084:8084"]
             SOC["tint-social-core<br/>distroless/static nonroot<br/>8082:8082"]
             SYN["tint-sync-core<br/>distroless/static nonroot<br/>8083:8080"]
+            VOI["tint-voice-core<br/>debian:trixie-slim · C++<br/>8085:8085"]
         end
+        TRN["tint-coturn<br/>coturn/coturn:4.6.3<br/>red del host · 3478 · relay 49160-49200"]
         V1[("volumen postgres-data")]
         V2[("volumen redis-data")]
         V3[("volumen minio-data")]
@@ -338,6 +359,8 @@ flowchart TB
     SPA -- "WS :8083" --> SYN
     SPA -- "WS :8082" --> SOC
     SPA -- "HTTP :8084" --> AN
+    SPA -- "WS :8085" --> VOI
+    SPA -- "STUN/TURN :3478" --> TRN
     SPA -- "HTTP :9000 firmado" --> MI
     IDP -- "localhost:5432" --> PG
     IDP -- "localhost:6379" --> RD
@@ -352,13 +375,14 @@ flowchart TB
     AN -- "postgres:5432 · redis:6379" --> PG & RD
     SOC -- "redis:6379" --> RD
     SYN -- "redis:6379" --> RD
+    VOI -- "redis:6379" --> RD
 ```
 
 - **identity-api no está en `docker-compose.yml` ni tiene Dockerfile.** Corre como proceso de Node 22 en la máquina del desarrollador (`npm run dev`, `tsx watch src/server.ts`) y llega a la infraestructura por los puertos publicados en `localhost`. Existe `npm run build` (`tsup` → `dist/`) y `npm start`, pero no hay imagen. Sus migraciones se aplican a mano con `npx drizzle-kit migrate`.
 - **La web tampoco está en compose:** `npm run dev` (Vite 5173) o `npm run build` (`tsc -b && vite build` → `dist/`, servible con `npm run preview`). No hay servidor estático configurado en el repositorio.
 - **Orden de arranque** (`depends_on`): `minio-init` espera a que MinIO esté sano; `media-worker` espera a PostgreSQL y Redis sanos y a que `minio-init` termine bien; `analytics`, `social-core` y `sync-core` esperan a Redis (analytics también a PostgreSQL). analytics aplica sus migraciones al arrancar.
-- **Salud y métricas:** los cuatro servicios de compose exponen `/healthz` (media-worker no tiene HTTP); solo sync-core expone `/metrics` (Prometheus). social-core no tiene `/metrics`.
-- **Réplicas:** compose levanta **una** réplica de cada servicio. El diseño soporta N réplicas de sync-core y social-core (Pub/Sub, CAS y `HSETNX` entre réplicas), pero no hay balanceador ni configuración multirréplica en el repositorio.
+- **Salud y métricas:** analytics, social-core, sync-core y voice-core exponen `/healthz` (media-worker no tiene HTTP); solo sync-core expone `/metrics` (Prometheus). social-core no tiene `/metrics`.
+- **Réplicas:** compose levanta **una** réplica de cada servicio. El diseño soporta N réplicas de sync-core y social-core (Pub/Sub, CAS y `HSETNX` entre réplicas); voice-core solo admite **una** (membresía en memoria, [dominio-voz §9](dominio-voz.md#9-limitaciones-conocidas)). No no hay balanceador ni configuración multirréplica en el repositorio.
 
 | Nodo | Artefacto | Puertos (host → contenedor) | Volúmenes | Variables principales |
 | :--- | :--- | :--- | :--- | :--- |
@@ -369,6 +393,8 @@ flowchart TB
 | `tint-media-worker` | `build: ./services/media-worker` (`python:3.11-slim` + `ffmpeg`, usuario `worker`, `python -m media_worker`) | — | — | `DATABASE_URL`, `REDIS_URL`, `S3_ENDPOINT_URL`, `S3_ACCESS_KEY`, `S3_SECRET_KEY`, `MINIO_BUCKET`, `MEDIA_WORKER_CONSUMER` |
 | `tint-analytics` | `build: ./services/analytics` (`python:3.11-slim`, usuario `worker`, `python -m analytics`) | `ANALYTICS_PORT` (8084) → 8084 | — | `DATABASE_URL`, `REDIS_URL`, `JWT_SECRET`, `JWT_ISSUER`, `JWT_AUDIENCE`, `ANALYTICS_PORT`, `ANALYTICS_ALLOWED_ORIGINS`, `ANALYTICS_CONSUMER` |
 | `tint-social-core` | `build: ./services/social-core` (multi-stage `golang:1.22-alpine` → `distroless/static-debian12:nonroot`) | 8082 → 8082 | — | `SOCIAL_CORE_ADDR`, `REDIS_URL`, `JWT_*`, `FIREBASE_PROJECT_ID`, `ALLOWED_ORIGINS` (de `SOCIAL_ALLOWED_ORIGINS`) |
+| `tint-voice-core` | `build: ./services/voice-core` (multi-stage `debian:trixie-slim` dev → build → runtime, usuario `voicecore`) | 8085 → 8085 | — | `VOICE_CORE_ADDR`, `REDIS_URL`, `JWT_*`, `ALLOWED_ORIGINS` (de `VOICE_ALLOWED_ORIGINS`), `VOICE_MAX_MEMBERS`, `STUN_URLS`, `TURN_URLS`, `TURN_SECRET`, `TURN_TTL_SECONDS` |
+| `tint-coturn` | Imagen `coturn/coturn:4.6.3`, `network_mode: host` (en Linux el relay debe anunciar direcciones alcanzables) | 3478 (UDP/TCP) · relay 49160–49200 | — | `TURN_SECRET` (`--static-auth-secret`) |
 | `tint-sync-core` | `build: ./services/sync-core` (multi-stage `golang:1.22-alpine` → `distroless/static-debian12:nonroot`) | 8083 → 8080 | — | `SYNC_CORE_ADDR`, `REDIS_URL`, `JWT_*`, `ALLOWED_ORIGINS` (de `SYNC_ALLOWED_ORIGINS`) |
 | identity-api (proceso local) | `services/identity-api` con Node 22 (`tsx watch`) | 8081 | — | `services/identity-api/.env.example`: `IDENTITY_API_PORT`, `DATABASE_URL`, `REDIS_URL`, `FIREBASE_PROJECT_ID`, `JWT_*`, `MINIO_*`, TTLs, `MAX_UPLOAD_BYTES` |
 | web (proceso local) | `apps/web` con Vite 5 | 5173 | — | `apps/web/.env.example`: `VITE_IDENTITY_API_URL`, `VITE_FIREBASE_*`, `VITE_SYNC_WS_URL`, `VITE_SOCIAL_WS_URL`, `VITE_SYNC_ENCODING`, `VITE_ANALYTICS_API_URL`, `VITE_DEMO_VIDEO_URL` |
@@ -388,16 +414,18 @@ flowchart LR
     EV1 --> PY
     EV1 --> WEBJ
     EV1 --> IDJ
+    EV1 --> CPP
 
     subgraph ci["ci-pipeline.yml"]
         GO["go · matriz sync-core, social-core<br/>gofmt · go vet · go test -race · cobertura 85"]
         PY["python · matriz media-worker, analytics<br/>ruff check y format · pytest cobertura 85"]
         WEBJ["web · apps/web<br/>npm ci · lint · typecheck · vitest coverage"]
         IDJ["identity-api<br/>npm ci · typecheck · vitest coverage"]
+        CPP["cpp · voice-core<br/>clang-format · ASan+UBSan · TSan · gcovr 85<br/>Redis de servicio"]
         K6["sync-load-smoke · needs go<br/>Redis de servicio · sync-core :8083<br/>k6 50 VUs 20 s"]
         GATE{"ci-gate<br/>if always"}
         GO --> K6
-        GO & PY & WEBJ & IDJ & K6 --> GATE
+        GO & PY & WEBJ & IDJ & CPP & K6 --> GATE
     end
 
     GATE -- "todos success" --> OK["merge permitido"]
@@ -420,6 +448,8 @@ flowchart LR
 | social-core | 8082 | `docker compose` (`/ws/social`, `/healthz`) |
 | sync-core | 8083 → 8080 | `docker compose` (`/ws/sync`, `/healthz`, `/metrics`) |
 | analytics | 8084 | `docker compose` (`/healthz`, `/api/v1/rooms/{id}/kpis`, `/reactions/heatmap`, `/timeline`) |
+| voice-core | 8085 | `docker compose` (`/ws/voice`, `/api/v1/voice/rooms/{id}/mutes/{user_id}`, `/healthz`) |
+| coturn | 3478 · 49160–49200 | `docker compose` (STUN/TURN, red del host) |
 | PostgreSQL | 5432 | |
 | Redis | 6379 | |
 | MinIO | 9000 (API) · 9001 (consola) | |
@@ -429,7 +459,7 @@ flowchart LR
 - **CI** (`.github/workflows/ci-pipeline.yml`): ver el diagrama de la [§7.3](#73-pipeline-de-ci-y-cd). Cobertura mínima `COVERAGE_MIN = 85` en todos los jobs (en Go con `scripts/check-go-coverage.sh`; en web e identity-api con los umbrales de `vitest.config.ts`). El job `ci-gate` corre siempre y falla si algún job no termina en `success`.
 - **Diferencia con el gate de AGENTS:** el gate de `apps/web` en el [AGENTS raíz](../AGENTS.md#gates-por-dominio) incluye `npm run build`, pero el job `web` del CI no lo ejecuta (solo lint, typecheck y vitest).
 - **Carga:** el job `sync-load-smoke` corre 50 VUs; la prueba completa de 500 conexiones (SYNC-TEST-01) se corre a mano desde otra máquina ([dominio-reproduccion §14](dominio-reproduccion.md#14-verificación-y-resultados)).
-- **Local:** `make test-all` (Go, Python, web e identity-api) y `make up`/`make down`.
+- **Local:** `make test-all` (Go, Python, web, identity-api y C++) y `make up`/`make down`.
 
 ## 10. Decisiones de arquitectura (ADRs)
 
@@ -451,6 +481,7 @@ flowchart LR
 | [0012](adr/0012-trivia-con-reloj-del-servidor-y-ancla-del-recap.md) | Trivia con el reloj del servidor y el ancla del recap |
 | [0013](adr/0013-bloqueo-de-invitados-por-dispositivo.md) | Bloqueo de invitados por dispositivo |
 | [0014](adr/0014-upgrade-y-cierre-4xxx-para-estados-terminales.md) | Upgrade y cierre `4xxx` para estados terminales en el Canal Sync |
+| [0015](adr/0015-voice-core-en-cpp-con-webrtc-p2p.md) | Canal de Voz en un servicio C++ con WebRTC P2P |
 
 ## 11. Documentación por servicio
 
@@ -462,3 +493,4 @@ flowchart LR
 | social-core | [services/social-core/README.md](../services/social-core/README.md) | [services/social-core/AGENTS.md](../services/social-core/AGENTS.md) |
 | media-worker | [services/media-worker/README.md](../services/media-worker/README.md) | [services/media-worker/AGENTS.md](../services/media-worker/AGENTS.md) |
 | analytics | [services/analytics/README.md](../services/analytics/README.md) | [services/analytics/AGENTS.md](../services/analytics/AGENTS.md) |
+| voice-core | [services/voice-core/README.md](../services/voice-core/README.md) | [services/voice-core/AGENTS.md](../services/voice-core/AGENTS.md) |

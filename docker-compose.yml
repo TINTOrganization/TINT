@@ -167,6 +167,48 @@ services:
     ports:
       - "8083:8080"
 
+  # Canal de Voz (C++): señalización WebRTC (/ws/voice), membresía y moderación de la voz.
+  # El audio viaja P2P entre navegadores; coturn hace de STUN/TURN. JWT_* deben ser los de identity-api.
+  voice-core:
+    build: ./services/voice-core
+    container_name: tint-voice-core
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      VOICE_CORE_ADDR: "0.0.0.0:8085"
+      REDIS_URL: redis://redis:6379
+      JWT_SECRET: ${JWT_SECRET:-dev-secret-change-in-prod}
+      JWT_ISSUER: ${JWT_ISSUER:-tint-identity}
+      JWT_AUDIENCE: ${JWT_AUDIENCE:-tint:room}
+      ALLOWED_ORIGINS: ${VOICE_ALLOWED_ORIGINS:-localhost:5173,127.0.0.1:5173}
+      VOICE_MAX_MEMBERS: ${VOICE_MAX_MEMBERS:-8}
+      STUN_URLS: ${STUN_URLS:-stun:localhost:3478}
+      TURN_URLS: ${TURN_URLS:-turn:localhost:3478?transport=udp,turn:localhost:3478?transport=tcp}
+      TURN_SECRET: ${TURN_SECRET:-dev-turn-secret-change-in-prod}
+      TURN_TTL_SECONDS: ${TURN_TTL_SECONDS:-3600}
+    ports:
+      - "8085:8085"
+
+  # STUN/TURN para la voz. Red del host: el relay debe anunciar direcciones alcanzables
+  # desde el navegador (en Linux). Credenciales efímeras firmadas con TURN_SECRET (REST API de TURN).
+  coturn:
+    image: coturn/coturn:4.6.3
+    container_name: tint-coturn
+    network_mode: host
+    command:
+      - "--listening-port=3478"
+      - "--min-port=49160"
+      - "--max-port=49200"
+      - "--use-auth-secret"
+      - "--static-auth-secret=${TURN_SECRET:-dev-turn-secret-change-in-prod}"
+      - "--realm=tint.local"
+      - "--fingerprint"
+      - "--no-cli"
+      - "--no-tls"
+      - "--no-dtls"
+      - "--log-file=stdout"
+
 volumes:
   postgres-data:
   redis-data:

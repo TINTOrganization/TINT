@@ -22,6 +22,7 @@ Cada ADR de esta carpeta se escribió a partir de evidencia del repositorio (có
 | [0012](0012-trivia-con-reloj-del-servidor-y-ancla-del-recap.md) | Trivia con el reloj del servidor y el ancla del recap | Aceptada | 2026-10-11 | social-core, web |
 | [0013](0013-bloqueo-de-invitados-por-dispositivo.md) | Bloqueo de invitados por dispositivo | Aceptada | 2026-10-11 | identity-api, web |
 | [0014](0014-upgrade-y-cierre-4xxx-para-estados-terminales.md) | Upgrade y cierre `4xxx` para estados terminales en el Canal Sync | Aceptada | 2026-10-11 | sync-core, web (social-core pendiente) |
+| [0015](0015-voice-core-en-cpp-con-webrtc-p2p.md) | Canal de Voz en un servicio C++ con WebRTC P2P | Aceptada | 2026-10-30 | voice-core, infra, web |
 
 ```mermaid
 flowchart LR
@@ -32,6 +33,8 @@ flowchart LR
     A6["0006 tickets HS256"] --> A7["0007 revocación y 4001"]
     A7 --> A14["0014 upgrade y cierre 4xxx"]
     A7 --> A13["0013 bloqueo por dispositivo"]
+    A7 --> A15["0015 voz C++ y WebRTC P2P"]
+    A14 --> A15
     A8["0008 subida directa"] --> A9["0009 Redis Streams"]
     A9 --> A11["0011 Ambilight precalculado"]
     A9 --> A10["0010 analítica sin PII"]

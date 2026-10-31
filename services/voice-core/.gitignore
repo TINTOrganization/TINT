@@ -1,0 +1,4 @@
+build*/
+*.gcov
+coverage*
+__pycache__/

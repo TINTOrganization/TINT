@@ -8,6 +8,7 @@
 | [Decisiones de arquitectura (ADRs)](adr/README.md) | Por qué el sistema es como es: una decisión por archivo, con contexto, alternativas y consecuencias. |
 | [Usuarios, identidad y permisos](usuarios-e-identidad.md) | Tipos de usuario, matriz de permisos, esquema de PostgreSQL, esquemas de tokens, flujos de login, invitación, retiro y bloqueo. |
 | [Dominio de Reproducción](dominio-reproduccion.md) | Canal Sync v2: Reloj Maestro, comandos, drift, presencia, delegación, revocación, subida y biblioteca de vídeos, métricas, benchmarks y pruebas. |
+| [Dominio de Voz](dominio-voz.md) | Canal de voz (voice-core, C++): unirse, señalización WebRTC P2P, revocación, plan por fases y verificación. |
 | [Contrato de eventos de analítica](contrato-eventos-analitica.md) | Qué publica cada servicio en `analytics:events` y qué entrega Analítica a cambio (tablas y API de lectura de KPIs). |
 | [Bug hunting 2026-10](bug-hunting-2026-10.md) | Hallazgos de la ronda de bug hunting de octubre de 2026 y cómo se corrigieron. |
 
@@ -21,6 +22,7 @@
 | social-core | [services/social-core/README.md](../services/social-core/README.md) | [AGENTS](../services/social-core/AGENTS.md) |
 | media-worker | [services/media-worker/README.md](../services/media-worker/README.md) | [AGENTS](../services/media-worker/AGENTS.md) |
 | analytics | [services/analytics/README.md](../services/analytics/README.md) | [AGENTS](../services/analytics/AGENTS.md) |
+| voice-core | [services/voice-core/README.md](../services/voice-core/README.md) | [AGENTS](../services/voice-core/AGENTS.md) |
 
 Cada `AGENTS.md` tiene stack, límites, modelo de datos y comandos (ver la tabla en el [AGENTS.md raíz](../AGENTS.md)).
 
