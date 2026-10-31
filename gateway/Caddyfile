@@ -1,0 +1,25 @@
+http://{$GATEWAY_HOST:localhost} {
+    redir https://{host}:{$GATEWAY_HTTPS_PORT:443}{uri} 308
+}
+
+https://{$GATEWAY_HOST:localhost} {
+    @root path /
+    respond @root 200
+
+    @health path /healthz
+    respond @health 200
+
+    @analytics path_regexp analytics ^/api/v1/rooms/[^/]+/(kpis|reactions/heatmap|timeline)$
+    reverse_proxy @analytics analytics:8084
+
+    @identity path /api/*
+    reverse_proxy @identity {$IDENTITY_API_UPSTREAM:host.docker.internal:8081}
+
+    @sync path /ws/sync /ws/sync/*
+    reverse_proxy @sync sync-core:8080
+
+    @social path /ws/social /ws/social/*
+    reverse_proxy @social social-core:8082
+
+    respond 404
+}

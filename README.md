@@ -331,7 +331,7 @@ Esquemas de tokens, matriz de permisos y flujos de login, invitación y retiro e
 **Requisitos:** Docker, Go 1.22+, Python 3.11+, Node.js 22+ y FFmpeg (para el media-worker fuera de Docker).
 
 ```bash
-# 1. Clonar e infraestructura (PostgreSQL, Redis, MinIO + bucket, media-worker, social-core :8082, sync-core :8083)
+# 1. Clonar e infraestructura (gateway HTTPS :443/:80, PostgreSQL, Redis, MinIO + bucket, media-worker, social-core :8082, sync-core :8083)
 git clone https://github.com/HanamDavid/tint-monorepo.git && cd tint-monorepo
 cp .env.example .env
 docker compose up -d
@@ -361,6 +361,7 @@ cd services/identity-api && WAIT_WORKER=1 npm run test:integration
 
 | Servicio local | URL |
 | :--- | :--- |
+| gateway | `https://localhost` (HTTP en `http://localhost` redirige a HTTPS) |
 | web | `http://localhost:5173` |
 | identity-api | `http://localhost:8081/api/v1` |
 | social-core (Canal Social) | `ws://localhost:8082/ws/social` |
@@ -368,6 +369,12 @@ cd services/identity-api && WAIT_WORKER=1 npm run test:integration
 | PostgreSQL | `localhost:5432` |
 | Redis | `localhost:6379` |
 | MinIO API / Consola | `localhost:9000` / [`localhost:9001`](http://localhost:9001) |
+
+El gateway es la única entrada pública de las APIs y canales: `/api/*` llega a
+identity-api (con las rutas de analytics dirigidas a analytics), `/ws/sync` a
+sync-core y `/ws/social` a social-core. Caddy conserva el certificado local en
+`gateway-data`; para un dominio real, define `GATEWAY_HOST` con el nombre DNS
+público y sustituye los puertos publicados según tu despliegue.
 
 > [!NOTE]
 > `JWT_SECRET` (en `.env`) debe ser el mismo para identity-api, sync-core y social-core: identity-api firma los tokens y los canales los verifican. MinIO acepta peticiones del navegador desde `MINIO_CORS_ALLOW_ORIGIN` (por defecto `http://localhost:5173`).
