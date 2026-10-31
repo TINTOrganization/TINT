@@ -483,6 +483,9 @@ func handleSocial(w http.ResponseWriter, r *http.Request, d *Deps) {
 		case socialevent.TypeTriviaSchedule:
 			d.handleTriviaSchedule(ctx, c, roomID, claims, raw)
 			continue
+		case socialevent.TypeTriviaUpdate:
+			d.handleTriviaUpdate(ctx, c, roomID, claims, raw)
+			continue
 		case socialevent.TypeTriviaDelete:
 			d.handleTriviaDelete(ctx, c, roomID, claims, raw)
 			continue

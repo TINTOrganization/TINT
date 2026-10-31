@@ -65,6 +65,38 @@ func TestScheduleListDelete(t *testing.T) {
 	}
 }
 
+func TestUpdate(t *testing.T) {
+	s, _ := testStore(t)
+	ctx := context.Background()
+	if err := s.Schedule(ctx, "r1", sample("a", 30_000)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Update(ctx, "r1", sample("zz", 1)); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("editar inexistente = %v, want ErrNotFound", err)
+	}
+	edited := Question{ID: "a", AtMS: 45_000, Question: "¿Nueva?", Options: []string{"X", "Y"}, Correct: 0, AnswerWindowS: 30}
+	if err := s.Update(ctx, "r1", edited); err != nil {
+		t.Fatal(err)
+	}
+	// La nueva versión es la que se lanza.
+	q, _, ok, err := s.Get(ctx, "r1", "a")
+	if err != nil || !ok || q.Question != "¿Nueva?" || q.AtMS != 45_000 || len(q.Options) != 2 || q.AnswerWindowS != 30 {
+		t.Fatalf("Get tras editar = %+v %v %v", q, ok, err)
+	}
+	if list, _ := s.List(ctx, "r1"); len(list) != 1 {
+		t.Fatalf("editar no debe duplicar: %+v", list)
+	}
+	if _, _, err := s.Launch(ctx, "r1", "a", t0); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Update(ctx, "r1", sample("a", 1)); !errors.Is(err, ErrClosed) {
+		t.Fatalf("editar lanzada = %v, want ErrClosed", err)
+	}
+	if q, _, _, _ := s.Get(ctx, "r1", "a"); q.Question != "¿Nueva?" {
+		t.Fatalf("la lanzada no debe cambiar: %+v", q)
+	}
+}
+
 func TestScheduleLimit(t *testing.T) {
 	s, _ := testStore(t)
 	ctx := context.Background()

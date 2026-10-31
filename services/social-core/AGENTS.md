@@ -73,6 +73,7 @@ JSON sobre `/ws/social`. Todo lo que se emite a la sala viaja también por `room
 | `poll_close{event_id, room_id?, poll_id}` | Host/cohost | `poll_state{closed: true}` a la sala |
 | `recap_request{event_id, room_id?}` | Todos | `recap` solo al que lo pide |
 | `trivia_schedule{event_id, room_id?, at_ms, question, options, correct, answer_window_s?}` (`at_ms` 0..24 h de vídeo; 1..140 / 2..4 de 1..60; `correct` = índice; ventana 10..60 s, por defecto 20) | Host/cohost | `trivia_schedule_state` solo al que la programó |
+| `trivia_update{event_id, room_id?, trivia_id, at_ms, question, options, correct, answer_window_s?}` (mismas reglas que `trivia_schedule`; reemplaza la pregunta y la nueva versión es la que se dispara) | Host/cohost | `trivia_schedule_state` solo a él; `TRIVIA_NOT_FOUND` si no existe, `TRIVIA_CLOSED` si ya salió |
 | `trivia_delete{event_id, room_id?, trivia_id}` | Host/cohost | `trivia_schedule_state` solo a él; `TRIVIA_NOT_FOUND` si no existe, `TRIVIA_CLOSED` si ya salió |
 | `trivia_list{event_id, room_id?}` | Host/cohost | `trivia_schedule_state` solo a él |
 | `trivia_answer{event_id, room_id?, trivia_id, option}` (índice) | Todos (10/s, compartido con votos y recap) | `trivia_ack` solo a quien respondió; una respuesta por usuario |

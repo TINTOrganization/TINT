@@ -145,6 +145,36 @@ func (s *Store) Schedule(ctx context.Context, roomID string, q Question) error {
 	return nil
 }
 
+// updateScript: -1 no existe, -2 ya lanzada, 1 reemplazada.
+var updateScript = redis.NewScript(`
+if redis.call('HEXISTS', KEYS[1], ARGV[1]) == 0 then return -1 end
+if redis.call('HEXISTS', KEYS[2], 'launched') == 1 then return -2 end
+redis.call('HSET', KEYS[1], ARGV[1], ARGV[2])
+redis.call('EXPIRE', KEYS[1], ARGV[3])
+return 1
+`)
+
+// Update reemplaza una pregunta que aún no salió (ErrNotFound si no existe,
+// ErrClosed si ya se lanzó): la nueva versión es la que se dispara.
+func (s *Store) Update(ctx context.Context, roomID string, q Question) error {
+	raw, err := json.Marshal(q)
+	if err != nil {
+		return err
+	}
+	n, err := updateScript.Run(ctx, s.client,
+		[]string{QuestionsKey(roomID), StateKey(roomID, q.ID)}, q.ID, string(raw), secs(s.ttl)).Int64()
+	if err != nil {
+		return err
+	}
+	switch n {
+	case -1:
+		return ErrNotFound
+	case -2:
+		return ErrClosed
+	}
+	return nil
+}
+
 // deleteScript: -1 no existe, -2 ya lanzada, 1 borrada.
 var deleteScript = redis.NewScript(`
 if redis.call('HEXISTS', KEYS[1], ARGV[1]) == 0 then return -1 end

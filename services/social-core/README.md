@@ -244,7 +244,7 @@ sequenceDiagram
 
 Las trivias se programan por **posición del vídeo** (`at_ms`) y se disparan cuando la posición proyectada llega a la marca. Esa posición sale del ancla del recap (`room:{id}:recap:last_pos`), que se mueve con los comandos de reproducción que sync-core publica en `room:{id}:sync`.
 
-**Programación** (`trivia_schedule`, `trivia_delete`, `trivia_list`, solo moderadores): el script `schedule` guarda la pregunta en `room:{id}:trivia:questions` (máximo 50 por sala) y responde `trivia_schedule_state` solo a quien la programó. Borrar una que ya salió da `TRIVIA_CLOSED`. Cada cambio rearma el disparo.
+**Programación** (`trivia_schedule`, `trivia_update`, `trivia_delete`, `trivia_list`, solo moderadores): el script `schedule` guarda la pregunta en `room:{id}:trivia:questions` (máximo 50 por sala) y responde `trivia_schedule_state` solo a quien la programó. Editar (`trivia_update`, script `update`) reemplaza la pregunta conservando su `trivia_id`, así que se dispara la nueva versión; editar o borrar una que ya salió da `TRIVIA_CLOSED` y una inexistente, `TRIVIA_NOT_FOUND`. Cada cambio rearma el disparo.
 
 **Disparo:**
 
@@ -326,6 +326,7 @@ sequenceDiagram
 ```mermaid
 stateDiagram-v2
     [*] --> pending: "trivia_schedule"
+    pending --> pending: "trivia_update (nueva versión)"
     pending --> [*]: "trivia_delete"
     pending --> open: "Launch (HSETNX launched) al llegar a at_ms"
     open --> closed: "closes_at_ms (Close, HSETNX closed)"
