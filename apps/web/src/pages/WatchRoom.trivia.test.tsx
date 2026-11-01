@@ -40,6 +40,7 @@ function baseSocial(over: Record<string, unknown> = {}) {
     trivia: emptyTrivia,
     triviaSchedule: [],
     scheduleTrivia: vi.fn(() => true),
+    updateTrivia: vi.fn(() => true),
     deleteTrivia: vi.fn(() => true),
     listTrivia: vi.fn(() => true),
     answerTrivia: vi.fn(() => true),

@@ -35,6 +35,7 @@ vi.mock('../hooks/useSocialSocket', () => ({
     trivia: { question: null, receivedAt: null, ack: null, result: null, myOption: null },
     triviaSchedule: [],
     scheduleTrivia: vi.fn(() => true),
+    updateTrivia: vi.fn(() => true),
     deleteTrivia: vi.fn(() => true),
     listTrivia: vi.fn(() => true),
     answerTrivia: vi.fn(() => true),

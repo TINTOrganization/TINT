@@ -178,13 +178,17 @@ describe('useSocialSocket — trivia', () => {
     );
     expect(result.current.triviaSchedule.map((q) => q.trivia_id)).toEqual(['a', 'b']);
     expect(result.current.scheduleTrivia({ atMs: 0, question: '', options: ['a', 'b'], correct: 0, answerWindowS: 20 })).toBe(false);
+    expect(result.current.updateTrivia('a', { atMs: 0, question: '', options: ['a', 'b'], correct: 0, answerWindowS: 20 })).toBe(false);
     act(() => {
       result.current.scheduleTrivia({ atMs: 5_000, question: '¿Q?', options: ['a', 'b'], correct: 0, answerWindowS: 20 });
+      result.current.updateTrivia('a', { atMs: 6_000, question: '¿Q2?', options: ['a', 'b'], correct: 1, answerWindowS: 30 });
       result.current.deleteTrivia('a');
       result.current.listTrivia();
     });
     expect(ws.sentJson().map((m) => m.type)).toEqual([
       'trivia_schedule',
+      'trivia_list',
+      'trivia_update',
       'trivia_list',
       'trivia_delete',
       'trivia_list',

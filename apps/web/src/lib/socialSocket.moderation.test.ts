@@ -7,6 +7,7 @@ import {
   buildTriviaDelete,
   buildTriviaList,
   buildTriviaSchedule,
+  buildTriviaUpdate,
   parseMmSs,
   parseSocialMessage,
   SLOW_MODE_OPTIONS,
@@ -85,6 +86,23 @@ describe('trivia', () => {
       options: ['A', 'B'],
       correct: 1,
       answer_window_s: 20,
+    });
+  });
+
+  it('arma trivia_update con el trivia_id y los campos de trivia_schedule', () => {
+    const frame = JSON.parse(
+      buildTriviaUpdate('r1', 't1', { atMs: 70_000, question: ' ¿Otra? ', options: ['A', ' B '], correct: 0, answerWindowS: 30 }, 'e4'),
+    );
+    expect(frame).toEqual({
+      type: 'trivia_update',
+      event_id: 'e4',
+      room_id: 'r1',
+      trivia_id: 't1',
+      at_ms: 70_000,
+      question: '¿Otra?',
+      options: ['A', 'B'],
+      correct: 0,
+      answer_window_s: 30,
     });
   });
 

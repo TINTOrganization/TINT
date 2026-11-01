@@ -10,6 +10,7 @@ import {
   buildTriviaDelete,
   buildTriviaList,
   buildTriviaSchedule,
+  buildTriviaUpdate,
   SLOW_MODE_OPTIONS,
   validateTriviaDraft,
   type ChatSettings,
@@ -414,6 +415,16 @@ export function useSocialSocket(roomId: string | undefined, opts: UseSocialSocke
     [sendFrame, listTrivia],
   );
 
+  const updateTrivia = useCallback(
+    (triviaId: string, draft: TriviaDraft) => {
+      if (validateTriviaDraft(draft)) return false;
+      const ok = sendFrame((room) => buildTriviaUpdate(room, triviaId, draft));
+      if (ok) listTrivia();
+      return ok;
+    },
+    [sendFrame, listTrivia],
+  );
+
   const deleteTrivia = useCallback(
     (triviaId: string) => {
       const ok = sendFrame((room) => buildTriviaDelete(room, triviaId));
@@ -456,6 +467,7 @@ export function useSocialSocket(roomId: string | undefined, opts: UseSocialSocke
     trivia,
     triviaSchedule,
     scheduleTrivia,
+    updateTrivia,
     deleteTrivia,
     listTrivia,
     answerTrivia,

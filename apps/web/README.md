@@ -376,6 +376,7 @@ sequenceDiagram
     TP->>SO: "scheduleTrivia (validateTriviaDraft)"
     SO->>SOC: "trivia_schedule {at_ms, question, options, correct, answer_window_s}"
     SO->>SOC: trivia_list
+    Note over TP,SOC: "Editar (solo Pendiente): updateTrivia → trivia_update {trivia_id, …} reemplaza la pregunta antes de que salga"
     SOC-->>TP: "trivia_schedule_state (Pendiente · En curso · Terminada)"
     Note over SOC: social-core decide el disparo exacto
     SOC-->>POP: "trivia_question {trivia_id, options, opens_at_ms, closes_at_ms}"
