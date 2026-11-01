@@ -352,6 +352,17 @@ const startUploadSchema = z.object({
   sizeBytes: z.number().int().positive(),
 });
 
+/**
+ * Motivos de fallo que media-worker guarda en `videos.failure_reason` (contrato `videos`). Códigos
+ * estables y sin datos personales: la web los traduce a un mensaje. Cualquier otro valor se ignora.
+ */
+const FAILURE_REASONS = ['unsupported_format', 'unreadable', 'invalid_duration', 'missing_file', 'processing_failed'] as const;
+
+function failureReasonOf(video: { status: string; failureReason?: string | null } | null | undefined) {
+  const reason = video?.status === 'failed' ? video.failureReason : null;
+  return (FAILURE_REASONS as readonly string[]).includes(reason ?? '') ? reason : null;
+}
+
 /** Margen sobre el TTL de la URL PUT antes de dar por abandonada una subida `pending`. */
 const STALE_UPLOAD_GRACE_MS = 60 * 60 * 1000;
 
@@ -506,7 +517,7 @@ type PlaybackQuality = { id: 'source' | `${(typeof PLAYBACK_RENDITION_HEIGHTS)[n
 router.get('/rooms/:id/playback', requireRoomHostOrGuest, requireActiveRoom, async (req, res) => {
   const room = req.room!;
   if (!room.mediaId || !room.mediaKey) {
-    return res.json({ mediaId: null, url: null, expiresAt: null, status: null, ambilightUrl: null, qualities: [] });
+    return res.json({ mediaId: null, url: null, expiresAt: null, status: null, failureReason: null, ambilightUrl: null, qualities: [] });
   }
   // Vídeos subidos por la API tienen fila en `videos` (estado del media-worker);
   // los asignados por clave manual no (status null). Mientras se procesa se
@@ -514,7 +525,15 @@ router.get('/rooms/:id/playback', requireRoomHostOrGuest, requireActiveRoom, asy
   // (storage_key la actualiza el worker). Un vídeo failed no se sirve.
   const video = await findVideo(room.mediaId);
   if (video?.status === 'failed') {
-    return res.json({ mediaId: room.mediaId, url: null, expiresAt: null, status: 'failed', ambilightUrl: null, qualities: [] });
+    return res.json({
+      mediaId: room.mediaId,
+      url: null,
+      expiresAt: null,
+      status: 'failed',
+      failureReason: failureReasonOf(video),
+      ambilightUrl: null,
+      qualities: [],
+    });
   }
   const ttl = env.PLAYBACK_URL_TTL_SECONDS;
   const expiresAt = new Date(Date.now() + ttl * 1000);
@@ -535,6 +554,7 @@ router.get('/rooms/:id/playback', requireRoomHostOrGuest, requireActiveRoom, asy
     url,
     expiresAt: expiresAt.toISOString(),
     status: video?.status ?? null,
+    failureReason: null,
     ambilightUrl,
     qualities,
   });

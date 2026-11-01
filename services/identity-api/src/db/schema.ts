@@ -80,6 +80,9 @@ export const videos = pgTable('videos', {
   sizeBytes: bigint('size_bytes', { mode: 'number' }).notNull(),
   durationMs: integer('duration_ms'),
   status: varchar('status', { length: 20 }).notNull().default('pending'),
+  // Por qué quedó en `failed` (código de FAILURE_REASONS que escribe media-worker); NULL en el resto de
+  // estados y en fallos anteriores a esta columna. Migración 0008.
+  failureReason: varchar('failure_reason', { length: 40 }),
   // Nombre visible en la biblioteca: el filename sin extensión al reservar (migración 0007).
   title: varchar('title', { length: 255 }),
   // Alturas de las calidades publicadas por media-worker (`{id}/{h}p.mp4`), p. ej. [720, 360].

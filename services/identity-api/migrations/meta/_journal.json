@@ -57,6 +57,13 @@
       "when": 1791775490724,
       "tag": "0007_bans_video_library",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1793570668517,
+      "tag": "0008_video_failure_reason",
+      "breakpoints": true
     }
   ]
 }
