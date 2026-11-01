@@ -10,7 +10,7 @@ from pathlib import Path, PurePosixPath
 
 from media_worker.ambilight import AmbilightError, extract_ambilight
 from media_worker.normalize import NormalizeError, is_normalized, normalize_video, remux_video
-from media_worker.probe import VideoStatus, inspect_media
+from media_worker.probe import FailureReason, VideoStatus, inspect_media_reason
 from media_worker.renditions import generate_renditions
 from media_worker.storage import ambilight_key, source_key
 
@@ -81,9 +81,9 @@ def process_video(
     if not repo.start_processing(video_id):
         raise VideoNotFoundError(f"vídeo {video_id} no existe en la tabla videos")
 
-    status, duration_ms, height = inspect_media(str(source), runner)
+    status, duration_ms, height, reason = inspect_media_reason(str(source), runner)
     if status is VideoStatus.FAILED:
-        repo.mark_failed(video_id)
+        repo.mark_failed(video_id, reason or FailureReason.UNREADABLE)
         return VideoStatus.FAILED
 
     with tempfile.TemporaryDirectory(prefix="media-worker-") as workdir:
@@ -125,7 +125,8 @@ def _normalize_or_remux(video_id: str, source: Path, dest: Path, runner) -> None
     normalize_video(source, dest, runner)
 
 
-def _fail(repo, video_id: str, reason: str) -> VideoStatus:
-    logger.warning("vídeo %s marcado como failed: %s", video_id, reason)
-    repo.mark_failed(video_id)
+def _fail(repo, video_id: str, detail: str) -> VideoStatus:
+    """Fallo del preprocesado (normalización o Ambilight): el detalle va al log, el código a SQL."""
+    logger.warning("vídeo %s marcado como failed: %s", video_id, detail)
+    repo.mark_failed(video_id, FailureReason.PROCESSING_FAILED)
     return VideoStatus.FAILED

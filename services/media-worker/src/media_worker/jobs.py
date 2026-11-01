@@ -31,7 +31,7 @@ from media_worker.pipeline import (
     process_video,
     validate_extension,
 )
-from media_worker.probe import VideoStatus
+from media_worker.probe import FailureReason, VideoStatus
 from media_worker.storage import BlobNotFoundError
 
 logger = logging.getLogger(__name__)
@@ -108,7 +108,7 @@ def _process_upload(video_id: str, key: str, repo, blobs, process) -> VideoStatu
     except UnsupportedFormatError as exc:
         # Reintentar no cambia la extensión: se marca failed sin descargar el archivo.
         logger.warning("vídeo %s rechazado: %s", video_id, exc)
-        repo.mark_failed(video_id)
+        repo.mark_failed(video_id, FailureReason.UNSUPPORTED_FORMAT)
         return VideoStatus.FAILED
 
     with tempfile.TemporaryDirectory(prefix="tint-media-") as workdir:
@@ -117,7 +117,7 @@ def _process_upload(video_id: str, key: str, repo, blobs, process) -> VideoStatu
             blobs.download(key, local)
         except BlobNotFoundError:
             logger.warning("vídeo %s: no está %s en el bucket; se marca failed", video_id, key)
-            repo.mark_failed(video_id)
+            repo.mark_failed(video_id, FailureReason.MISSING_FILE)
             return VideoStatus.FAILED
         try:
             return process(video_id, local, repo, blobs)

@@ -290,16 +290,16 @@ XADD analytics:events MAXLEN ~ 100000 *
 | `{id}/ambilight.json` | MinIO | media-worker | Navegador (`ambilightUrl` del playback) |
 | `{id}/720p.mp4`, `{id}/360p.mp4` | MinIO | media-worker | Navegador (`qualities` del playback) |
 
-Estados de `videos.status` que toca el worker: `processing → ready | failed`. El estado `pending` (antes de confirmar la subida) es de identity-api.
+Estados de `videos.status` que toca el worker: `processing → ready | failed`. Al marcar `failed` guarda además el **motivo** en `videos.failure_reason` (`FailureReason`, `probe.py`): `unsupported_format` (extensión fuera de mp4/mov/mkv/webm), `unreadable` (ffprobe no lo lee: dañado, no es un vídeo o tiempo agotado), `invalid_duration` (duración 0, negativa o no finita), `missing_file` (el original no está en el bucket) y `processing_failed` (falló la normalización o el Ambilight, o no corre ffprobe). Son códigos estables sin datos personales; el detalle sigue solo en el log. Un intento nuevo (`start_processing`) o un éxito (`mark_ready`) lo ponen en `NULL`; identity-api lo devuelve en `GET /rooms/:id/playback` y la web lo traduce a un mensaje. El estado `pending` (antes de confirmar la subida) es de identity-api.
 
 SQL que ejecuta (`repository.py`, conexión psycopg en `autocommit`):
 
 | Operación | SQL |
 | :--- | :--- |
 | `get_video` | `SELECT videos.status, videos.storage_key, users.provider_sub FROM videos LEFT JOIN users ON users.id = videos.uploaded_by WHERE videos.id = %s` |
-| `start_processing` | `UPDATE videos SET status = 'processing', updated_at = now() WHERE id = %s RETURNING id` |
-| `mark_ready` | `UPDATE videos SET status = 'ready', duration_ms, storage_key, renditions = %s::jsonb, updated_at = now() WHERE id = %s` |
-| `mark_failed` | `UPDATE videos SET status = 'failed', updated_at = now() WHERE id = %s` |
+| `start_processing` | `UPDATE videos SET status = 'processing', failure_reason = NULL, updated_at = now() WHERE id = %s RETURNING id` |
+| `mark_ready` | `UPDATE videos SET status = 'ready', duration_ms, storage_key, renditions = %s::jsonb, failure_reason = NULL, updated_at = now() WHERE id = %s` |
+| `mark_failed` | `UPDATE videos SET status = 'failed', failure_reason = %s, updated_at = now() WHERE id = %s` |
 
 ## 5. Configuración
 

@@ -62,6 +62,7 @@ class FakeRepository:
         self.durations = {}
         self.storage_keys = {}
         self.renditions = {}
+        self.reasons = {}
         self.history = []
 
     def get_video(self, video_id):
@@ -76,6 +77,7 @@ class FakeRepository:
     def start_processing(self, video_id):
         if video_id not in self.video_ids:
             return False
+        self.reasons.pop(video_id, None)
         self._set(video_id, "processing")
         return True
 
@@ -83,9 +85,11 @@ class FakeRepository:
         self.durations[video_id] = duration_ms
         self.storage_keys[video_id] = storage_key
         self.renditions[video_id] = list(renditions)
+        self.reasons.pop(video_id, None)
         self._set(video_id, "ready")
 
-    def mark_failed(self, video_id):
+    def mark_failed(self, video_id, reason):
+        self.reasons[video_id] = reason
         self._set(video_id, "failed")
 
     def _set(self, video_id, status):
