@@ -10,6 +10,14 @@ http://{$GATEWAY_HOST:localhost} {
 }
 
 https://{$GATEWAY_HOST:localhost} {
+    @missing_correlation not header X-Correlation-ID *
+    request_header @missing_correlation X-Correlation-ID {http.request.uuid}
+    header X-Correlation-ID {http.request.header.X-Correlation-ID}
+    log {
+        format json
+        log_append correlation_id {http.request.header.X-Correlation-ID}
+    }
+
     handle_errors {
         @upstream_unavailable expression `{http.error.status_code} == 502 || {http.error.status_code} == 503 || {http.error.status_code} == 504`
         header @upstream_unavailable Content-Type application/json
