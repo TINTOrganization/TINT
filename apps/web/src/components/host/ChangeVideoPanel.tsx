@@ -15,6 +15,7 @@ import {
   assignVideoErrorMessage,
   formatDuration,
   listVideos,
+  mergeLibrary,
   videoStatusLabel,
   videoTitle,
   type LibraryVideo,
@@ -28,7 +29,12 @@ export interface ChangeVideoPanelProps {
   onMediaAssigned: (mediaId: string) => boolean;
   /** Cada incremento abre el panel en "Mis vídeos" (p. ej. "Elegir otra película" del recap). */
   openRequest?: number;
+  /** Cada cuánto se refresca la biblioteca mientras algún vídeo se procesa (ms; 5 s por defecto). */
+  libraryPollMs?: number;
 }
+
+/** Espera entre consultas de la biblioteca mientras hay vídeos sin terminar de procesar. */
+export const LIBRARY_POLL_MS = 5_000;
 
 type Tab = 'library' | 'upload';
 
@@ -61,7 +67,12 @@ const TABS: { id: Tab; label: string }[] = [
  *   `PUT /rooms/:id/media {videoId}` → LOAD{media_id}.
  * - "Subir nuevo": URL pre-firmada → `PUT` directo con progreso → `POST …/complete` → LOAD.
  */
-export function ChangeVideoPanel({ roomId, onMediaAssigned, openRequest = 0 }: ChangeVideoPanelProps) {
+export function ChangeVideoPanel({
+  roomId,
+  onMediaAssigned,
+  openRequest = 0,
+  libraryPollMs = LIBRARY_POLL_MS,
+}: ChangeVideoPanelProps) {
   const [open, setOpen] = useState(false);
   const [tab, setTab] = useState<Tab>('library');
   const [file, setFile] = useState<File | null>(null);
@@ -102,6 +113,32 @@ export function ChangeVideoPanel({ roomId, onMediaAssigned, openRequest = 0 }: C
     // Solo al abrir: cambiar de pestaña no recarga ni roba el foco.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
+
+  // Mientras el panel está abierto y algún vídeo no está listo, la biblioteca se refresca sola:
+  // si no, la tarjeta se quedaría en "Preparando…" aunque el vídeo ya esté `ready` (la lista solo
+  // se descargaba al abrir el panel). Se detiene al quedar todos listos o al cerrar el panel; un
+  // fallo de red no muestra error (hay una lista a la vista) y se reintenta.
+  const hasUnfinished = videos?.some((v) => v.status !== 'ready') ?? false;
+  useEffect(() => {
+    if (!open || !hasUnfinished) return;
+    let cancelled = false;
+    let timer: number | undefined;
+    const poll = () => {
+      listVideos()
+        .then((next) => {
+          if (!cancelled) setVideos((prev) => mergeLibrary(prev, next));
+        })
+        .catch(() => undefined)
+        .finally(() => {
+          if (!cancelled) timer = window.setTimeout(poll, libraryPollMs);
+        });
+    };
+    timer = window.setTimeout(poll, libraryPollMs);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [open, hasUnfinished, libraryPollMs]);
 
   useEffect(() => {
     if (openRequest > 0) {

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { apiFetch } from '../lib/api';
 import { errorStatus } from '../lib/errorStatus';
+import { toFailureReason, type FailureReason } from '../lib/mediaFailure';
 import { normalizeQualities, type PlaybackQuality } from '../lib/quality';
 
 /** Refresca la URL firmada este tiempo antes de `expiresAt`. */
@@ -42,6 +43,8 @@ export interface RoomPlayback {
   mediaId: string | null;
   expiresAt: string | null;
   status: MediaStatus | null;
+  /** Por qué falló el vídeo (solo con `status = failed`; null si no se conoce). */
+  failureReason: FailureReason | null;
   /** URL firmada de ambilight.json; solo cuando status = ready. */
   ambilightUrl: string | null;
   /** Versiones disponibles (original + transcodificaciones); [] sin vídeo. */
@@ -64,6 +67,7 @@ interface PlaybackResponse {
   url?: string | null;
   expiresAt?: string | null;
   status?: string | null;
+  failureReason?: string | null;
   ambilightUrl?: string | null;
   qualities?: unknown;
 }
@@ -73,18 +77,30 @@ interface PlaybackData {
   mediaId: string | null;
   expiresAt: string | null;
   status: MediaStatus | null;
+  failureReason: FailureReason | null;
   ambilightUrl: string | null;
   qualities: PlaybackQuality[];
 }
 
-const EMPTY: PlaybackData = { url: null, mediaId: null, expiresAt: null, status: null, ambilightUrl: null, qualities: [] };
+const EMPTY: PlaybackData = {
+  url: null,
+  mediaId: null,
+  expiresAt: null,
+  status: null,
+  failureReason: null,
+  ambilightUrl: null,
+  qualities: [],
+};
 
 function toPlaybackData(res: PlaybackResponse | undefined): PlaybackData {
+  const status = toMediaStatus(res?.status);
   return {
     mediaId: res?.mediaId ?? null,
     url: res?.url ?? null,
     expiresAt: res?.expiresAt ?? null,
-    status: toMediaStatus(res?.status),
+    status,
+    // Solo tiene sentido en `failed`: un motivo suelto en otro estado se ignora.
+    failureReason: status === 'failed' ? toFailureReason(res?.failureReason) : null,
     ambilightUrl: res?.ambilightUrl ?? null,
     // identity-api sin `qualities` (versión previa) → solo el original.
     qualities: normalizeQualities(res?.qualities, res?.url ?? null),
@@ -179,6 +195,7 @@ export function useRoomPlayback(
             setData((prev) => ({
               ...prev,
               status: next.status,
+              failureReason: next.failureReason,
               ambilightUrl: next.ambilightUrl,
               qualities: keepAppliedUrls(next.qualities, prev.qualities),
             }));
@@ -242,10 +259,19 @@ export function useRoomPlayback(
           else if (next.url) setFresh(next);
           setData((prev) =>
             next.status === 'failed'
-              ? { ...prev, status: next.status, ambilightUrl: null, url: null, expiresAt: null, qualities: [] }
+              ? {
+                  ...prev,
+                  status: next.status,
+                  failureReason: next.failureReason,
+                  ambilightUrl: null,
+                  url: null,
+                  expiresAt: null,
+                  qualities: [],
+                }
               : {
                   ...prev,
                   status: next.status,
+                  failureReason: null,
                   ambilightUrl: next.ambilightUrl,
                   qualities: keepAppliedUrls(next.qualities, prev.qualities),
                 },

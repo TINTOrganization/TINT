@@ -29,6 +29,7 @@ import { apiFetch } from '../lib/api';
 import { toAbsoluteInviteLink, pickLatestActiveInvitation, parseInviteCode } from '../lib/invite';
 import { getLocalIdentity, guestTokenGrantsRoom } from '../lib/identity';
 import { useRevocationProbe } from '../hooks/useRevocationProbe';
+import { hostFailureMessage } from '../lib/mediaFailure';
 import { useRoomPlayback, type MediaStatus } from '../hooks/useRoomPlayback';
 import { useRecapGate } from '../hooks/useRecapGate';
 
@@ -204,15 +205,23 @@ export default function WatchRoom() {
   // Los controles los habilita el servidor (STATE.can_control / CONTROL), no el rol local.
   const canControl = sync.canControl;
   const delegated = isGuest && canControl;
+  // El host ve por qué falló el vídeo; los invitados siguen viendo el texto genérico.
+  const hostReason = isGuest ? null : playback.failureReason;
   const videoSrc = playback.url ?? (!playback.loading && !playback.error && !playback.mediaId ? demoVideoUrl : undefined);
   const emptyMessage = playback.url
     ? undefined
     : playback.loading
       ? 'Cargando vídeo…'
       : playback.status === 'failed'
-        ? 'Este vídeo no se pudo procesar. El host puede subir otro.'
+        ? hostReason
+          ? `${hostFailureMessage(hostReason)} Sube otro vídeo.`
+          : 'Este vídeo no se pudo procesar. El host puede subir otro.'
         : (playback.error ?? 'Sin video configurado');
-  const mediaStatusUi = playback.status ? MEDIA_STATUS_UI[playback.status] : null;
+  const mediaStatusUi = playback.status
+    ? playback.status === 'failed' && hostReason
+      ? { ...MEDIA_STATUS_UI.failed, text: hostFailureMessage(hostReason) }
+      : MEDIA_STATUS_UI[playback.status]
+    : null;
   const { sendCommand } = sync;
   const loadMedia = useCallback(
     (mediaId: string) => sendCommand('LOAD', 0, { media_id: mediaId }) !== null,

@@ -256,7 +256,7 @@ Detalles que conviene saber:
 - **El cliente no calcula el drift para corregir**: solo aplica lo que ordena sync-core (`drift.ts`). La única telemetría que envía es `BUFFERING` (stalls medidos por `stallTracker.ts`), por el mismo Canal Sync.
 - **`canControl`** lo decide el servidor (`STATE.can_control`/`CONTROL`); el host lo asume `true` hasta el primer `STATE`.
 - **Autoplay**: si `video.play()` se rechaza, `SyncedPlayer` muestra un botón para unirse con un gesto.
-- `useRoomPlayback` vuelve a pedir el playback al cambiar el `media_id` del estado sync, ~1 min antes de `expiresAt`, y cada 5 s (máx. 120) mientras el vídeo está `pending`/`processing`, sin cambiar el `src` del original.
+- `useRoomPlayback` vuelve a pedir el playback al cambiar el `media_id` del estado sync, ~1 min antes de `expiresAt`, y cada 5 s (máx. 120) mientras el vídeo está `pending`/`processing`, sin cambiar el `src` del original. Si el vídeo termina en `failed`, el hook expone `failureReason` (el código que guarda media-worker); `WatchRoom` muestra al **host** un mensaje específico (formato no soportado, archivo ilegible, duración inválida, subida incompleta o fallo al preparar el vídeo) en la barra de estado y en el reproductor vacío, y a los invitados el texto genérico de siempre. Sin motivo (worker anterior) o con un código desconocido, todos ven el genérico.
 
 ### 3.4 El host cambia de vídeo
 
@@ -302,6 +302,8 @@ sequenceDiagram
 ```
 
 El **límite de tamaño** lo informa identity-api (`GET /uploads/limits`, `fetchUploadLimit`): el panel lo muestra junto al selector y rechaza antes de subir un archivo mayor; si el endpoint falla no hay pre-chequeo y decide el servidor, cuyo 413 también trae `maxUploadBytes` (`ApiError.body`) para mostrarlo en el mensaje. Una **subida interrumpida** (corte de red, «Cancelar subida», panel desmontado o fallo al confirmar) llama a `cancelUpload` (`DELETE …/uploads/:videoId`, sin bloquear ni lanzar) para que el reintento empiece limpio; si no llegó, identity-api limpia las filas `pending` abandonadas al reservar la siguiente. `apiFetch` devuelve `null` en las respuestas `204`.
+
+**La biblioteca se mantiene al día:** mientras el panel está abierto y algún vídeo de "Mis vídeos" no está `ready`, `ChangeVideoPanel` vuelve a pedir `GET /videos` cada 5 s (`LIBRARY_POLL_MS`, `libraryPollMs`), así la tarjeta pasa de "Preparando…" a "Listo" sin cerrar y reabrir el panel (antes la lista solo se descargaba al abrirlo y quedaba desfasada respecto de la barra de estado del reproductor). Cada `GET /videos` firma URLs de miniatura nuevas, así que el refresco pasa por `mergeLibrary` (`lib/videos.ts`): cada vídeo conserva su `previewUrl` mientras su estado no cambie (al pasar a `ready` adopta la 360p) y, si no cambió nada más, la lista no se vuelve a pintar; sin eso, el `src` de todas las miniaturas cambiaba cada 5 s y el navegador las recargaba (parpadeo y salto de layout). Se detiene cuando todos están listos o al cerrar el panel; un fallo de red no muestra error y se reintenta.
 
 Si el socket no está abierto al confirmar, el panel guarda el `mediaId` y ofrece reintentar el aviso a la sala. Los errores se traducen a mensajes simples (`uploadErrorMessage`, `assignVideoErrorMessage`), sin jerga como HTTP, MinIO o bucket.
 
