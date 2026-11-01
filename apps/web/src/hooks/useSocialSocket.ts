@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { apiFetch } from '../lib/api';
 import { errorStatus } from '../lib/errorStatus';
 import { getLocalIdentity } from '../lib/identity';
+import { CLOSE_EXPIRED, CLOSE_REVOKED } from '../lib/syncProtocol';
 import {
   buildChatMute,
   buildChatSend,
@@ -10,12 +11,14 @@ import {
   buildTriviaDelete,
   buildTriviaList,
   buildTriviaSchedule,
+  buildTriviaUpdate,
   SLOW_MODE_OPTIONS,
   validateTriviaDraft,
   type ChatSettings,
   type ScheduledTrivia,
   type TriviaAck,
   type TriviaDraft,
+  type TriviaRankEntry,
   type TriviaQuestion,
   type TriviaResult,
   buildLaserPoint,
@@ -70,6 +73,14 @@ export interface TriviaView {
   myOption: number | null;
 }
 
+/** Ranking acumulado de la sala: visible siempre, no depende de la pregunta en pantalla. */
+export interface TriviaLeaderboardView {
+  entries: TriviaRankEntry[];
+  myRank: number | null;
+  myTotal: number | null;
+}
+
+const EMPTY_LEADERBOARD: TriviaLeaderboardView = { entries: [], myRank: null, myTotal: null };
 const EMPTY_TRIVIA: TriviaView = { question: null, receivedAt: null, ack: null, result: null, myOption: null };
 const DEFAULT_CHAT_SETTINGS: ChatSettingsView = { slow_mode_s: 0, muted_user_ids: [] };
 
@@ -132,6 +143,10 @@ export function useSocialSocket(roomId: string | undefined, opts: UseSocialSocke
   const [chatCooldownUntil, setChatCooldownUntil] = useState<number | null>(null);
   const [trivia, setTrivia] = useState<TriviaView>(EMPTY_TRIVIA);
   const [triviaSchedule, setTriviaSchedule] = useState<ScheduledTrivia[]>([]);
+  // Cierres terminales de social-core: el host retiró o bloqueó al participante (4001) o su token caducó (4003).
+  const [revoked, setRevoked] = useState(false);
+  const [expired, setExpired] = useState(false);
+  const [triviaLeaderboard, setTriviaLeaderboard] = useState<TriviaLeaderboardView>(EMPTY_LEADERBOARD);
   /** Último voto propio visto por poll_id: los broadcasts no traen my_vote. */
   const myVotesRef = useRef<Map<string, number>>(new Map());
   const wsRef = useRef<WebSocket | null>(null);
@@ -192,6 +207,8 @@ export function useSocialSocket(roomId: string | undefined, opts: UseSocialSocke
     }
     closedRef.current = false;
     attemptRef.current = 0;
+    setRevoked(false);
+    setExpired(false);
     // Por efecto: un ticket que llega tras desmontar (o tras cambiar de sala) se descarta.
     let disposed = false;
 
@@ -264,6 +281,17 @@ export function useSocialSocket(roomId: string | undefined, opts: UseSocialSocke
           );
         } else if (parsed.type === 'trivia_result') {
           setTrivia((prev) => (prev.question?.trivia_id === parsed.trivia_id ? { ...prev, result: parsed } : prev));
+          setTriviaLeaderboard({
+            entries: parsed.leaderboard ?? [],
+            myRank: parsed.my_rank ?? null,
+            myTotal: parsed.my_total ?? null,
+          });
+        } else if (parsed.type === 'trivia_leaderboard') {
+          setTriviaLeaderboard({
+            entries: parsed.leaderboard ?? [],
+            myRank: parsed.my_rank ?? null,
+            myTotal: parsed.my_total ?? null,
+          });
         } else if (parsed.type === 'trivia_schedule_state') {
           const list = Array.isArray(parsed.questions) ? parsed.questions : [];
           setTriviaSchedule([...list].sort((a, b) => a.at_ms - b.at_ms));
@@ -274,13 +302,29 @@ export function useSocialSocket(roomId: string | undefined, opts: UseSocialSocke
           }
         }
       };
-      ws.onclose = () => {
+      ws.onclose = (ev: CloseEvent) => {
         // Solo el socket vigente puede cambiar el estado/programar
         // reconexión: un cierre tardío del socket viejo (StrictMode,
         // limpieza) no debe matar al nuevo.
         if (wsRef.current !== ws) return;
         wsRef.current = null;
         if (closedRef.current) {
+          setStatus('closed');
+          return;
+        }
+        if (ev.code === CLOSE_REVOKED) {
+          // Retirado o bloqueado por el host: reconectar solo repetiría el cierre.
+          closedRef.current = true;
+          if (role === 'guest') localStorage.removeItem('tint_guest_token');
+          setRevoked(true);
+          setStatus('closed');
+          return;
+        }
+        if (ev.code === CLOSE_EXPIRED && role === 'guest') {
+          // El invitado no puede renovar su token (el host sí: pide un ticket nuevo al reconectar).
+          closedRef.current = true;
+          localStorage.removeItem('tint_guest_token');
+          setExpired(true);
           setStatus('closed');
           return;
         }
@@ -414,6 +458,16 @@ export function useSocialSocket(roomId: string | undefined, opts: UseSocialSocke
     [sendFrame, listTrivia],
   );
 
+  const updateTrivia = useCallback(
+    (triviaId: string, draft: TriviaDraft) => {
+      if (validateTriviaDraft(draft)) return false;
+      const ok = sendFrame((room) => buildTriviaUpdate(room, triviaId, draft));
+      if (ok) listTrivia();
+      return ok;
+    },
+    [sendFrame, listTrivia],
+  );
+
   const deleteTrivia = useCallback(
     (triviaId: string) => {
       const ok = sendFrame((room) => buildTriviaDelete(room, triviaId));
@@ -455,7 +509,11 @@ export function useSocialSocket(roomId: string | undefined, opts: UseSocialSocke
     muteUser,
     trivia,
     triviaSchedule,
+    revoked,
+    expired,
+    triviaLeaderboard,
     scheduleTrivia,
+    updateTrivia,
     deleteTrivia,
     listTrivia,
     answerTrivia,

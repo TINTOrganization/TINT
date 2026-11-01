@@ -1,6 +1,6 @@
 import { useEffect, useId, useRef, useState, type FormEvent } from 'react';
 import { useCountdown } from '../../hooks/useCountdown';
-import type { TriviaView } from '../../hooks/useSocialSocket';
+import type { TriviaLeaderboardView, TriviaView } from '../../hooks/useSocialSocket';
 import {
   formatMmSs,
   parseMmSs,
@@ -38,6 +38,28 @@ function Ranking({ label, entries }: { label: string; entries: { user_id: string
   );
 }
 
+/** Ranking en vivo: se actualiza al cierre de cada pregunta y llega al entrar (persiste en el servidor). */
+function LiveLeaderboard({ leaderboard, isHost }: { leaderboard: TriviaLeaderboardView; isHost: boolean }) {
+  const { entries, myRank, myTotal } = leaderboard;
+  return (
+    <div className="mt-4 border-t border-white/10 pt-3">
+      <h3 className="text-[13px] font-semibold text-white">Ranking de la sala</h3>
+      {entries.length === 0 ? (
+        <p className="mt-1 text-[13px] text-tint-muted">Aún nadie ha puntuado.</p>
+      ) : (
+        <Ranking label="Ranking de la sala" entries={entries} />
+      )}
+      {!isHost && (
+        <p className="mt-2 text-[13px] text-white">
+          {myRank !== null
+            ? `Tu puesto: ${myRank} · ${myTotal ?? 0} puntos`
+            : 'Responde una trivia para entrar al ranking.'}
+        </p>
+      )}
+    </div>
+  );
+}
+
 const inputClass =
   'w-full rounded-xl border border-white/10 bg-tint-bg px-3 py-2 text-sm text-white placeholder:text-tint-muted/60 focus:border-tint-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-tint-accent/60';
 
@@ -45,28 +67,36 @@ export interface TriviaPanelProps {
   isHost: boolean;
   /** Agenda del host (ordenada por `at_ms`). */
   schedule: ScheduledTrivia[];
+  /** Ranking acumulado de la sala (visible para todos, siempre). */
+  leaderboard: TriviaLeaderboardView;
   /** Posición actual del vídeo en ms (null si no hay vídeo). */
   getCurrentMs: () => number | null;
   onSchedule: (draft: TriviaDraft) => boolean;
+  /** Reemplaza una pregunta pendiente por su nueva versión. */
+  onUpdate: (triviaId: string, draft: TriviaDraft) => boolean;
   onDelete: (triviaId: string) => boolean;
   /** Último `error.code` del canal social. */
   error: string | null;
 }
 
+/** Formulario en curso: nueva pregunta (en `atMs`) o edición de una pendiente. */
+type FormTarget = { kind: 'new'; atMs: number } | { kind: 'edit'; trivia: ScheduledTrivia };
+
 function TriviaForm({
-  initialMs,
+  target,
   onSubmit,
   onCancel,
 }: {
-  initialMs: number;
+  target: FormTarget;
   onSubmit: (draft: TriviaDraft) => boolean;
   onCancel: () => void;
 }) {
-  const [time, setTime] = useState(() => formatMmSs(initialMs));
-  const [question, setQuestion] = useState('');
-  const [options, setOptions] = useState(['', '']);
-  const [correct, setCorrect] = useState(0);
-  const [windowS, setWindowS] = useState(TRIVIA_WINDOW_DEFAULT_S);
+  const editing = target.kind === 'edit' ? target.trivia : null;
+  const [time, setTime] = useState(() => formatMmSs(editing ? editing.at_ms : target.kind === 'new' ? target.atMs : 0));
+  const [question, setQuestion] = useState(editing?.question ?? '');
+  const [options, setOptions] = useState(editing ? [...editing.options] : ['', '']);
+  const [correct, setCorrect] = useState(editing?.correct ?? 0);
+  const [windowS, setWindowS] = useState(editing?.answer_window_s ?? TRIVIA_WINDOW_DEFAULT_S);
   const [error, setError] = useState('');
   const questionRef = useRef<HTMLInputElement>(null);
   const ids = { time: useId(), question: useId(), window: useId(), correct: useId() };
@@ -204,7 +234,7 @@ function TriviaForm({
         </p>
       )}
       <div className="flex flex-wrap gap-2">
-        <Button type="submit">Programar pregunta</Button>
+        <Button type="submit">{editing ? 'Guardar cambios' : 'Programar pregunta'}</Button>
         <Button type="button" variant="quiet" onClick={onCancel}>
           Cancelar
         </Button>
@@ -214,8 +244,8 @@ function TriviaForm({
 }
 
 /** Tarjeta de trivia: el host programa preguntas por momento del vídeo; el invitado ve cómo jugar. */
-export function TriviaPanel({ isHost, schedule, getCurrentMs, onSchedule, onDelete, error }: TriviaPanelProps) {
-  const [formAtMs, setFormAtMs] = useState<number | null>(null);
+export function TriviaPanel({ isHost, schedule, leaderboard, getCurrentMs, onSchedule, onUpdate, onDelete, error }: TriviaPanelProps) {
+  const [form, setForm] = useState<FormTarget | null>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const channelError = error && TRIVIA_ERRORS.has(error) ? socialErrorMessage(error) : '';
 
@@ -226,12 +256,13 @@ export function TriviaPanel({ isHost, schedule, getCurrentMs, onSchedule, onDele
         <p className="mt-1 text-[13px] leading-relaxed">
           Durante la película aparecerán preguntas sobre el reproductor. ¡Responde rápido para sumar más puntos!
         </p>
+        <LiveLeaderboard leaderboard={leaderboard} isHost={false} />
       </div>
     );
   }
 
   const closeForm = () => {
-    setFormAtMs(null);
+    setForm(null);
     triggerRef.current?.focus();
   };
 
@@ -241,17 +272,22 @@ export function TriviaPanel({ isHost, schedule, getCurrentMs, onSchedule, onDele
       <p className="mt-1 text-[13px] leading-relaxed">
         Programa preguntas en momentos del vídeo: aparecerán a todos justo en ese segundo.
       </p>
-      {formAtMs === null ? (
+      {form === null ? (
         <Button
           ref={triggerRef}
           variant="ghost"
           className="mt-3"
-          onClick={() => setFormAtMs(Math.max(0, getCurrentMs() ?? 0))}
+          onClick={() => setForm({ kind: 'new', atMs: Math.max(0, getCurrentMs() ?? 0) })}
         >
           Agregar pregunta en este momento
         </Button>
       ) : (
-        <TriviaForm initialMs={formAtMs} onSubmit={onSchedule} onCancel={closeForm} />
+        <TriviaForm
+          key={form.kind === 'edit' ? form.trivia.trivia_id : 'new'}
+          target={form}
+          onSubmit={form.kind === 'edit' ? (draft) => onUpdate(form.trivia.trivia_id, draft) : onSchedule}
+          onCancel={closeForm}
+        />
       )}
 
       {channelError && (
@@ -276,18 +312,31 @@ export function TriviaPanel({ isHost, schedule, getCurrentMs, onSchedule, onDele
                   respuestas
                 </p>
               </div>
-              <Button
-                variant="quiet"
-                className="shrink-0 px-3 py-1.5 text-[13px]"
-                aria-label={`Eliminar la pregunta de ${formatMmSs(q.at_ms)}`}
-                onClick={() => onDelete(q.trivia_id)}
-              >
-                Eliminar
-              </Button>
+              <div className="flex shrink-0 gap-1">
+                {(q.status ?? 'pending') === 'pending' && (
+                  <Button
+                    variant="quiet"
+                    className="px-3 py-1.5 text-[13px]"
+                    aria-label={`Editar la pregunta de ${formatMmSs(q.at_ms)}`}
+                    onClick={() => setForm({ kind: 'edit', trivia: q })}
+                  >
+                    Editar
+                  </Button>
+                )}
+                <Button
+                  variant="quiet"
+                  className="px-3 py-1.5 text-[13px]"
+                  aria-label={`Eliminar la pregunta de ${formatMmSs(q.at_ms)}`}
+                  onClick={() => onDelete(q.trivia_id)}
+                >
+                  Eliminar
+                </Button>
+              </div>
             </li>
           ))}
         </ul>
       )}
+      <LiveLeaderboard leaderboard={leaderboard} isHost />
     </div>
   );
 }

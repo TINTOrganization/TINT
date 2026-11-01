@@ -68,6 +68,8 @@ Errores: `{ "error": "<mensaje>" }` con 400 (parámetro fuera de rango), 401 (si
 | `GET /api/v1/analytics/overview` | Panel de negocio (página `/analitica` de la web). Auth distinta: `Authorization: Bearer <ANALYTICS_ADMIN_PASSWORD>` (comparación en tiempo constante; 401 si no coincide). Sin la variable la ruta responde 404. `{generated_at, daily: [{day, dau, mau}] (30 días), events: {total, rooms, by_type: [{type, source, count}]}, rooms: [{room_id, …KPIs, close_reason, closed_at, computed_at, heatmap: [{bucket_start_ms, reactions, density}]}] (50 más recientes)}`. |
 | `GET /api/v1/rooms/{id}/timeline?step_s=60` | `{room_id, step_s, points: [{t, connected_users, messages, reactions}]}`. Intervalos por `occurred_at` alineados a la época; `t` es el inicio del intervalo (RFC 3339 UTC con ms); `connected_users` es el último `presence` conocido al final del intervalo (se arrastra); `step_s` entre 10 y 3600. |
 
+El plano interno de coordinación expone `POST /internal/events/start/{room_id}` y `DELETE /internal/events/start/{room_id}`. No son rutas públicas ni de consulta: registran de forma idempotente la sesión lógica de analítica (`sessionId`) para que identity-api pueda compensarla si falla un servicio posterior; la ingesta de `analytics:events` continúa siendo asíncrona.
+
 ## Variables de entorno
 | Variable | Defecto | Notas |
 | :--- | :--- | :--- |

@@ -365,6 +365,12 @@ sync-core y `/ws/social` a social-core. Caddy conserva el certificado local en
 `gateway-data`; para un dominio real, define `GATEWAY_HOST` con el nombre DNS
 público y sustituye los puertos publicados según tu despliegue.
 
+El gateway limita a 5 s la conexión y espera de cabeceras de cada upstream. Si
+identity-api, analytics, sync-core o social-core no están disponibles, o no
+responden dentro de ese límite, devuelve HTTP 503 con el error JSON
+`service_unavailable`; una petición posterior se reintenta normalmente, sin
+estado de circuito persistente.
+
 > [!NOTE]
 > `JWT_SECRET` (en `.env`) debe ser el mismo para identity-api, sync-core y social-core: identity-api firma los tokens y los canales los verifican. MinIO acepta peticiones del navegador desde `MINIO_CORS_ALLOW_ORIGIN` (por defecto `http://localhost:5173`).
 

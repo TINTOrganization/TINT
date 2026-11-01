@@ -92,7 +92,7 @@ flowchart TB
 | `services/sync-core` | Reloj Maestro, Canal Sync v2 (`PLAY`/`PAUSE`/`SEEK`/`RATE`/`LOAD`/`VOLUME`/`QUALITY`), drift, presencia, delegación, revocación, métricas | ✅ Implementado (v2) | [README](../services/sync-core/README.md) · [AGENTS](../services/sync-core/AGENTS.md) |
 | `services/social-core` | Chat en vivo (`/ws/social`) con moderación (modo lento y silencio) y spoilers, reacciones, puntero láser, encuestas, recap y trivias con rankings | 🟢 Chat, moderación, spoilers, reacciones, láser, encuestas, recap y trivias implementados. Heatmap: solo los buckets de 5 s en memoria (`internal/reactions/buckets.go`); las claves `room:{id}:heatmap` y `video:{id}:heatmap:history` y el evento de heatmap en vivo cada 1 s están **previstos**. La retransmisión de Ambilight en vivo también está **prevista** (hoy la web descarga `ambilight.json` por HTTP) | [README](../services/social-core/README.md) · [AGENTS](../services/social-core/AGENTS.md) |
 | `services/media-worker` | Consume `media:uploads`: valida con `ffprobe`, normaliza a MP4 H.264 + AAC, extrae el Ambilight, publica el vídeo, las calidades 720p/360p y `ambilight.json`; estado de `videos`; publica `media_processed` | ✅ Implementado (servicio de docker compose, verificado de punta a punta) | [README](../services/media-worker/README.md) · [AGENTS](../services/media-worker/AGENTS.md) |
-| `services/voice-core` | Canal de voz (`/ws/voice`): salas de voz, membresía con cupo, autorización con JWT y revocación, señalización WebRTC P2P, silencio propio y del host (WS y REST) | 🟢 Fases 1 a 3 (unirse, señalización, salida, revocación en vivo, silencios persistidos, TURN efímero). Web: **prevista** ([dominio-voz §7](dominio-voz.md#7-plan-por-fases)) | [README](../services/voice-core/README.md) · [AGENTS](../services/voice-core/AGENTS.md) |
+| `services/voice-core` | Canal de voz (`/ws/voice`): salas de voz, membresía con cupo, autorización con JWT y revocación, señalización WebRTC P2P, silencio propio y del host (WS y REST) | 🟢 Fases 1 a 4 (unirse, señalización, salida, revocación en vivo, silencios persistidos, TURN efímero y tarjeta "Voz" en `WatchRoom`). Fase 5: carga k6 en CI y E2E con dos navegadores (`make e2e-voice`, local) ([dominio-voz §7](dominio-voz.md#7-plan-por-fases)) | [README](../services/voice-core/README.md) · [AGENTS](../services/voice-core/AGENTS.md) |
 | `services/analytics` | Ingesta de `analytics:events`, sanitización, KPIs por sala, retención de 90 días y API de solo lectura de KPIs, heatmap de reacciones y línea de tiempo para el host | ✅ Implementado (consumidor, migraciones y API; servicio de docker compose) | [README](../services/analytics/README.md) · [AGENTS](../services/analytics/AGENTS.md) · [contrato de eventos](contrato-eventos-analitica.md) |
 
 <a id="vista-de-componentes-y-conectores"></a>
@@ -155,6 +155,9 @@ flowchart LR
     VC -- "C18 · SISMEMBER/SADD room:id:voice:muted" --> RD
     WEB -. "C17 · WebRTC P2P entre navegadores · STUN/TURN" .-> TURN
     RD -. "C11 · PSUBSCRIBE room:*:sync · REVOKED" .-> VC
+    ID -- "C19 · HTTP interno start/stop · deadline 5 s" --> SYNC
+    ID -- "C19 · HTTP interno start/stop · deadline 5 s" --> SOCIAL
+    ID -- "C19 · HTTP interno start/stop · deadline 5 s" --> AN
 ```
 
 **Leyenda**
@@ -189,6 +192,7 @@ flowchart LR
 | C16 | WebSocket Canal de Voz | web ↔ voice-core | `GET /ws/voice?room_id&token`; JSON (`voice_state`, `peer_joined`/`peer_left`, `signal`, `self_mute`/`host_mute` → `peer_muted`, `leave`, `error`); cierres `4001`/`4003`/`4008`; keep-alive con ping (20 s) | Asíncrono bidireccional | [voice-core/AGENTS.md § Protocolo](../services/voice-core/AGENTS.md#protocolo-del-canal-de-voz) · [dominio-voz](dominio-voz.md) |
 | C18 | REST de moderación de voz | web → voice-core · voice-core → Redis | `PUT`/`DELETE /api/v1/voice/rooms/{id}/mutes/{user_id}` con `Bearer` sync-ticket de host/cohost (`403` sin rol); CORS; se guarda en `room:{id}:voice:muted` (SET, TTL 24 h) y se anuncia `peer_muted` | Síncrono | [voice-core/AGENTS.md § API REST](../services/voice-core/AGENTS.md#api-rest-de-moderación) |
 | C17 | WebRTC P2P + STUN/TURN | web ↔ web (mesh) · web → coturn | Audio Opus por DTLS-SRTP entre navegadores; ICE con STUN y relay TURN (`coturn` `:3478`) | Asíncrono (medios en tiempo real) | [ADR 0015](adr/0015-voice-core-en-cpp-con-webrtc-p2p.md) |
+| C19 | Orquestación de arranque | identity-api → sync-core, social-core, analytics | `POST`/`DELETE /internal/events/start/{room_id}`; identidad llama en orden y compensa en orden inverso; deadline de 5 s por dependencia; no se publica por Caddy | Síncrono | Issue #75; `services/identity-api/src/modules/eventStart` |
 | C15 | Redis Stream | identity-api, sync-core, social-core, media-worker → analytics | `XADD analytics:events MAXLEN ~ 100000` → `XREADGROUP` grupo `analytics-workers` + `XACK` tras el commit | Asíncrono, best-effort | [contrato-eventos-analitica](contrato-eventos-analitica.md) · [ADR 0010](adr/0010-eventos-de-analitica-sin-pii.md) |
 
 ### 4.2 C&C del flujo de reproducción
@@ -396,15 +400,15 @@ flowchart TB
 | `tint-voice-core` | `build: ./services/voice-core` (multi-stage `debian:trixie-slim` dev → build → runtime, usuario `voicecore`) | 8085 → 8085 | — | `VOICE_CORE_ADDR`, `REDIS_URL`, `JWT_*`, `ALLOWED_ORIGINS` (de `VOICE_ALLOWED_ORIGINS`), `VOICE_MAX_MEMBERS`, `STUN_URLS`, `TURN_URLS`, `TURN_SECRET`, `TURN_TTL_SECONDS` |
 | `tint-coturn` | Imagen `coturn/coturn:4.6.3`, `network_mode: host` (en Linux el relay debe anunciar direcciones alcanzables) | 3478 (UDP/TCP) · relay 49160–49200 | — | `TURN_SECRET` (`--static-auth-secret`) |
 | `tint-sync-core` | `build: ./services/sync-core` (multi-stage `golang:1.22-alpine` → `distroless/static-debian12:nonroot`) | 8083 → 8080 | — | `SYNC_CORE_ADDR`, `REDIS_URL`, `JWT_*`, `ALLOWED_ORIGINS` (de `SYNC_ALLOWED_ORIGINS`) |
-| identity-api (proceso local) | `services/identity-api` con Node 22 (`tsx watch`) | 8081 | — | `services/identity-api/.env.example`: `IDENTITY_API_PORT`, `DATABASE_URL`, `REDIS_URL`, `FIREBASE_PROJECT_ID`, `JWT_*`, `MINIO_*`, TTLs, `MAX_UPLOAD_BYTES` |
-| web (proceso local) | `apps/web` con Vite 5 | 5173 | — | `apps/web/.env.example`: `VITE_IDENTITY_API_URL`, `VITE_FIREBASE_*`, `VITE_SYNC_WS_URL`, `VITE_SOCIAL_WS_URL`, `VITE_SYNC_ENCODING`, `VITE_ANALYTICS_API_URL`, `VITE_DEMO_VIDEO_URL` |
+| `tint-identity-api` | `build: ./services/identity-api` (Node 22, migraciones al arrancar) | 8081 → 8081 | — | `DATABASE_URL`, `REDIS_URL`, `FIREBASE_PROJECT_ID`, `JWT_*`, `MINIO_*`, `SYNC_CORE_URL`, `SOCIAL_CORE_URL`, `ANALYTICS_URL` |
+| `tint-web` | `build: ./apps/web` (build Vite + nginx) | 5173 → 80 | — | `VITE_IDENTITY_API_URL`, `VITE_FIREBASE_*`, `VITE_SYNC_WS_URL`, `VITE_SOCIAL_WS_URL`, `VITE_SYNC_ENCODING`, `VITE_ANALYTICS_API_URL` |
 | Firebase Auth | Servicio externo de Google | HTTPS | — | `FIREBASE_PROJECT_ID` (identity-api, social-core), `VITE_FIREBASE_*` (web) |
 
 Los valores por defecto de compose salen del [`.env.example` raíz](../.env.example). `JWT_SECRET`, `JWT_ISSUER` y `JWT_AUDIENCE` deben ser idénticos en identity-api, sync-core, social-core y analytics.
 
 ### 7.2 Producción
 
-**No hay despliegue a producción en el repositorio.** Lo único que existe es el workflow [`cd-deploy.yml`](../.github/workflows/cd-deploy.yml): en cada `push` a `main` (o a mano) construye y publica en GHCR las imágenes `ghcr.io/<owner>/tint-{sync-core,social-core,media-worker,analytics}` con las etiquetas `sha` y `latest`. El propio archivo dice que el despliegue a infraestructura (Kubernetes o VM) "se añadirá en una HU posterior". **identity-api y la web no tienen imagen** y no se publican. Pendientes que ya están documentados para producción: `/metrics` de sync-core detrás del ingress, hash tags de Redis para un cluster y el índice de `guest_sessions.room_id` ([dominio-reproduccion §16](dominio-reproduccion.md#16-limitaciones-conocidas)).
+**No hay despliegue a producción en el repositorio.** Lo único que existe es el workflow [`cd-deploy.yml`](../.github/workflows/cd-deploy.yml): en cada `push` a `main` (o a mano) construye y publica en GHCR las imágenes `ghcr.io/<owner>/tint-{sync-core,social-core,media-worker,analytics}` con las etiquetas `sha` y `latest`. El propio archivo dice que el despliegue a infraestructura (Kubernetes o VM) "se añadirá en una HU posterior". Las imágenes locales de identity-api y la web aún no se publican. Pendientes que ya están documentados para producción: `/metrics` de sync-core detrás del ingress, hash tags de Redis para un cluster y el índice de `guest_sessions.room_id` ([dominio-reproduccion §16](dominio-reproduccion.md#16-limitaciones-conocidas)).
 
 ### 7.3 Pipeline de CI y CD
 
@@ -423,9 +427,11 @@ flowchart LR
         IDJ["identity-api<br/>npm ci · typecheck · vitest coverage"]
         CPP["cpp · voice-core<br/>clang-format · ASan+UBSan · TSan · gcovr 85<br/>Redis de servicio"]
         K6["sync-load-smoke · needs go<br/>Redis de servicio · sync-core :8083<br/>k6 50 VUs 20 s"]
+        K6V["voice-load-smoke · needs cpp<br/>Redis de servicio · voice-core :8085 (imagen)<br/>k6 50 VUs 20 s"]
         GATE{"ci-gate<br/>if always"}
         GO --> K6
-        GO & PY & WEBJ & IDJ & CPP & K6 --> GATE
+        CPP --> K6V
+        GO & PY & WEBJ & IDJ & CPP & K6 & K6V --> GATE
     end
 
     GATE -- "todos success" --> OK["merge permitido"]
@@ -455,18 +461,48 @@ flowchart LR
 | MinIO | 9000 (API) · 9001 (consola) | |
 
 El servicio `gateway` publica `80/443` como entrada única. Redirige HTTP a
-HTTPS, termina TLS con Caddy y sirve la SPA desde `web`; enruta `/api/*`,
-`/ws/sync`, `/ws/social` y `/ws/voice` a los servicios correspondientes. Las
-rutas de KPIs, heatmap y timeline bajo `/api/v1/rooms/*` se envían a analytics.
-Las rutas no reconocidas responden 404. Su política `restart: unless-stopped`
-permite recuperar automáticamente
-el punto de entrada después de una caída.
+HTTPS, termina TLS con Caddy y mantiene el contrato público de rutas:
+
+| Ruta pública | Servicio | Upstream configurable |
+| :--- | :--- | :--- |
+| `/api/*` (excepto analytics y voz) | identity-api | `IDENTITY_API_UPSTREAM` |
+| `/api/v1/rooms/{id}/kpis`, `/reactions/heatmap`, `/timeline` | analytics | `ANALYTICS_UPSTREAM` |
+| `/api/v1/voice/*` | voice-core | `VOICE_CORE_UPSTREAM` |
+| `/ws/sync` | sync-core | `SYNC_CORE_UPSTREAM` |
+| `/ws/social` | social-core | `SOCIAL_CORE_UPSTREAM` |
+| `/ws/voice` | voice-core | `VOICE_CORE_UPSTREAM` |
+
+Los clientes usan estas rutas públicas; para añadir un servicio se incorpora su
+matcher y upstream en `gateway/Caddyfile`, y para moverlo se cambia únicamente
+la variable `*_UPSTREAM` del gateway. Las rutas no reconocidas responden 404.
+Cada upstream tiene un timeout de conexión y de cabeceras de 5 s; si un
+servicio está caído o excede ese límite, el gateway responde 503 con el error
+JSON `service_unavailable`, sin conservar un estado de circuito que impida
+atenderlo cuando se recupere. Su política `restart: unless-stopped` permite
+recuperar automáticamente el punto de entrada después de una caída.
+
+### 8.1 Trazabilidad de solicitudes
+
+El gateway administra el encabezado `X-Correlation-ID`: conserva un valor
+entrante seguro o genera un UUID cuando falta, lo reenvía a cada upstream y lo
+devuelve al cliente. Caddy registra ese mismo valor en logs JSON mediante el
+campo `correlation_id`.
+
+Identity API, analytics, sync-core y social-core mantienen el contrato: cada
+request responde con `X-Correlation-ID`, registra una línea JSON con
+`correlation_id` y, ante errores HTTP, incluye también `correlation_id` en el
+JSON de respuesta. Así el cliente puede entregar el identificador de un fallo
+al equipo y las búsquedas de logs pueden seguir el request entre conectores.
+
+La ruta `/` sirve la SPA desde el contenedor `web`; `identity-api` y la web
+forman parte del mismo stack Compose, por lo que el upstream de identidad
+apunta por defecto a `identity-api:8081`.
 
 ## 9. Calidad, CI y CD
 
 - **CI** (`.github/workflows/ci-pipeline.yml`): ver el diagrama de la [§7.3](#73-pipeline-de-ci-y-cd). Cobertura mínima `COVERAGE_MIN = 85` en todos los jobs (en Go con `scripts/check-go-coverage.sh`; en web e identity-api con los umbrales de `vitest.config.ts`). El job `ci-gate` corre siempre y falla si algún job no termina en `success`.
 - **Diferencia con el gate de AGENTS:** el gate de `apps/web` en el [AGENTS raíz](../AGENTS.md#gates-por-dominio) incluye `npm run build`, pero el job `web` del CI no lo ejecuta (solo lint, typecheck y vitest).
-- **Carga:** el job `sync-load-smoke` corre 50 VUs; la prueba completa de 500 conexiones (SYNC-TEST-01) se corre a mano desde otra máquina ([dominio-reproduccion §14](dominio-reproduccion.md#14-verificación-y-resultados)).
+- **Carga:** el job `voice-load-smoke` corre 50 VUs de señalización de voz (rotación en salas de 5, umbrales de entrada, reenvío y autorización); el job `sync-load-smoke` corre 50 VUs; la prueba completa de 500 conexiones (SYNC-TEST-01) se corre a mano desde otra máquina ([dominio-reproduccion §14](dominio-reproduccion.md#14-verificación-y-resultados)).
 - **Local:** `make test-all` (Go, Python, web, identity-api y C++) y `make up`/`make down`.
 
 ## 10. Decisiones de arquitectura (ADRs)

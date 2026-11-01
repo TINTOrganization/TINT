@@ -38,6 +38,7 @@ const social = vi.hoisted(() => {
       chatCooldownUntil: null,
       trivia: { question: null, receivedAt: null, ack: null, result: null, myOption: null },
       triviaSchedule: [] as unknown[],
+      triviaLeaderboard: { entries: [], myRank: null, myTotal: null },
       send: fn(),
       sendReaction: fn(),
       sendLaser: fn(),

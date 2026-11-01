@@ -157,6 +157,12 @@ sequenceDiagram
 - `GET /rooms` devuelve solo salas no borradas, cada una con su **última invitación vigente** (no revocada ni vencida), calculada en una sola consulta (`listLatestActiveByRooms`).
 - `POST /invitations/:code/revoke` cierra la invitación, pero **no** retira a quien ya entró con ella.
 
+Para iniciar una experiencia completa en una sola operación, el host usa `POST /events/start`
+con `{ "title": "..." }`. identity-api crea la sala y su invitación, llama en orden a los
+controles internos de sync-core, social-core y analytics (5 segundos por dependencia) y
+devuelve `room`, `invitation` y `sessions`. Si una dependencia falla, responde 503 y
+compensa los servicios ya iniciados en orden inverso, además de retirar la sala de identidad.
+
 ### 3.3 Claim de invitación con `deviceId` (y el 403 BANNED)
 
 ```mermaid
@@ -283,8 +289,9 @@ sequenceDiagram
 
     H->>API: POST /rooms/:id/media/uploads { filename, contentType, sizeBytes }
     alt sizeBytes > MAX_UPLOAD_BYTES
-        API-->>H: 413 File too large
+        API-->>H: 413 File too large { maxUploadBytes }
     end
+    API->>PG: DELETE videos pending abandonados de la sala (> TTL + 1 h) + objeto de incoming/
     API->>PG: INSERT videos (id, storage_key incoming/{id}/original.ext, status pending, title)
     API->>API: presignPut(storage_key, contentType, UPLOAD_URL_TTL_SECONDS)
     API-->>H: { videoId, uploadUrl, storageKey, expiresAt, headers }
@@ -312,6 +319,8 @@ sequenceDiagram
     end
 ```
 
+- **Subidas interrumpidas:** el PUT firmado es único (sin *multipart*), así que un corte no deja un objeto parcial; lo que sí queda es la fila `pending`. La web la cancela con `DELETE /rooms/:id/media/uploads/:videoId` (borra la fila, de forma condicional a que siga `pending`, y el objeto de `incoming/`; idempotente, 409 si ya se confirmó). Si no pudo avisar (pestaña cerrada, corte de red), la **limpieza perezosa** de `POST …/uploads` borra las filas `pending` de la sala creadas hace más de `UPLOAD_URL_TTL_SECONDS` + 1 h (`STALE_UPLOAD_GRACE_MS`) y su objeto; sin proceso programado y sin bloquear la reserva si falla.
+- **Límite de tamaño:** `GET /uploads/limits` devuelve `{ maxUploadBytes }` y el 413 lleva el mismo campo, para que la web muestre el límite sin duplicar el valor.
 - La extensión de la clave sale del nombre del archivo si es `.mp4`, `.webm`, `.mov`, `.mkv`, `.m4v` u `.ogv`; si no, del `contentType`. El nombre del usuario nunca forma parte de la clave; sí se guarda, sin extensión, como `videos.title`.
 - La URL PUT no acota el tamaño: por eso `complete` compara el tamaño real (`HEAD`) con el declarado.
 - La transición `pending → processing` es un `UPDATE ... WHERE status = 'pending'`: de dos confirmaciones simultáneas solo una encola.

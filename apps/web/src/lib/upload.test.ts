@@ -1,7 +1,17 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MockXhr } from '../test/mockXhr';
 import { apiFetch, ApiError } from './api';
-import { completeUpload, requestUpload, uploadErrorMessage, uploadToBlob, UploadError } from './upload';
+import {
+  cancelUpload,
+  completeUpload,
+  fetchUploadLimit,
+  fileTooLargeMessage,
+  formatSize,
+  requestUpload,
+  uploadErrorMessage,
+  uploadToBlob,
+  UploadError,
+} from './upload';
 
 vi.mock('./api', async (orig) => ({
   ...(await orig<typeof import('./api')>()),
@@ -123,7 +133,56 @@ describe('requestUpload / completeUpload', () => {
   });
 });
 
+describe('límite de tamaño y cancelación', () => {
+  it('fetchUploadLimit lee maxUploadBytes de identity-api con token de host', async () => {
+    mockedApiFetch.mockResolvedValueOnce({ maxUploadBytes: 2_147_483_648 });
+    await expect(fetchUploadLimit()).resolves.toBe(2_147_483_648);
+    expect(mockedApiFetch).toHaveBeenCalledWith('/uploads/limits', {}, 'host');
+  });
+
+  it.each([[{}], [{ maxUploadBytes: 'mucho' }], [{ maxUploadBytes: -1 }], [null]])(
+    'fetchUploadLimit devuelve null si la respuesta no trae un límite válido (%j)',
+    async (res) => {
+      mockedApiFetch.mockResolvedValueOnce(res);
+      await expect(fetchUploadLimit()).resolves.toBeNull();
+    },
+  );
+
+  it('fetchUploadLimit devuelve null si la petición falla (el servidor sigue decidiendo)', async () => {
+    mockedApiFetch.mockRejectedValueOnce(new ApiError(500, 'boom'));
+    await expect(fetchUploadLimit()).resolves.toBeNull();
+  });
+
+  it('cancelUpload pide DELETE de la subida con token de host', async () => {
+    mockedApiFetch.mockResolvedValueOnce(null);
+    await cancelUpload('r 1', 'v 1');
+    expect(mockedApiFetch).toHaveBeenCalledWith('/rooms/r%201/media/uploads/v%201', { method: 'DELETE' }, 'host');
+  });
+
+  it('cancelUpload nunca lanza: es un aviso de limpieza (la limpieza perezosa recoge lo demás)', async () => {
+    mockedApiFetch.mockRejectedValueOnce(new ApiError(409, 'Upload already confirmed'));
+    await expect(cancelUpload('r1', 'v1')).resolves.toBeUndefined();
+    mockedApiFetch.mockRejectedValueOnce(new Error('network'));
+    await expect(cancelUpload('r1', 'v1')).resolves.toBeUndefined();
+  });
+
+  it('formatSize da GB, MB o KB con un decimal', () => {
+    expect(formatSize(2 * 1024 ** 3)).toBe('2.0 GB');
+    expect(formatSize(3 * 1024 ** 2)).toBe('3.0 MB');
+    expect(formatSize(10)).toBe('1 KB');
+  });
+
+  it('fileTooLargeMessage dice el tamaño del archivo y el máximo', () => {
+    expect(fileTooLargeMessage(3 * 1024 ** 3, 2 * 1024 ** 3)).toBe('El archivo pesa 3.0 GB y el máximo es 2.0 GB.');
+  });
+});
+
 describe('uploadErrorMessage', () => {
+  it('un 413 con maxUploadBytes en el cuerpo muestra el límite', () => {
+    const err = new ApiError(413, 'File too large', { error: 'File too large', maxUploadBytes: 2 * 1024 ** 3 });
+    expect(uploadErrorMessage(err)).toBe('El archivo supera el tamaño máximo permitido (2.0 GB).');
+  });
+
   it.each([
     [new ApiError(413, 'File too large'), /supera el tamaño máximo/],
     [new ApiError(400, 'File too large'), /supera el tamaño máximo/],

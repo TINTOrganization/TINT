@@ -84,7 +84,7 @@ flowchart LR
 
 ### 3.1 Conexión y la instantánea al entrar
 
-El token llega en `Authorization: Bearer …` o en `?token=`. Al entrar, el cliente recibe en este orden: `history`, `chat_settings`, `poll_state`, `trivia_schedule_state` (solo host/cohost) y el `trivia_question` abierto. Cada envío se omite si no aplica (por ejemplo, sin Redis no hay `chat_settings`).
+El token llega en `Authorization: Bearer …` o en `?token=`. Al entrar, el cliente recibe en este orden: `history`, `chat_settings`, `poll_state`, `trivia_leaderboard` (si ya hay puntos), `trivia_schedule_state` (solo host/cohost) y el `trivia_question` abierto. Cada envío se omite si no aplica (por ejemplo, sin Redis no hay `chat_settings`).
 
 ```mermaid
 sequenceDiagram
@@ -244,7 +244,7 @@ sequenceDiagram
 
 Las trivias se programan por **posición del vídeo** (`at_ms`) y se disparan cuando la posición proyectada llega a la marca. Esa posición sale del ancla del recap (`room:{id}:recap:last_pos`), que se mueve con los comandos de reproducción que sync-core publica en `room:{id}:sync`.
 
-**Programación** (`trivia_schedule`, `trivia_delete`, `trivia_list`, solo moderadores): el script `schedule` guarda la pregunta en `room:{id}:trivia:questions` (máximo 50 por sala) y responde `trivia_schedule_state` solo a quien la programó. Borrar una que ya salió da `TRIVIA_CLOSED`. Cada cambio rearma el disparo.
+**Programación** (`trivia_schedule`, `trivia_update`, `trivia_delete`, `trivia_list`, solo moderadores): el script `schedule` guarda la pregunta en `room:{id}:trivia:questions` (máximo 50 por sala) y responde `trivia_schedule_state` solo a quien la programó. Editar (`trivia_update`, script `update`) reemplaza la pregunta conservando su `trivia_id`, así que se dispara la nueva versión; editar o borrar una que ya salió da `TRIVIA_CLOSED` y una inexistente, `TRIVIA_NOT_FOUND`. Cada cambio rearma el disparo.
 
 **Disparo:**
 
@@ -313,12 +313,13 @@ sequenceDiagram
     S->>T: Close
     T->>R: EVAL close (HSETNX closed)
     S->>T: Top 10 de la pregunta y Top 10 acumulado
-    S->>R: PUBLISH trivia_result (sin my_score)
-    S-->>U: trivia_result con my_score y my_total de cada conexión local
+    S->>R: PUBLISH trivia_result (sin my_score ni my_rank)
+    S-->>U: trivia_result con my_score, my_total y my_rank de cada conexión local
 ```
 
 - `trivia.Score(correcta, elapsed)`: 0 si falla; si acierta, 1000 puntos base + un bono lineal de hasta 1000 que llega a 0 a los 10 s.
-- En el ZSET por pregunta el puntaje lleva una fracción menor que 1 que favorece a quien respondió antes (desempate); el ranking acumulado guarda puntos enteros.
+- En el ZSET por pregunta el puntaje lleva una fracción menor que 1 que favorece a quien respondió antes (desempate). El ranking acumulado guarda puntos enteros y desempata con `room:{id}:trivia:elapsed` (suma de ms de sus respuestas correctas: gana quien acertó antes; si todo empata, el id). `Store.TotalTop` y `Store.Ranks` ordenan así.
+- **Ranking persistente:** vive en Redis, no en la memoria de la réplica, así que un reinicio no lo borra. Al entrar, cada cliente recibe `trivia_leaderboard` (Top 10 + `my_rank`/`my_total`) y se actualiza con cada `trivia_result`. No se emite por respuesta para no revelar quién acertó antes del cierre.
 - Cada réplica personaliza el `trivia_result` remoto para sus conexiones (`deliverRemoteResult`); si no puede leer los puntajes lo envía sin `my_score` (nunca un 0 inventado).
 
 **Ciclo de vida de una trivia** (`triviaStatus` en `trivia.go`):
@@ -326,6 +327,7 @@ sequenceDiagram
 ```mermaid
 stateDiagram-v2
     [*] --> pending: "trivia_schedule"
+    pending --> pending: "trivia_update (nueva versión)"
     pending --> [*]: "trivia_delete"
     pending --> open: "Launch (HSETNX launched) al llegar a at_ms"
     open --> closed: "closes_at_ms (Close, HSETNX closed)"
@@ -412,6 +414,7 @@ Todas las claves con TTL usan el periodo de gracia de la sala (`chat.HistoryTTL`
 | `room:{id}:trivia:{tid}:answers` | Hash | 12 h | script `answer` | `user_id` → opción |
 | `room:{id}:trivia:{tid}:leaderboard` | ZSET | 12 h + 1 h | script `answer` | `user_id` → puntos + fracción de desempate |
 | `room:{id}:trivia:leaderboard` | ZSET | 12 h + 1 h | script `answer` | Ranking acumulado de la sala |
+| `room:{id}:trivia:elapsed` | Hash | 12 h + 1 h | script `answer` | `user_id` → ms acumulados en respuestas correctas (desempate) |
 | `room:{id}:trivia:nicks` | Hash | 12 h + 1 h | script `answer` | `user_id` → último nick |
 | `room:{id}:social` | Pub/Sub | — | social-core | `chat_message`, `reaction`, `laser`, `poll_state`, `chat_settings`, `trivia_question`, `trivia_result` |
 | `room:{id}:sync` | Pub/Sub (solo lectura) | — | sync-core (comandos), identity-api (`REVOKED`) | Lee `PLAY`/`PAUSE`/`SEEK`/`RATE`/`LOAD` y `REVOKED` |
