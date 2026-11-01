@@ -539,7 +539,7 @@ Detalle de los eventos y sus campos en [AGENTS.md › Eventos de analítica](AGE
 
 ## 5. Configuración
 
-identity-api **no está en `docker-compose.yml`**: corre con `npm run dev` y lee `services/identity-api/.env` (plantilla: [`.env.example`](.env.example)). La tabla completa con valores por defecto está en [AGENTS.md › Variables de Entorno](AGENTS.md#variables-de-entorno).
+identity-api corre en `docker compose` como `identity-api` (puerto `8081`), aplica las migraciones al arrancar y usa las variables del `.env` raíz. Para desarrollo aislado también puede ejecutarse con `npm run dev` y `services/identity-api/.env` (plantilla: [`.env.example`](.env.example)). La tabla completa con valores por defecto está en [AGENTS.md › Variables de Entorno](AGENTS.md#variables-de-entorno).
 
 | Grupo | Variables | Notas |
 | :--- | :--- | :--- |
@@ -556,16 +556,10 @@ Puertos relacionados: web 5173, PostgreSQL 5432, Redis 6379, MinIO 9000 (API) y 
 ## 6. Ejecutar y probar
 
 ```bash
-# Infraestructura (desde la raíz del monorepo)
+# Stack completo (desde la raíz del monorepo)
 cp .env.example .env
-docker compose up -d postgres redis minio minio-init
-
-# identity-api
-cd services/identity-api
-cp .env.example .env
-npm ci
-npx drizzle-kit migrate     # aplica migrations/ sobre DATABASE_URL
-npm run dev                 # http://localhost:8081/api/v1/healthz
+docker compose up -d --build
+# http://localhost:8081/api/v1/healthz
 ```
 
 **Gate del dominio** (lo mismo que corre el CI):

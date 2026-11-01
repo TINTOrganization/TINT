@@ -24,19 +24,16 @@ https://{$GATEWAY_HOST:localhost} {
         respond @upstream_unavailable `{"error":"service_unavailable","message":"The requested service is temporarily unavailable."}` 503
     }
 
-    @public path / /healthz /api/v1/healthz /api/v1/invitations/claim
     @protected {
-        not path / /healthz /api/v1/healthz /api/v1/invitations/claim
+        path /api/* /ws/*
+        not path /api/v1/healthz /api/v1/invitations/claim
     }
 
-    forward_auth @protected {$IDENTITY_API_UPSTREAM:host.docker.internal:8081} {
+    forward_auth @protected {$IDENTITY_API_UPSTREAM:identity-api:8081} {
         uri /api/v1/internal/auth/check
         copy_headers X-User-Id X-User-Sub X-User-Role X-User-Room-Id X-User-Nick
         import service_timeout
     }
-
-    @root path /
-    respond @root 200
 
     @health path /healthz
     respond @health 200
@@ -52,7 +49,7 @@ https://{$GATEWAY_HOST:localhost} {
     }
 
     @identity path /api/*
-    reverse_proxy @identity {$IDENTITY_API_UPSTREAM:host.docker.internal:8081} {
+    reverse_proxy @identity {$IDENTITY_API_UPSTREAM:identity-api:8081} {
         import service_timeout
     }
 
@@ -71,5 +68,6 @@ https://{$GATEWAY_HOST:localhost} {
         import service_timeout
     }
 
-    respond 404
+    @frontend not path /api/* /ws/*
+    reverse_proxy @frontend web:80
 }

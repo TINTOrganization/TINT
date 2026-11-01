@@ -1,14 +1,45 @@
-# Entorno local de TINT: PostgreSQL, Redis, MinIO, media-worker, analytics, social-core y sync-core.
-# identity-api se ejecuta desde services/identity-api y usa SYNC_CORE_URL,
-# SOCIAL_CORE_URL y ANALYTICS_URL del .env.example para coordinar el arranque.
+# Entorno local completo de TINT.
+# identity-api usa SYNC_CORE_URL, SOCIAL_CORE_URL y ANALYTICS_URL para coordinar
+# el arranque de eventos internos.
 # Uso: cp .env.example .env && docker compose up -d
 
+x-env-check: &env-check
+  depends_on:
+    env-check:
+      condition: service_completed_successfully
+
 services:
+  env-check:
+    image: alpine:3.20
+    container_name: tint-env-check
+    env_file:
+      - path: .env
+        required: true
+    command:
+      - /bin/sh
+      - -ec
+      - |
+        missing=""
+        for variable in POSTGRES_USER POSTGRES_PASSWORD POSTGRES_DB \
+          MINIO_ROOT_USER MINIO_ROOT_PASSWORD MINIO_BUCKET \
+          JWT_SECRET JWT_ISSUER JWT_AUDIENCE FIREBASE_PROJECT_ID TURN_SECRET; do
+          value=$$(printenv "$$variable" || true)
+          if [ -z "$$value" ]; then
+            missing="$$missing\n  - $$variable"
+          fi
+        done
+        if [ -n "$$missing" ]; then
+          printf 'Missing required variables in .env:%b\n' "$$missing" >&2
+          exit 1
+        fi
+        echo "Environment validation passed"
+
   # Entrada pública única: redirige HTTP a HTTPS y enruta APIs y WebSockets.
   gateway:
     image: caddy:2.9-alpine
     container_name: tint-gateway
     restart: unless-stopped
+    <<: *env-check
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:
@@ -17,7 +48,7 @@ services:
     environment:
       GATEWAY_HOST: ${GATEWAY_HOST:-localhost}
       GATEWAY_HTTPS_PORT: ${GATEWAY_HTTPS_PORT:-443}
-      IDENTITY_API_UPSTREAM: ${IDENTITY_API_UPSTREAM:-host.docker.internal:8081}
+      IDENTITY_API_UPSTREAM: ${IDENTITY_API_UPSTREAM:-identity-api:8081}
       SYNC_CORE_UPSTREAM: ${SYNC_CORE_UPSTREAM:-sync-core:8080}
       SOCIAL_CORE_UPSTREAM: ${SOCIAL_CORE_UPSTREAM:-social-core:8082}
       ANALYTICS_UPSTREAM: ${ANALYTICS_UPSTREAM:-analytics:8084}
@@ -26,10 +57,28 @@ services:
       - ./gateway/Caddyfile:/etc/caddy/Caddyfile:ro
       - gateway-data:/data
       - gateway-config:/config
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "--quiet", "--no-check-certificate", "https://localhost/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  web:
+    build: ./apps/web
+    container_name: tint-web
+    <<: *env-check
+    ports:
+      - "${WEB_PORT:-5173}:80"
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "--quiet", "http://127.0.0.1/"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   postgres:
     image: postgres:16-alpine
     container_name: tint-postgres
+    <<: *env-check
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-tint}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-tint}
@@ -47,6 +96,7 @@ services:
   redis:
     image: redis:7-alpine
     container_name: tint-redis
+    <<: *env-check
     command: ["redis-server", "--appendonly", "yes"]
     ports:
       - "6379:6379"
@@ -62,6 +112,7 @@ services:
     #image: minio/minio:latest
     image: pgsty/minio:latest # Usamos la imagen pgsty dado que la oficial de minio no está disponible actualmente.
     container_name: tint-minio
+    <<: *env-check
     command: ["server", "/data", "--console-address", ":9001"]
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-tintadmin}
@@ -84,7 +135,10 @@ services:
     #image: minio/mc:latest
     image: pgsty/mc:latest # Usamos la imagen pgsty dado que la oficial de minio no está disponible actualmente.
     container_name: tint-minio-init
+    <<: *env-check
     depends_on:
+      env-check:
+        condition: service_completed_successfully
       minio:
         condition: service_healthy
     entrypoint: >
@@ -105,7 +159,10 @@ services:
     build: ./services/media-worker
     container_name: tint-media-worker
     restart: unless-stopped
+    <<: *env-check
     depends_on:
+      env-check:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
       redis:
@@ -120,6 +177,11 @@ services:
       S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-tintadmin123}
       MINIO_BUCKET: ${MINIO_BUCKET:-tint-media}
       MEDIA_WORKER_CONSUMER: media-worker-1
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os; os.kill(1, 0)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   # Analítica (Python): consume analytics:events, guarda telemetry_events/room_kpis y
   # expone la API de solo lectura de KPIs para el host. JWT_* deben ser los de identity-api.
@@ -127,7 +189,10 @@ services:
     build: ./services/analytics
     container_name: tint-analytics
     restart: unless-stopped
+    <<: *env-check
     depends_on:
+      env-check:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
       redis:
@@ -160,6 +225,7 @@ services:
   social-core:
     build: ./services/social-core
     container_name: tint-social-core
+    <<: *env-check
     ports:
       - "8082:8082"
     environment:
@@ -175,14 +241,24 @@ services:
       SOCIAL_REACTION_IP_LIMIT: ${SOCIAL_REACTION_IP_LIMIT:-5}
       SOCIAL_REACTION_WINDOW_MS: ${SOCIAL_REACTION_WINDOW_MS:-1000}
     depends_on:
+      env-check:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "--quiet", "http://localhost:8082/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   # Canal Sync (Go). JWT_SECRET debe ser el mismo que usa identity-api.
   sync-core:
     build: ./services/sync-core
     container_name: tint-sync-core
+    <<: *env-check
     depends_on:
+      env-check:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
     environment:
@@ -194,13 +270,61 @@ services:
       ALLOWED_ORIGINS: ${SYNC_ALLOWED_ORIGINS:-localhost:5173,127.0.0.1:5173}
     ports:
       - "8083:8080"
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "--quiet", "http://localhost:8080/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  identity-api:
+    build: ./services/identity-api
+    container_name: tint-identity-api
+    restart: unless-stopped
+    <<: *env-check
+    depends_on:
+      env-check:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    environment:
+      IDENTITY_API_PORT: 8081
+      NODE_ENV: production
+      AUTH_PROVIDER: ${AUTH_PROVIDER:-firebase}
+      SYNC_CORE_URL: http://sync-core:8080
+      SOCIAL_CORE_URL: http://social-core:8082
+      ANALYTICS_URL: http://analytics:8084
+      DATABASE_URL: postgresql://${POSTGRES_USER:-tint}:${POSTGRES_PASSWORD:-tint}@postgres:5432/${POSTGRES_DB:-tint}
+      REDIS_URL: redis://redis:6379
+      JWT_SECRET: ${JWT_SECRET:-dev-secret-change-in-prod}
+      JWT_ISSUER: ${JWT_ISSUER:-tint-identity}
+      JWT_AUDIENCE: ${JWT_AUDIENCE:-tint:room}
+      FIREBASE_PROJECT_ID: ${FIREBASE_PROJECT_ID:-tint-login}
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_PUBLIC_ENDPOINT: ${MINIO_PUBLIC_ENDPOINT:-http://localhost:9000}
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-tintadmin}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-tintadmin123}
+      MINIO_BUCKET: ${MINIO_BUCKET:-tint-media}
+    ports:
+      - "8081:8081"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:8081/api/v1/healthz').then(r => { if (!r.ok) process.exit(1) }).catch(() => process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
 
   # Canal de Voz (C++): señalización WebRTC (/ws/voice), membresía y moderación de la voz.
   # El audio viaja P2P entre navegadores; coturn hace de STUN/TURN. JWT_* deben ser los de identity-api.
   voice-core:
     build: ./services/voice-core
     container_name: tint-voice-core
+    <<: *env-check
     depends_on:
+      env-check:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
     environment:
@@ -223,6 +347,7 @@ services:
   coturn:
     image: coturn/coturn:4.6.3
     container_name: tint-coturn
+    <<: *env-check
     network_mode: host
     command:
       - "--listening-port=3478"

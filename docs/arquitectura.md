@@ -336,11 +336,6 @@ flowchart TB
         GK["Claves públicas de Google<br/>JWKS y certificados x509"]
     end
 
-    subgraph dev["Máquina del desarrollador - procesos fuera de compose"]
-        VITE["npm run dev<br/>Vite :5173"]
-        IDP["identity-api<br/>npm run dev · tsx watch :8081"]
-    end
-
     subgraph docker["Host Docker - docker compose up -d"]
         subgraph c_infra["Infraestructura"]
             PG["tint-postgres<br/>postgres:16-alpine<br/>5432:5432"]
@@ -349,6 +344,8 @@ flowchart TB
             MINIT["tint-minio-init<br/>pgsty/mc:latest<br/>una vez: bucket + regla ILM incoming/ 2 días"]
         end
         subgraph c_apps["Servicios construidos con build"]
+            WEB["tint-web<br/>nginx<br/>5173:80"]
+            IDP["tint-identity-api<br/>Node 22<br/>8081:8081"]
             MW["tint-media-worker<br/>python:3.11-slim + ffmpeg<br/>sin puertos"]
             AN["tint-analytics<br/>python:3.11-slim<br/>8084:8084"]
             SOC["tint-social-core<br/>distroless/static nonroot<br/>8082:8082"]
@@ -361,7 +358,7 @@ flowchart TB
         V3[("volumen minio-data")]
     end
 
-    VITE -- "sirve la SPA" --> SPA
+    WEB -- "sirve la SPA" --> SPA
     SPA -- "login" --> FBA
     SPA -- "HTTP :8081" --> IDP
     SPA -- "WS :8083" --> SYN
@@ -370,8 +367,8 @@ flowchart TB
     SPA -- "WS :8085" --> VOI
     SPA -- "STUN/TURN :3478" --> TRN
     SPA -- "HTTP :9000 firmado" --> MI
-    IDP -- "localhost:5432" --> PG
-    IDP -- "localhost:6379" --> RD
+    IDP -- "postgres:5432" --> PG
+    IDP -- "redis:6379" --> RD
     IDP -- "localhost:9000" --> MI
     IDP -- "HTTPS" --> GK
     SOC -- "HTTPS" --> GK
@@ -386,10 +383,9 @@ flowchart TB
     VOI -- "redis:6379" --> RD
 ```
 
-- **identity-api no está en `docker-compose.yml` ni tiene Dockerfile.** Corre como proceso de Node 22 en la máquina del desarrollador (`npm run dev`, `tsx watch src/server.ts`) y llega a la infraestructura por los puertos publicados en `localhost`. Existe `npm run build` (`tsup` → `dist/`) y `npm start`, pero no hay imagen. Sus migraciones se aplican a mano con `npx drizzle-kit migrate`.
-- **La web tampoco está en compose:** `npm run dev` (Vite 5173) o `npm run build` (`tsc -b && vite build` → `dist/`, servible con `npm run preview`). No hay servidor estático configurado en el repositorio.
-- **Orden de arranque** (`depends_on`): `minio-init` espera a que MinIO esté sano; `media-worker` espera a PostgreSQL y Redis sanos y a que `minio-init` termine bien; `analytics`, `social-core` y `sync-core` esperan a Redis (analytics también a PostgreSQL). analytics aplica sus migraciones al arrancar.
-- **Salud y métricas:** analytics, social-core, sync-core y voice-core exponen `/healthz` (media-worker no tiene HTTP); solo sync-core expone `/metrics` (Prometheus). social-core no tiene `/metrics`.
+- **Contenedores de aplicación:** `web` construye la SPA y la sirve con nginx en `5173`; `identity-api` compila Node 22, aplica las migraciones y escucha en `8081`. El gateway usa ambos servicios por sus nombres internos.
+- **Orden de arranque** (`depends_on`): `env-check` valida `.env` antes de crear servicios; `minio-init` espera a que MinIO esté sano; `identity-api` y `media-worker` esperan a PostgreSQL, Redis y el bucket; analytics espera a PostgreSQL y Redis; los canales esperan a Redis.
+- **Salud y métricas:** gateway, web, identity-api, analytics, social-core, sync-core y voice-core tienen healthcheck; media-worker se comprueba por proceso (no tiene HTTP). Solo sync-core expone `/metrics` (Prometheus). `env-check` y `minio-init` son tareas de una sola ejecución y deben terminar correctamente.
 - **Réplicas:** compose levanta **una** réplica de cada servicio. El diseño soporta N réplicas de sync-core y social-core (Pub/Sub, CAS y `HSETNX` entre réplicas); voice-core solo admite **una** (membresía en memoria, [dominio-voz §9](dominio-voz.md#9-limitaciones-conocidas)). No no hay balanceador ni configuración multirréplica en el repositorio.
 
 | Nodo | Artefacto | Puertos (host → contenedor) | Volúmenes | Variables principales |
@@ -404,15 +400,15 @@ flowchart TB
 | `tint-voice-core` | `build: ./services/voice-core` (multi-stage `debian:trixie-slim` dev → build → runtime, usuario `voicecore`) | 8085 → 8085 | — | `VOICE_CORE_ADDR`, `REDIS_URL`, `JWT_*`, `ALLOWED_ORIGINS` (de `VOICE_ALLOWED_ORIGINS`), `VOICE_MAX_MEMBERS`, `STUN_URLS`, `TURN_URLS`, `TURN_SECRET`, `TURN_TTL_SECONDS` |
 | `tint-coturn` | Imagen `coturn/coturn:4.6.3`, `network_mode: host` (en Linux el relay debe anunciar direcciones alcanzables) | 3478 (UDP/TCP) · relay 49160–49200 | — | `TURN_SECRET` (`--static-auth-secret`) |
 | `tint-sync-core` | `build: ./services/sync-core` (multi-stage `golang:1.22-alpine` → `distroless/static-debian12:nonroot`) | 8083 → 8080 | — | `SYNC_CORE_ADDR`, `REDIS_URL`, `JWT_*`, `ALLOWED_ORIGINS` (de `SYNC_ALLOWED_ORIGINS`) |
-| identity-api (proceso local) | `services/identity-api` con Node 22 (`tsx watch`) | 8081 | — | `services/identity-api/.env.example`: `IDENTITY_API_PORT`, `DATABASE_URL`, `REDIS_URL`, `FIREBASE_PROJECT_ID`, `JWT_*`, `MINIO_*`, TTLs, `MAX_UPLOAD_BYTES` |
-| web (proceso local) | `apps/web` con Vite 5 | 5173 | — | `apps/web/.env.example`: `VITE_IDENTITY_API_URL`, `VITE_FIREBASE_*`, `VITE_SYNC_WS_URL`, `VITE_SOCIAL_WS_URL`, `VITE_SYNC_ENCODING`, `VITE_ANALYTICS_API_URL`, `VITE_DEMO_VIDEO_URL` |
+| `tint-identity-api` | `build: ./services/identity-api` (Node 22, migraciones al arrancar) | 8081 → 8081 | — | `DATABASE_URL`, `REDIS_URL`, `FIREBASE_PROJECT_ID`, `JWT_*`, `MINIO_*`, `SYNC_CORE_URL`, `SOCIAL_CORE_URL`, `ANALYTICS_URL` |
+| `tint-web` | `build: ./apps/web` (build Vite + nginx) | 5173 → 80 | — | `VITE_IDENTITY_API_URL`, `VITE_FIREBASE_*`, `VITE_SYNC_WS_URL`, `VITE_SOCIAL_WS_URL`, `VITE_SYNC_ENCODING`, `VITE_ANALYTICS_API_URL` |
 | Firebase Auth | Servicio externo de Google | HTTPS | — | `FIREBASE_PROJECT_ID` (identity-api, social-core), `VITE_FIREBASE_*` (web) |
 
 Los valores por defecto de compose salen del [`.env.example` raíz](../.env.example). `JWT_SECRET`, `JWT_ISSUER` y `JWT_AUDIENCE` deben ser idénticos en identity-api, sync-core, social-core y analytics.
 
 ### 7.2 Producción
 
-**No hay despliegue a producción en el repositorio.** Lo único que existe es el workflow [`cd-deploy.yml`](../.github/workflows/cd-deploy.yml): en cada `push` a `main` (o a mano) construye y publica en GHCR las imágenes `ghcr.io/<owner>/tint-{sync-core,social-core,media-worker,analytics}` con las etiquetas `sha` y `latest`. El propio archivo dice que el despliegue a infraestructura (Kubernetes o VM) "se añadirá en una HU posterior". **identity-api y la web no tienen imagen** y no se publican. Pendientes que ya están documentados para producción: `/metrics` de sync-core detrás del ingress, hash tags de Redis para un cluster y el índice de `guest_sessions.room_id` ([dominio-reproduccion §16](dominio-reproduccion.md#16-limitaciones-conocidas)).
+**No hay despliegue a producción en el repositorio.** Lo único que existe es el workflow [`cd-deploy.yml`](../.github/workflows/cd-deploy.yml): en cada `push` a `main` (o a mano) construye y publica en GHCR las imágenes `ghcr.io/<owner>/tint-{sync-core,social-core,media-worker,analytics}` con las etiquetas `sha` y `latest`. El propio archivo dice que el despliegue a infraestructura (Kubernetes o VM) "se añadirá en una HU posterior". Las imágenes locales de identity-api y la web aún no se publican. Pendientes que ya están documentados para producción: `/metrics` de sync-core detrás del ingress, hash tags de Redis para un cluster y el índice de `guest_sessions.room_id` ([dominio-reproduccion §16](dominio-reproduccion.md#16-limitaciones-conocidas)).
 
 ### 7.3 Pipeline de CI y CD
 
@@ -453,8 +449,8 @@ flowchart LR
 
 | Servicio | Puerto | Notas |
 | :--- | :--- | :--- |
-| web | 5173 | `npm run dev` |
-| identity-api | 8081 | `npm run dev` (fuera de compose) |
+| web | 5173 | `docker compose` (`nginx`) |
+| identity-api | 8081 | `docker compose` (aplica migraciones al arrancar) |
 | social-core | 8082 | `docker compose` (`/ws/social`, `/healthz`) |
 | sync-core | 8083 → 8080 | `docker compose` (`/ws/sync`, `/healthz`, `/metrics`) |
 | analytics | 8084 | `docker compose` (`/healthz`, `/api/v1/rooms/{id}/kpis`, `/reactions/heatmap`, `/timeline`) |
@@ -497,6 +493,10 @@ request responde con `X-Correlation-ID`, registra una línea JSON con
 `correlation_id` y, ante errores HTTP, incluye también `correlation_id` en el
 JSON de respuesta. Así el cliente puede entregar el identificador de un fallo
 al equipo y las búsquedas de logs pueden seguir el request entre conectores.
+
+La ruta `/` sirve la SPA desde el contenedor `web`; `identity-api` y la web
+forman parte del mismo stack Compose, por lo que el upstream de identidad
+apunta por defecto a `identity-api:8081`.
 
 ## 9. Calidad, CI y CD
 
