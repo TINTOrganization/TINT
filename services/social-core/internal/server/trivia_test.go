@@ -153,6 +153,30 @@ func TestTriviaScheduleListDelete(t *testing.T) {
 	if m := nextOfType(t, colH, "error"); m["code"] != "TRIVIA_NOT_FOUND" {
 		t.Fatalf("borrar inexistente = %v, want TRIVIA_NOT_FOUND", m)
 	}
+	// Editar: la nueva versión reemplaza a la anterior (mismo trivia_id).
+	sendRaw(t, g, map[string]any{"event_id": "tu0", "type": "trivia_update", "trivia_id": tid,
+		"at_ms": 1000, "question": "q", "options": []string{"a", "b"}, "correct": 0})
+	if m := nextOfType(t, colG, "error"); m["code"] != "FORBIDDEN" {
+		t.Fatalf("invitado edita = %v, want FORBIDDEN", m)
+	}
+	sendRaw(t, h, map[string]any{"event_id": "tu1", "type": "trivia_update", "trivia_id": "nope",
+		"at_ms": 1000, "question": "q", "options": []string{"a", "b"}, "correct": 0})
+	if m := nextOfType(t, colH, "error"); m["code"] != "TRIVIA_NOT_FOUND" {
+		t.Fatalf("editar inexistente = %v, want TRIVIA_NOT_FOUND", m)
+	}
+	sendRaw(t, h, map[string]any{"event_id": "tu2", "type": "trivia_update", "trivia_id": tid,
+		"at_ms": 1000, "question": "q", "options": []string{"a"}, "correct": 0})
+	if m := nextOfType(t, colH, "error"); m["code"] != "INVALID_PAYLOAD" {
+		t.Fatalf("editar inválida = %v, want INVALID_PAYLOAD", m)
+	}
+	sendRaw(t, h, map[string]any{"event_id": "tu3", "type": "trivia_update", "trivia_id": tid,
+		"at_ms": 45_000, "question": " ¿Otra? ", "options": []string{"x", "y", "z"}, "correct": 2, "answer_window_s": 30})
+	m = nextOfType(t, colH, "trivia_schedule_state")
+	qs = questions(m)
+	if len(qs) != 1 || m["event_id_ref"] != "tu3" || qs[0]["trivia_id"] != tid || qs[0]["question"] != "¿Otra?" ||
+		qs[0]["at_ms"] != float64(45_000) || qs[0]["correct"] != float64(2) || qs[0]["answer_window_s"] != float64(30) {
+		t.Fatalf("tras editar = %v", m)
+	}
 	sendRaw(t, h, map[string]any{"event_id": "td1", "type": "trivia_delete", "trivia_id": tid})
 	if m := nextOfType(t, colH, "trivia_schedule_state"); len(questions(m)) != 0 || m["questions"] == nil {
 		t.Fatalf("tras borrar = %v, want questions []", m)
@@ -206,6 +230,11 @@ func TestTriviaFiresAtPositionScoresAndCloses(t *testing.T) {
 		t.Fatalf("estado tras disparar = %v, want open", q)
 	}
 	// Una pregunta ya lanzada no se borra.
+	sendRaw(t, h, map[string]any{"event_id": "tu", "type": "trivia_update", "trivia_id": tid,
+		"at_ms": 1000, "question": "q", "options": []string{"a", "b"}, "correct": 0})
+	if m := nextOfType(t, colH, "error"); m["code"] != "TRIVIA_CLOSED" {
+		t.Fatalf("editar lanzada = %v, want TRIVIA_CLOSED", m)
+	}
 	sendRaw(t, h, map[string]any{"event_id": "td", "type": "trivia_delete", "trivia_id": tid})
 	if m := nextOfType(t, colH, "error"); m["code"] != "TRIVIA_CLOSED" {
 		t.Fatalf("borrar lanzada = %v, want TRIVIA_CLOSED", m)
@@ -417,6 +446,7 @@ func TestTriviaUnavailableWithoutRedis(t *testing.T) {
 		{"event_id": "1", "type": "trivia_schedule", "at_ms": 1, "question": "q", "options": []string{"a", "b"}, "correct": 0},
 		{"event_id": "2", "type": "trivia_list"},
 		{"event_id": "3", "type": "trivia_delete", "trivia_id": "t"},
+		{"event_id": "3b", "type": "trivia_update", "trivia_id": "t", "at_ms": 1, "question": "q", "options": []string{"a", "b"}, "correct": 0},
 		{"event_id": "4", "type": "trivia_answer", "trivia_id": "t", "option": 0},
 	} {
 		sendRaw(t, h, msg)

@@ -89,6 +89,37 @@ func (d *Deps) handleTriviaSchedule(ctx context.Context, c *websocket.Conn, room
 	d.armTrivia(roomID)
 }
 
+func (d *Deps) handleTriviaUpdate(ctx context.Context, c *websocket.Conn, roomID string, claims auth.Claims, raw []byte) {
+	var in socialevent.TriviaUpdate
+	if err := json.Unmarshal(raw, &in); err != nil {
+		writeError(ctx, c, "INVALID_PAYLOAD", "")
+		return
+	}
+	if !isModerator(claims, roomID) {
+		writeError(ctx, c, "FORBIDDEN", in.EventID)
+		return
+	}
+	if d.Trivia == nil {
+		writeError(ctx, c, "UNAVAILABLE", in.EventID)
+		return
+	}
+	if err := in.Validate(); err != nil || (in.RoomID != "" && in.RoomID != roomID) {
+		writeError(ctx, c, "INVALID_PAYLOAD", in.EventID)
+		return
+	}
+	question, options, window := in.Normalized()
+	q := trivia.Question{
+		ID: in.TriviaID, AtMS: *in.AtMS, Question: question, Options: options,
+		Correct: *in.Correct, AnswerWindowS: window,
+	}
+	if err := d.Trivia.Update(ctx, roomID, q); err != nil {
+		writeError(ctx, c, triviaErrorCode(err), in.EventID)
+		return
+	}
+	d.sendScheduleState(ctx, c, roomID, in.EventID)
+	d.armTrivia(roomID)
+}
+
 func (d *Deps) handleTriviaDelete(ctx context.Context, c *websocket.Conn, roomID string, claims auth.Claims, raw []byte) {
 	var in socialevent.TriviaDelete
 	if err := json.Unmarshal(raw, &in); err != nil {
