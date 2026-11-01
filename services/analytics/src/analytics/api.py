@@ -23,6 +23,7 @@ from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from threading import Lock
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
@@ -119,6 +120,8 @@ class AnalyticsApi:
         self.allowed_origins = frozenset(allowed_origins)
         self.clock = clock
         self.admin_password = admin_password or None
+        self._started_rooms: set[str] = set()
+        self._started_rooms_lock = Lock()
 
     def handle(self, method: str, target: str, headers: Mapping[str, str]) -> Response:
         headers = {key.lower(): value for key, value in headers.items()}
@@ -138,6 +141,14 @@ class AnalyticsApi:
 
     def _route(self, method: str, target: str, headers: dict[str, str]) -> tuple[int, dict]:
         url = urlsplit(target)
+        internal_match = re.fullmatch(r"/internal/events/start/([^/]+)", url.path)
+        if internal_match:
+            room_id = internal_match.group(1)
+            if method == "POST":
+                return self._start_event(room_id)
+            if method == "DELETE":
+                return self._stop_event(room_id)
+            raise ApiError(405, "método no permitido", {"Allow": "POST, DELETE"})
         match = ROUTE.match(url.path)
         # Sin contraseña configurada el panel de negocio no existe (falla cerrado).
         overview = url.path == OVERVIEW_PATH and self.admin_password is not None
@@ -150,7 +161,6 @@ class AnalyticsApi:
             return 200, self._overview()
         if match is None:
             return 200, {"status": "ok"}
-
         room_id = match["room_id"]
         self._authorize(headers.get("authorization", ""), room_id)
         query = parse_qs(url.query, keep_blank_values=True)
@@ -160,6 +170,16 @@ class AnalyticsApi:
         if view == "reactions/heatmap":
             return 200, self._heatmap(room_id, _int_param(query, "bucket_ms", BUCKET_MS))
         return 200, self._timeline(room_id, _int_param(query, "step_s", STEP_S))
+
+    def _start_event(self, room_id: str) -> tuple[int, dict[str, Any]]:
+        with self._started_rooms_lock:
+            self._started_rooms.add(room_id)
+        return 200, {"roomId": room_id, "sessionId": f"analytics-{room_id}"}
+
+    def _stop_event(self, room_id: str) -> tuple[int, dict[str, Any] | None]:
+        with self._started_rooms_lock:
+            self._started_rooms.discard(room_id)
+        return 204, None
 
     # --- auth ---------------------------------------------------------------------------------
 

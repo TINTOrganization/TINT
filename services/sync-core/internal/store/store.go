@@ -112,6 +112,21 @@ func (s *Store) Load(ctx context.Context, roomID string) (master.State, error) {
 	return load(ctx, s.rdb, roomID)
 }
 
+// Remove elimina el estado de sincronización creado por una inicialización
+// que no llegó a completarse.
+func (s *Store) Remove(ctx context.Context, roomID string) error {
+	_, err := s.rdb.Del(
+		ctx,
+		syncevent.StateKey(roomID),
+		syncevent.HostsKey(roomID),
+		syncevent.MembersKey(roomID),
+		syncevent.HostStatusKey(roomID),
+		syncevent.HostlessSinceKey(roomID),
+		syncevent.DelegateKey(roomID),
+	).Result()
+	return err
+}
+
 // Apply aplica cmd de forma atómica. Devuelve el estado resultante y si el
 // event_id ya se había procesado (en cuyo caso el estado no cambia).
 func (s *Store) Apply(ctx context.Context, roomID, eventID string, cmd master.Command, receivedAtMs, rttMs int64, encode Encoder) (master.State, bool, error) {

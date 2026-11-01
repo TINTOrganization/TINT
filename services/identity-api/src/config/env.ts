@@ -2,6 +2,9 @@ import { z } from 'zod';
 
 const envSchema = z.object({
   IDENTITY_API_PORT: z.string().default('8081'),
+  SYNC_CORE_URL: z.string().url().default('http://localhost:8083'),
+  SOCIAL_CORE_URL: z.string().url().default('http://localhost:8082'),
+  ANALYTICS_URL: z.string().url().default('http://localhost:8084'),
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   AUTH_PROVIDER: z.enum(['firebase']).default('firebase'),
   JWT_ISSUER: z.string().default('tint-identity'),

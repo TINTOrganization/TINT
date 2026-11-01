@@ -153,6 +153,8 @@ Contrato: [docs/contrato-eventos-analitica.md](../../docs/contrato-eventos-anali
 | `SOCIAL_REACTION_IP_LIMIT` | `5` | Reacciones por segundo por IP de origen |
 | `SOCIAL_REACTION_WINDOW_MS` | `1000` | Ventana deslizante compartida por ambos límites, en milisegundos |
 
+El control interno de arranque expone `POST /internal/events/start/{room_id}` con `{"hostId":"..."}` y `DELETE /internal/events/start/{room_id}` para compensación. Devuelve los datos de sesión WebSocket, no sustituye la conexión del cliente y no se publica por gateway.
+
 ## Reglas de Dominio
 1. **Bucketing & Rate Limiting:** Limita las reacciones a 5/s por usuario, el láser a 30/s y votos/recap a 10/s. Agrupa datos en buckets de 5 segundos.
 2. **Heatmaps (previsto, sin implementar):** emitir el evento de Heatmap en vivo cada 1 s. Consulta el histórico acumulado si existen ≥ 3 sesiones previas.

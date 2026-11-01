@@ -24,7 +24,7 @@ import (
 const (
 	telemetryBuffer = 1024
 	startupTimeout  = 3 * time.Second
-	shutdownTimeout = 10 * time.Second
+	shutdownTimeout = 3 * time.Second
 )
 
 // Run arranca el servicio y bloquea hasta que falle o ctx se cancele, en
@@ -64,7 +64,7 @@ func Run(ctx context.Context, getenv func(string) string) error {
 	verifier := auth.NewVerifier(cfg.JWTSecret, cfg.JWTIssuer, cfg.JWTAudience)
 	srv := &http.Server{
 		Addr:              cfg.Addr,
-		Handler:           NewRouter(ws.NewHandler(h, verifier, st, cfg.AllowedOrigins), reg.Handler()),
+		Handler:           NewRouterWithDeps(ws.NewHandler(h, verifier, st, cfg.AllowedOrigins), reg.Handler(), st),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	errCh := make(chan error, 1)
@@ -82,7 +82,12 @@ func Run(ctx context.Context, getenv func(string) string) error {
 		shutCtx, cancelShut := context.WithTimeout(context.Background(), shutdownTimeout)
 		defer cancelShut()
 		if err := srv.Shutdown(shutCtx); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			return err
+			// Shutdown no cierra conexiones que hayan sido secuestradas por
+			// WebSocket. Fuerza el cierre al vencer el deadline para que una
+			// conexión defectuosa no impida apagar la réplica.
+			if closeErr := srv.Close(); closeErr != nil && !errors.Is(closeErr, http.ErrServerClosed) {
+				return fmt.Errorf("shutdown: %w; close: %v", err, closeErr)
+			}
 		}
 		return nil
 	}
@@ -91,11 +96,70 @@ func Run(ctx context.Context, getenv func(string) string) error {
 // NewRouter construye el router HTTP del servicio. /metrics expone métricas
 // Prometheus: en producción debe quedar detrás del ingress, no público.
 func NewRouter(sync, metrics http.Handler) http.Handler {
+	return NewRouterWithDeps(sync, metrics, nil)
+}
+
+func NewRouterWithDeps(sync, metrics http.Handler, st *store.Store) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", healthz)
 	mux.Handle("GET /ws/sync", sync)
 	mux.Handle("GET /metrics", metrics)
+	if st != nil {
+		mux.HandleFunc("POST /internal/events/start", startEvent(st))
+		mux.HandleFunc("POST /internal/events/start/{roomID}", startEvent(st))
+		mux.HandleFunc("DELETE /internal/events/start/{roomID}", stopEvent(st))
+	}
 	return mux
+}
+
+func startEvent(st *store.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var input struct {
+			RoomID string `json:"roomId"`
+			HostID string `json:"hostId"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+			http.Error(w, "roomId y hostId son obligatorios", http.StatusBadRequest)
+			return
+		}
+		if input.RoomID == "" {
+			input.RoomID = r.PathValue("roomID")
+		}
+		if input.RoomID == "" || input.HostID == "" {
+			http.Error(w, "roomId y hostId son obligatorios", http.StatusBadRequest)
+			return
+		}
+		state, err := st.Init(r.Context(), input.RoomID, input.HostID, time.Now().UnixMilli())
+		if err != nil {
+			http.Error(w, "no se pudo iniciar sync", http.StatusServiceUnavailable)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"roomId":    input.RoomID,
+			"sessionId": "sync-" + input.RoomID,
+			"wsUrl":     "/ws/sync?room_id=" + input.RoomID,
+			"state":     state,
+		})
+	}
+}
+
+func stopEvent(st *store.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if roomID := r.PathValue("roomID"); roomID == "" {
+			http.Error(w, "roomId es obligatorio", http.StatusBadRequest)
+			return
+		} else if err := st.Remove(r.Context(), roomID); err != nil {
+			http.Error(w, "no se pudo compensar sync", http.StatusServiceUnavailable)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+func writeJSON(w http.ResponseWriter, status int, value any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(value)
 }
 
 func healthz(w http.ResponseWriter, _ *http.Request) {

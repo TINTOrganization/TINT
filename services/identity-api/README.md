@@ -157,6 +157,12 @@ sequenceDiagram
 - `GET /rooms` devuelve solo salas no borradas, cada una con su **última invitación vigente** (no revocada ni vencida), calculada en una sola consulta (`listLatestActiveByRooms`).
 - `POST /invitations/:code/revoke` cierra la invitación, pero **no** retira a quien ya entró con ella.
 
+Para iniciar una experiencia completa en una sola operación, el host usa `POST /events/start`
+con `{ "title": "..." }`. identity-api crea la sala y su invitación, llama en orden a los
+controles internos de sync-core, social-core y analytics (5 segundos por dependencia) y
+devuelve `room`, `invitation` y `sessions`. Si una dependencia falla, responde 503 y
+compensa los servicios ya iniciados en orden inverso, además de retirar la sala de identidad.
+
 ### 3.3 Claim de invitación con `deviceId` (y el 403 BANNED)
 
 ```mermaid

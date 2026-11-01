@@ -43,6 +43,8 @@ import {
 } from '../modules/bans/roomBans.repo.js';
 import { markTokenRevoked, publishRevoked } from '../modules/tokens/revocation.js';
 import { v4 as uuidv4 } from 'uuid';
+import { defaultEventStartDeps } from '../modules/eventStart/eventStart.clients.js';
+import { EventStartError, startEvent } from '../modules/eventStart/eventStart.service.js';
 
 const router = Router();
 
@@ -66,6 +68,25 @@ router.post('/auth/verify', requireAuthHost, validate(verifySchema), async (req,
   res.json({ user: req.user, isRegistered: true });
   // Analítica: user_id es el sub de Firebase (users.provider_sub), nunca users.id ni el email.
   void publishAnalyticsEvent('user_login', { method: 'google', user_id: req.user!.providerSub });
+});
+
+const startEventSchema = z.object({
+  title: z.string().trim().min(1).max(150),
+});
+router.post('/events/start', requireAuthHost, validate(startEventSchema), async (req, res) => {
+  try {
+    const result = await startEvent(
+      { title: req.body.title, user: req.user! },
+      defaultEventStartDeps(),
+    );
+    res.json(result);
+  } catch (error) {
+    if (error instanceof EventStartError) {
+      console.error(`[event-start] ${error.service}:`, (error.cause as Error)?.message ?? String(error.cause));
+      return res.status(503).json({ error: 'No se pudo iniciar el evento' });
+    }
+    throw error;
+  }
 });
 
 const createRoomSchema = z.object({

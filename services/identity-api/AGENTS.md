@@ -60,6 +60,7 @@ Prefijo `/api/v1`. Los errores siempre tienen la forma `{ "error": "<texto>" }`;
 | `GET /internal/auth/check` | Gateway | Verifica Firebase RS256 o tokens propios HS256, comprueba revocación y devuelve 204 con headers `X-User-*`; responde 401 si el token no es válido |
 | `POST /auth/verify` | Firebase | Verifica el token y crea o recupera el usuario |
 | `POST /rooms` | Firebase | Crea sala (`title` 1–150) + invitación inicial |
+| `POST /events/start` | Firebase | Orquesta en orden la creación de identidad, la inicialización de sync/social/analytics y devuelve room, invitación y sesiones; los fallos de dependencias responden 503 y compensan lo ya iniciado |
 | `GET /rooms` | Firebase | Salas activas del usuario, con su invitación vigente |
 | `GET /rooms/:id` · `PATCH /rooms/:id` · `DELETE /rooms/:id` | Firebase + dueño | Detalle, renombrar (`{ title }` ≤ 150) y borrado lógico. El borrado revoca las sesiones de invitado activas (`token:revoked:{jti}` + `REVOKED`); si Redis falla responde 503 y repetir el `DELETE` sobre la sala ya borrada re-publica las pendientes (410 cuando termina) |
 | `GET /rooms/:id/invitations` | Firebase + dueño | Invitaciones de la sala con `link` |
@@ -121,6 +122,7 @@ Middlewares: `requireAuthHost`, `requireRoomOwner` (no filtra por estado de la s
 | `PLAYBACK_URL_TTL_SECONDS` | `3600` | Vida de la URL firmada de reproducción |
 | `UPLOAD_URL_TTL_SECONDS` | `900` | Vida de la URL PUT de subida |
 | `MAX_UPLOAD_BYTES` | `2147483648` | Tamaño máximo de un vídeo (2 GiB) |
+| `SYNC_CORE_URL` / `SOCIAL_CORE_URL` / `ANALYTICS_URL` | `http://localhost:8083` / `http://localhost:8082` / `http://localhost:8084` | Upstreams internos para `POST /events/start`; cada llamada tiene deadline de 5 s |
 
 ## Comandos
 ```bash
