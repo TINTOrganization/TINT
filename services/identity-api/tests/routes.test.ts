@@ -30,6 +30,15 @@ vi.mock('../src/modules/invitations/invitations.repo.js', () => ({
   listLatestActiveByRooms: vi.fn(),
 }));
 
+vi.mock('../src/modules/eventStart/eventStart.clients.js', () => ({
+  defaultEventStartDeps: vi.fn(),
+}));
+
+vi.mock('../src/modules/eventStart/eventStart.service.js', () => ({
+  EventStartError: class EventStartError extends Error {},
+  startEvent: vi.fn(),
+}));
+
 vi.mock('../src/modules/guests/guestSessions.repo.js', () => ({
   create: vi.fn(async (s: unknown) => s),
   findByJti: vi.fn(),
@@ -45,6 +54,8 @@ import { create as createGuestSession, listActiveByRoom, setRevokedMany } from '
 import { setRedisClient } from '../src/modules/tokens/revocation.js';
 import { create as createRoom, listByHost, findById, isOwner, softRemoveById, updateTitle } from '../src/modules/rooms/rooms.repo.js';
 import { create as createInvitation, findByCode, setRevoked, listByRoom, listLatestActiveByRooms } from '../src/modules/invitations/invitations.repo.js';
+import { defaultEventStartDeps } from '../src/modules/eventStart/eventStart.clients.js';
+import { EventStartError, startEvent } from '../src/modules/eventStart/eventStart.service.js';
 
 const room = { id: 'room-1', hostId: 'host-1', title: 'Noche de cine', status: 'active' };
 const deletedRoom = { ...room, status: 'deleted' };
@@ -73,6 +84,39 @@ const redis = {
 };
 
 describe('rutas v1', () => {
+  it('POST /events/start coordina el inicio y devuelve sala, invitación y sesiones', async () => {
+    vi.mocked(defaultEventStartDeps).mockReturnValue({} as any);
+    vi.mocked(startEvent).mockResolvedValueOnce({
+      room,
+      invitation: { code: invitation.code, expiresAt: invitation.expiresAt, link: '/invite/abc123def456' },
+      sessions: {
+        sync: { sessionId: 'sync-1' },
+        social: { sessionId: 'social-1' },
+        analytics: { sessionId: 'analytics-1' },
+      },
+    } as any);
+
+    const res = await request(app).post('/api/v1/events/start').send({ title: 'Noche de cine' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.sessions.sync.sessionId).toBe('sync-1');
+    expect(startEvent).toHaveBeenCalledWith(
+      { title: 'Noche de cine', user: expect.objectContaining({ id: 'host-1' }) },
+      {},
+    );
+  });
+
+  it('POST /events/start devuelve 503 claro si un servicio falla', async () => {
+    vi.mocked(defaultEventStartDeps).mockReturnValue({} as any);
+    const error = new EventStartError('social', new Error('caído'));
+    vi.mocked(startEvent).mockRejectedValueOnce(error);
+
+    const res = await request(app).post('/api/v1/events/start').send({ title: 'Noche de cine' });
+
+    expect(res.status).toBe(503);
+    expect(res.body).toEqual({ error: 'No se pudo iniciar el evento' });
+  });
+
   it('GET /healthz responde ok', async () => {
     const res = await request(app).get('/api/v1/healthz');
     expect(res.status).toBe(200);

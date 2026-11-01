@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-const { whereMock, orderByMock, returningMock, valuesMock, setMock } = vi.hoisted(() => ({
+const { whereMock, orderByMock, returningMock, valuesMock, setMock, deleteWhereMock } = vi.hoisted(() => ({
+  deleteWhereMock: vi.fn(),
   whereMock: vi.fn(),
   orderByMock: vi.fn(),
   returningMock: vi.fn(),
@@ -20,11 +21,20 @@ vi.mock('../src/db/client.js', () => ({
     }),
     insert: () => ({ values: (v: unknown) => (valuesMock(v), { returning: returningMock }) }),
     update: () => ({ set: (v: unknown) => (setMock(v), { where: () => ({ returning: returningMock }) }) }),
+    delete: () => ({ where: (...args: unknown[]) => (deleteWhereMock(...args), { returning: returningMock }) }),
   },
   pool: { end: () => Promise.resolve() },
 }));
 
-import { create, findById, transitionStatus, listByUploader, updateTitle } from '../src/modules/videos/videos.repo.js';
+import {
+  create,
+  findById,
+  transitionStatus,
+  listByUploader,
+  updateTitle,
+  removePendingById,
+  removeStalePendingByRoom,
+} from '../src/modules/videos/videos.repo.js';
 
 const video = {
   id: '55555555-5555-4555-8555-555555555555',
@@ -85,5 +95,23 @@ describe('videos.repo', () => {
     await expect(findById(video.id)).resolves.toMatchObject({ renditions: [] });
     whereMock.mockResolvedValueOnce([{ ...video, renditions: { 720: true } }]);
     await expect(findById(video.id)).resolves.toMatchObject({ renditions: [] });
+  });
+
+  it('removePendingById borra solo si sigue pending y devuelve la fila (null si ya no estaba)', async () => {
+    returningMock.mockResolvedValueOnce([video]);
+    await expect(removePendingById(video.id)).resolves.toEqual(video);
+    expect(deleteWhereMock).toHaveBeenCalledTimes(1);
+    returningMock.mockResolvedValueOnce([]);
+    await expect(removePendingById(video.id)).resolves.toBeNull();
+  });
+
+  it('removeStalePendingByRoom borra las pending anteriores al corte y devuelve id y clave de cada una', async () => {
+    returningMock.mockResolvedValueOnce([{ ...video, id: 'a', storageKey: 'incoming/a/original.mp4' }]);
+    await expect(removeStalePendingByRoom('r1', new Date())).resolves.toEqual([
+      { id: 'a', storageKey: 'incoming/a/original.mp4' },
+    ]);
+    expect(deleteWhereMock).toHaveBeenCalledTimes(1);
+    returningMock.mockResolvedValueOnce([]);
+    await expect(removeStalePendingByRoom('r1', new Date())).resolves.toEqual([]);
   });
 });

@@ -87,6 +87,20 @@ def test_correlation_id_is_generated_when_missing():
     assert response.headers["X-Correlation-ID"]
 
 
+def test_internal_event_start_is_idempotent_and_returns_session():
+    api = make_api()
+    path = f"/internal/events/start/{ROOM}"
+
+    started = api.handle("POST", path, {})
+    repeated = api.handle("POST", path, {})
+    stopped = api.handle("DELETE", path, {})
+
+    assert started.status == repeated.status == 200
+    assert started.body == {"roomId": ROOM, "sessionId": f"analytics-{ROOM}"}
+    assert stopped.status == 204
+    assert stopped.body is None
+
+
 def test_unknown_route_is_404():
     response = get(make_api(), "/api/v1/rooms/x/raw-events", bearer=token())
     assert response.status == 404

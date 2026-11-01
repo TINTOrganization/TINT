@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -73,6 +74,32 @@ func TestCorrelationIDIsReturnedOnHTTPError(t *testing.T) {
 	}
 	if body["correlation_id"] != "trace-123" {
 		t.Fatalf("error correlation ID = %q, want trace-123", body["correlation_id"])
+	}
+}
+
+func TestInternalEventStartAndStop(t *testing.T) {
+	router := NewRouterWithDeps(testDeps("secret"))
+
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(
+		rec,
+		httptest.NewRequest(http.MethodPost, "/internal/events/start/room-1", strings.NewReader(`{"hostId":"host-1"}`)),
+	)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("start status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var body map[string]string
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body["roomId"] != "room-1" || body["sessionId"] != "social-room-1" {
+		t.Fatalf("unexpected start body: %v", body)
+	}
+
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodDelete, "/internal/events/start/room-1", nil))
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("stop status = %d, body = %s", rec.Code, rec.Body.String())
 	}
 }
 

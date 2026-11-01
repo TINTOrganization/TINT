@@ -22,12 +22,20 @@ vi.mock('../src/modules/videos/videos.repo.js', () => ({
   create: vi.fn(async (v: any) => v),
   findById: vi.fn(),
   transitionStatus: vi.fn(),
+  removePendingById: vi.fn(),
+  removeStalePendingByRoom: vi.fn(async () => []),
 }));
 
 import app from '../src/app.js';
 import { env } from '../src/config/env.js';
 import { findById as findRoom, isOwner, setMedia } from '../src/modules/rooms/rooms.repo.js';
-import { create as createVideo, findById as findVideo, transitionStatus } from '../src/modules/videos/videos.repo.js';
+import {
+  create as createVideo,
+  findById as findVideo,
+  removePendingById,
+  removeStalePendingByRoom,
+  transitionStatus,
+} from '../src/modules/videos/videos.repo.js';
 import { setMediaSigner } from '../src/modules/media/media.signer.js';
 import { setMediaStore } from '../src/modules/media/media.store.js';
 import { setRedisClient } from '../src/modules/tokens/revocation.js';
@@ -51,6 +59,7 @@ beforeEach(() => {
   setMediaStore({ stat, remove });
   setRedisClient({ xadd, exists: vi.fn(async () => 0) } as any);
   vi.mocked(transitionStatus).mockImplementation(async (_id, _from, to) => ({ ...pending, status: to }) as any);
+  vi.mocked(removeStalePendingByRoom).mockResolvedValue([]);
 });
 
 afterEach(() => {
@@ -116,7 +125,9 @@ describe('POST /rooms/:id/media/uploads', () => {
   it('413 si supera MAX_UPLOAD_BYTES', async () => {
     const res = await start({ filename: 'a.mp4', contentType: 'video/mp4', sizeBytes: env.MAX_UPLOAD_BYTES + 1 });
     expect(res.status).toBe(413);
-    expect(res.body).toEqual({ error: 'File too large' });
+    // El cuerpo lleva el límite para que la web lo muestre sin duplicar el valor.
+    expect(res.body).toEqual({ error: 'File too large', maxUploadBytes: env.MAX_UPLOAD_BYTES });
+    expect(createVideo).not.toHaveBeenCalled();
   });
 
   it('403 si no es dueño y 410 si la sala está borrada', async () => {
@@ -124,6 +135,110 @@ describe('POST /rooms/:id/media/uploads', () => {
     expect((await start({ filename: 'a.mp4', contentType: 'video/mp4', sizeBytes: 1 })).status).toBe(403);
     vi.mocked(findRoom).mockResolvedValueOnce({ ...activeRoom, status: 'deleted' } as any);
     expect((await start({ filename: 'a.mp4', contentType: 'video/mp4', sizeBytes: 1 })).status).toBe(410);
+  });
+});
+
+describe('limpieza perezosa de subidas huérfanas al reservar', () => {
+  const OLD = '77777777-7777-4777-8777-777777777777';
+
+  it('borra las filas pending de la sala más viejas que TTL + 1 h, y su objeto de incoming/', async () => {
+    vi.mocked(removeStalePendingByRoom).mockResolvedValueOnce([
+      { id: OLD, storageKey: `incoming/${OLD}/original.mp4` },
+    ] as any);
+    const before = Date.now();
+    const res = await start({ filename: 'a.mp4', contentType: 'video/mp4', sizeBytes: 1 });
+    expect(res.status).toBe(200);
+    const [roomId, cutoff] = vi.mocked(removeStalePendingByRoom).mock.calls[0] as [string, Date];
+    expect(roomId).toBe('room-1');
+    const graceMs = env.UPLOAD_URL_TTL_SECONDS * 1000 + 60 * 60 * 1000;
+    const after = Date.now();
+    expect(cutoff.getTime()).toBeGreaterThanOrEqual(before - graceMs);
+    expect(cutoff.getTime()).toBeLessThanOrEqual(after - graceMs);
+    expect(remove).toHaveBeenCalledWith(`incoming/${OLD}/original.mp4`);
+    // Primero se limpia y después se reserva la nueva.
+    expect(vi.mocked(removeStalePendingByRoom).mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(createVideo).mock.invocationCallOrder[0],
+    );
+  });
+
+  it('un fallo al limpiar (BD o MinIO) se registra pero no impide reservar', async () => {
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.mocked(removeStalePendingByRoom).mockRejectedValueOnce(new Error('db down'));
+    expect((await start({ filename: 'a.mp4', contentType: 'video/mp4', sizeBytes: 1 })).status).toBe(200);
+    vi.mocked(removeStalePendingByRoom).mockResolvedValueOnce([{ id: OLD, storageKey: 'incoming/x/original.mp4' }] as any);
+    remove.mockRejectedValueOnce(new Error('minio down'));
+    expect((await start({ filename: 'a.mp4', contentType: 'video/mp4', sizeBytes: 1 })).status).toBe(200);
+    expect(log).toHaveBeenCalledTimes(2);
+    log.mockRestore();
+  });
+
+  it('no limpia nada si la subida se rechaza por tamaño', async () => {
+    await start({ filename: 'a.mp4', contentType: 'video/mp4', sizeBytes: env.MAX_UPLOAD_BYTES + 1 });
+    expect(removeStalePendingByRoom).not.toHaveBeenCalled();
+  });
+});
+
+describe('GET /uploads/limits', () => {
+  it('devuelve el tamaño máximo de subida (fuente de verdad: MAX_UPLOAD_BYTES)', async () => {
+    const res = await request(app).get('/api/v1/uploads/limits');
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ maxUploadBytes: env.MAX_UPLOAD_BYTES });
+  });
+});
+
+const cancel = (id = VID) => request(app).delete(`/api/v1/rooms/room-1/media/uploads/${id}`);
+
+describe('DELETE /rooms/:id/media/uploads/:videoId (cancelar subida)', () => {
+  it('borra la fila pending y el objeto parcial o completo de incoming/', async () => {
+    vi.mocked(findVideo).mockResolvedValueOnce(pending as any);
+    vi.mocked(removePendingById).mockResolvedValueOnce(pending as any);
+    const res = await cancel();
+    expect(res.status).toBe(204);
+    expect(removePendingById).toHaveBeenCalledWith(VID);
+    expect(remove).toHaveBeenCalledWith(pending.storageKey);
+  });
+
+  it('es idempotente: si la fila ya no existe o es de otra sala responde 204 sin borrar nada', async () => {
+    vi.mocked(findVideo).mockResolvedValueOnce(null as any);
+    expect((await cancel()).status).toBe(204);
+    vi.mocked(findVideo).mockResolvedValueOnce({ ...pending, roomId: 'otra' } as any);
+    expect((await cancel()).status).toBe(204);
+    expect(removePendingById).not.toHaveBeenCalled();
+    expect(remove).not.toHaveBeenCalled();
+  });
+
+  it('409 si la subida ya fue confirmada (no se puede cancelar un vídeo en proceso)', async () => {
+    vi.mocked(findVideo).mockResolvedValueOnce({ ...pending, status: 'processing' } as any);
+    const res = await cancel();
+    expect(res.status).toBe(409);
+    expect(removePendingById).not.toHaveBeenCalled();
+    expect(remove).not.toHaveBeenCalled();
+  });
+
+  it('409 si una confirmación concurrente ganó la carrera (el borrado condicional no afecta filas)', async () => {
+    vi.mocked(findVideo).mockResolvedValueOnce(pending as any);
+    vi.mocked(removePendingById).mockResolvedValueOnce(null as any);
+    expect((await cancel()).status).toBe(409);
+    expect(remove).not.toHaveBeenCalled();
+  });
+
+  it('204 aunque falle el borrado del objeto (la limpieza perezosa lo recogerá)', async () => {
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.mocked(findVideo).mockResolvedValueOnce(pending as any);
+    vi.mocked(removePendingById).mockResolvedValueOnce(pending as any);
+    remove.mockRejectedValueOnce(new Error('minio down'));
+    expect((await cancel()).status).toBe(204);
+    expect(log).toHaveBeenCalled();
+    log.mockRestore();
+  });
+
+  it('404 si el id no es uuid, 403 si no es el dueño y 410 si la sala está borrada', async () => {
+    expect((await cancel('no-uuid')).status).toBe(404);
+    vi.mocked(isOwner).mockResolvedValueOnce(false);
+    expect((await cancel()).status).toBe(403);
+    vi.mocked(findRoom).mockResolvedValueOnce({ ...activeRoom, status: 'deleted' } as any);
+    expect((await cancel()).status).toBe(410);
+    expect(removePendingById).not.toHaveBeenCalled();
   });
 });
 
@@ -157,7 +272,7 @@ describe('POST /rooms/:id/media/uploads/:videoId/complete', () => {
     stat.mockResolvedValueOnce({ size: pending.sizeBytes + 1 });
     const res = await complete();
     expect(res.status).toBe(413);
-    expect(res.body).toEqual({ error: 'File too large' });
+    expect(res.body).toEqual({ error: 'File too large', maxUploadBytes: env.MAX_UPLOAD_BYTES });
     expect(remove).toHaveBeenCalledWith(pending.storageKey);
     expect(transitionStatus).not.toHaveBeenCalled();
     expect(xadd).not.toHaveBeenCalled();

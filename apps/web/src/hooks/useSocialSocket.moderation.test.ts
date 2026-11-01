@@ -15,7 +15,7 @@ class FakeSocket {
   readyState = 0;
   onopen: ((e: unknown) => void) | null = null;
   onmessage: ((e: { data: string }) => void) | null = null;
-  onclose: (() => void) | null = null;
+  onclose: ((e: { code: number }) => void) | null = null;
   onerror: (() => void) | null = null;
   sent: string[] = [];
   constructor(url: string) {
@@ -37,7 +37,7 @@ class FakeSocket {
   }
   close() {
     this.readyState = 3;
-    this.onclose?.();
+    this.onclose?.({ code: 1006 });
   }
 }
 
@@ -158,6 +158,50 @@ describe('useSocialSocket — trivia', () => {
     expect(result.current.trivia).toMatchObject({ ack: null, result: null });
   });
 
+  it('el ranking acumulado persiste: llega al entrar, se reordena con cada resultado y sobrevive a dismissTrivia', () => {
+    const { result, ws } = connected('guest');
+    expect(result.current.triviaLeaderboard).toEqual({ entries: [], myRank: null, myTotal: null });
+    act(() =>
+      ws.receive({
+        type: 'trivia_leaderboard',
+        leaderboard: [
+          { user_id: 'u1', nick: 'Ana', score: 2000 },
+          { user_id: 'me', nick: 'Yo', score: 1500 },
+        ],
+        my_rank: 2,
+        my_total: 1500,
+      }),
+    );
+    expect(result.current.triviaLeaderboard.entries.map((e) => e.nick)).toEqual(['Ana', 'Yo']);
+    expect(result.current.triviaLeaderboard).toMatchObject({ myRank: 2, myTotal: 1500 });
+
+    // A result reorders it, even with no question on screen.
+    act(() =>
+      ws.receive({
+        type: 'trivia_result',
+        trivia_id: 'otra',
+        correct: 0,
+        top: [],
+        leaderboard: [
+          { user_id: 'me', nick: 'Yo', score: 3400 },
+          { user_id: 'u1', nick: 'Ana', score: 2000 },
+        ],
+        my_total: 3400,
+        my_rank: 1,
+      }),
+    );
+    expect(result.current.triviaLeaderboard.entries.map((e) => e.nick)).toEqual(['Yo', 'Ana']);
+    expect(result.current.triviaLeaderboard).toMatchObject({ myRank: 1, myTotal: 3400 });
+
+    act(() => ws.receive(question));
+    act(() => result.current.dismissTrivia());
+    expect(result.current.triviaLeaderboard.entries).toHaveLength(2);
+
+    // A result without my_rank (no points yet) clears the previous rank.
+    act(() => ws.receive({ type: 'trivia_result', trivia_id: 'x', correct: 0, top: [], leaderboard: [], my_total: 0 }));
+    expect(result.current.triviaLeaderboard).toEqual({ entries: [], myRank: null, myTotal: 0 });
+  });
+
   it('dismissTrivia oculta la tarjeta', () => {
     const { result, ws } = connected('guest');
     act(() => ws.receive(question));
@@ -178,13 +222,17 @@ describe('useSocialSocket — trivia', () => {
     );
     expect(result.current.triviaSchedule.map((q) => q.trivia_id)).toEqual(['a', 'b']);
     expect(result.current.scheduleTrivia({ atMs: 0, question: '', options: ['a', 'b'], correct: 0, answerWindowS: 20 })).toBe(false);
+    expect(result.current.updateTrivia('a', { atMs: 0, question: '', options: ['a', 'b'], correct: 0, answerWindowS: 20 })).toBe(false);
     act(() => {
       result.current.scheduleTrivia({ atMs: 5_000, question: '¿Q?', options: ['a', 'b'], correct: 0, answerWindowS: 20 });
+      result.current.updateTrivia('a', { atMs: 6_000, question: '¿Q2?', options: ['a', 'b'], correct: 1, answerWindowS: 30 });
       result.current.deleteTrivia('a');
       result.current.listTrivia();
     });
     expect(ws.sentJson().map((m) => m.type)).toEqual([
       'trivia_schedule',
+      'trivia_list',
+      'trivia_update',
       'trivia_list',
       'trivia_delete',
       'trivia_list',

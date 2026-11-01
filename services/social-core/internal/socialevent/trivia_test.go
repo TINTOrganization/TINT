@@ -73,3 +73,32 @@ func TestTriviaSmallMessagesValidate(t *testing.T) {
 		}
 	}
 }
+
+func TestTriviaUpdateValidate(t *testing.T) {
+	at, idx := int64(5), 1
+	ok := TriviaUpdate{EventID: "e", Type: TypeTriviaUpdate, TriviaID: "t1", AtMS: &at, Question: " ¿q? ", Options: []string{"a", " b "}, Correct: &idx}
+	if err := ok.Validate(); err != nil {
+		t.Fatalf("ok = %v", err)
+	}
+	if q, o, w := ok.Normalized(); q != "¿q?" || o[1] != "b" || w != DefaultTriviaWindowS {
+		t.Fatalf("Normalized = %q %v %d", q, o, w)
+	}
+	cases := map[string]struct {
+		mod  func(*TriviaUpdate)
+		want error
+	}{
+		"sin event":  {func(m *TriviaUpdate) { m.EventID = "" }, ErrMissingEventID},
+		"tipo malo":  {func(m *TriviaUpdate) { m.Type = TypeTriviaSchedule }, ErrUnsupportedType},
+		"sin id":     {func(m *TriviaUpdate) { m.TriviaID = "" }, ErrMissingTrivia},
+		"sin at_ms":  {func(m *TriviaUpdate) { m.AtMS = nil }, ErrInvalidAtMS},
+		"una opción": {func(m *TriviaUpdate) { m.Options = []string{"a"} }, ErrInvalidOptions},
+		"ventana":    {func(m *TriviaUpdate) { m.AnswerWindowS = 5 }, ErrInvalidWindow},
+	}
+	for name, c := range cases {
+		m := ok
+		c.mod(&m)
+		if err := m.Validate(); err != c.want {
+			t.Errorf("%s = %v, want %v", name, err, c.want)
+		}
+	}
+}
