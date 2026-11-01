@@ -92,7 +92,7 @@ flowchart TB
 | `services/sync-core` | Reloj Maestro, Canal Sync v2 (`PLAY`/`PAUSE`/`SEEK`/`RATE`/`LOAD`/`VOLUME`/`QUALITY`), drift, presencia, delegación, revocación, métricas | ✅ Implementado (v2) | [README](../services/sync-core/README.md) · [AGENTS](../services/sync-core/AGENTS.md) |
 | `services/social-core` | Chat en vivo (`/ws/social`) con moderación (modo lento y silencio) y spoilers, reacciones, puntero láser, encuestas, recap y trivias con rankings | 🟢 Chat, moderación, spoilers, reacciones, láser, encuestas, recap y trivias implementados. Heatmap: solo los buckets de 5 s en memoria (`internal/reactions/buckets.go`); las claves `room:{id}:heatmap` y `video:{id}:heatmap:history` y el evento de heatmap en vivo cada 1 s están **previstos**. La retransmisión de Ambilight en vivo también está **prevista** (hoy la web descarga `ambilight.json` por HTTP) | [README](../services/social-core/README.md) · [AGENTS](../services/social-core/AGENTS.md) |
 | `services/media-worker` | Consume `media:uploads`: valida con `ffprobe`, normaliza a MP4 H.264 + AAC, extrae el Ambilight, publica el vídeo, las calidades 720p/360p y `ambilight.json`; estado de `videos`; publica `media_processed` | ✅ Implementado (servicio de docker compose, verificado de punta a punta) | [README](../services/media-worker/README.md) · [AGENTS](../services/media-worker/AGENTS.md) |
-| `services/voice-core` | Canal de voz (`/ws/voice`): salas de voz, membresía con cupo, autorización con JWT y revocación, señalización WebRTC P2P, silencio propio y del host (WS y REST) | 🟢 Fases 1 a 3 (unirse, señalización, salida, revocación en vivo, silencios persistidos, TURN efímero). Web: **prevista** ([dominio-voz §7](dominio-voz.md#7-plan-por-fases)) | [README](../services/voice-core/README.md) · [AGENTS](../services/voice-core/AGENTS.md) |
+| `services/voice-core` | Canal de voz (`/ws/voice`): salas de voz, membresía con cupo, autorización con JWT y revocación, señalización WebRTC P2P, silencio propio y del host (WS y REST) | 🟢 Fases 1 a 4 (unirse, señalización, salida, revocación en vivo, silencios persistidos, TURN efímero y tarjeta "Voz" en `WatchRoom`). Fase 5: carga k6 en CI y E2E con dos navegadores (`make e2e-voice`, local) ([dominio-voz §7](dominio-voz.md#7-plan-por-fases)) | [README](../services/voice-core/README.md) · [AGENTS](../services/voice-core/AGENTS.md) |
 | `services/analytics` | Ingesta de `analytics:events`, sanitización, KPIs por sala, retención de 90 días y API de solo lectura de KPIs, heatmap de reacciones y línea de tiempo para el host | ✅ Implementado (consumidor, migraciones y API; servicio de docker compose) | [README](../services/analytics/README.md) · [AGENTS](../services/analytics/AGENTS.md) · [contrato de eventos](contrato-eventos-analitica.md) |
 
 <a id="vista-de-componentes-y-conectores"></a>
@@ -431,9 +431,11 @@ flowchart LR
         IDJ["identity-api<br/>npm ci · typecheck · vitest coverage"]
         CPP["cpp · voice-core<br/>clang-format · ASan+UBSan · TSan · gcovr 85<br/>Redis de servicio"]
         K6["sync-load-smoke · needs go<br/>Redis de servicio · sync-core :8083<br/>k6 50 VUs 20 s"]
+        K6V["voice-load-smoke · needs cpp<br/>Redis de servicio · voice-core :8085 (imagen)<br/>k6 50 VUs 20 s"]
         GATE{"ci-gate<br/>if always"}
         GO --> K6
-        GO & PY & WEBJ & IDJ & CPP & K6 --> GATE
+        CPP --> K6V
+        GO & PY & WEBJ & IDJ & CPP & K6 & K6V --> GATE
     end
 
     GATE -- "todos success" --> OK["merge permitido"]
@@ -476,7 +478,7 @@ recuperar automáticamente el punto de entrada después de una caída.
 
 - **CI** (`.github/workflows/ci-pipeline.yml`): ver el diagrama de la [§7.3](#73-pipeline-de-ci-y-cd). Cobertura mínima `COVERAGE_MIN = 85` en todos los jobs (en Go con `scripts/check-go-coverage.sh`; en web e identity-api con los umbrales de `vitest.config.ts`). El job `ci-gate` corre siempre y falla si algún job no termina en `success`.
 - **Diferencia con el gate de AGENTS:** el gate de `apps/web` en el [AGENTS raíz](../AGENTS.md#gates-por-dominio) incluye `npm run build`, pero el job `web` del CI no lo ejecuta (solo lint, typecheck y vitest).
-- **Carga:** el job `sync-load-smoke` corre 50 VUs; la prueba completa de 500 conexiones (SYNC-TEST-01) se corre a mano desde otra máquina ([dominio-reproduccion §14](dominio-reproduccion.md#14-verificación-y-resultados)).
+- **Carga:** el job `voice-load-smoke` corre 50 VUs de señalización de voz (rotación en salas de 5, umbrales de entrada, reenvío y autorización); el job `sync-load-smoke` corre 50 VUs; la prueba completa de 500 conexiones (SYNC-TEST-01) se corre a mano desde otra máquina ([dominio-reproduccion §14](dominio-reproduccion.md#14-verificación-y-resultados)).
 - **Local:** `make test-all` (Go, Python, web, identity-api y C++) y `make up`/`make down`.
 
 ## 10. Decisiones de arquitectura (ADRs)
