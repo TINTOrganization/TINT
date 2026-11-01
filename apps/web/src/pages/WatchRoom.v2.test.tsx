@@ -71,6 +71,7 @@ let playbackByCall: Array<{
   url: string | null;
   expiresAt: string | null;
   status?: string | null;
+  failureReason?: string | null;
   ambilightUrl?: string | null;
 }>;
 
@@ -330,7 +331,7 @@ describe('WatchRoom v2 — estado del procesamiento (Ambilight)', () => {
     ['processing_failed', 'No se pudo preparar el vídeo. Prueba con otro archivo.'],
   ])('failed (%s): el invitado sigue viendo solo el texto genérico', async (failureReason, specific) => {
     localStorage.setItem('tint_guest_token', testGuestToken());
-    playbackByCall = [{ mediaId: 'm1', url: null, expiresAt: null, status: 'failed', failureReason, ambilightUrl: null } as any];
+    playbackByCall = [{ mediaId: 'm1', url: null, expiresAt: null, status: 'failed', failureReason, ambilightUrl: null }];
     renderWatch();
     await flush();
     expect(screen.getByRole('status', { name: 'Estado del vídeo' })).toHaveTextContent(
@@ -359,7 +360,7 @@ describe('WatchRoom v2 — host', () => {
     ['missing_file', 'La subida no llegó completa. Sube el archivo de nuevo.'],
     ['processing_failed', 'No se pudo preparar el vídeo. Prueba con otro archivo.'],
   ])('vídeo failed (%s): el host ve el motivo específico en el estado y en el reproductor', async (failureReason, specific) => {
-    playbackByCall = [{ mediaId: 'm1', url: null, expiresAt: null, status: 'failed', failureReason, ambilightUrl: null } as any];
+    playbackByCall = [{ mediaId: 'm1', url: null, expiresAt: null, status: 'failed', failureReason, ambilightUrl: null }];
     renderWatch();
     await flush();
     expect(screen.getByRole('status', { name: 'Estado del vídeo' })).toHaveTextContent(specific);
@@ -367,7 +368,7 @@ describe('WatchRoom v2 — host', () => {
   });
 
   it('vídeo failed sin motivo (versión anterior): el host ve el texto genérico', async () => {
-    playbackByCall = [{ mediaId: 'm1', url: null, expiresAt: null, status: 'failed', ambilightUrl: null } as any];
+    playbackByCall = [{ mediaId: 'm1', url: null, expiresAt: null, status: 'failed', ambilightUrl: null }];
     renderWatch();
     await flush();
     expect(screen.getByRole('status', { name: 'Estado del vídeo' })).toHaveTextContent(
