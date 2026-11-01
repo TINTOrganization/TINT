@@ -7,11 +7,11 @@
 
 | HU | Criterios | Estado |
 | :--- | :--- | :--- |
-| **HU-VOZ-01** Unirse a la voz de la sala | AC1 al pulsar *Join voice* oye a los demás · AC2 un bloqueado es rechazado · AC3 al desconectarse los demás dejan de oírlo | 🟢 Backend implementado (Fase 1). Falta la web (Fase 4) para AC1 de punta a punta. |
-| **HU-VOZ-02** Silenciar y activar mi micrófono | AC1 silenciado no transmite · AC2 al activar vuelve el audio · AC3 los demás ven el icono | 🟢 Backend (Fase 2): `self_mute` → `peer_muted` a toda la sala. AC1/AC2 (no enviar audio) los cierra la web con `replaceTrack` (Fase 4). |
-| **HU-VOZ-03** Ver quién habla | AC1 resalta al que habla · AC2 se apaga en silencio · AC3 legible con muchos | ⏳ Previsto (solo web: Web Audio `AnalyserNode`) |
-| **HU-VOZ-04** El host silencia a un participante | AC1 deja de oírse para todos · AC2 no puede quitárselo · AC3 un no-host recibe 403 | 🟢 Backend (Fase 2): `host_mute` por WS y REST, `HOST_MUTED`, `403` sin rol, persistido en Redis. El silencio en los receptores lo aplica la web (Fase 4). |
-| **HU-VOZ-05** Redes restrictivas | AC1 funciona por TURN · AC2 usa la ruta directa si existe · AC3 reconecta | 🟢 AC1 backend (Fase 3): `ice_servers` con credencial TURN efímera por usuario, aceptada por `coturn` (probado con un Allocate real). AC2 lo da ICE (prueba host/STUN antes que relay) siempre que la web no fuerce `relay`. AC3 (ICE restart y reconexión) es de la web (Fase 4). |
+| **HU-VOZ-01** Unirse a la voz de la sala | AC1 al pulsar *Join voice* oye a los demás · AC2 un bloqueado es rechazado · AC3 al desconectarse los demás dejan de oírlo | 🟢 Completa (Fases 1 y 4). Probada con dos navegadores reales: audio recibido medido con `getStats`, `peer_left` al salir. |
+| **HU-VOZ-02** Silenciar y activar mi micrófono | AC1 silenciado no transmite · AC2 al activar vuelve el audio · AC3 los demás ven el icono | 🟢 Completa (Fases 2 y 4). En navegador real: silenciada → 0 bytes de audio recibidos; al activar vuelve; el otro ve el icono. |
+| **HU-VOZ-03** Ver quién habla | AC1 resalta al que habla · AC2 se apaga en silencio · AC3 legible con muchos | 🟢 Completa (Fase 4, solo web): anillo en el avatar de quien habla, con retención de 400 ms; filas de tamaño fijo. Ver §4.2. |
+| **HU-VOZ-04** El host silencia a un participante | AC1 deja de oírse para todos · AC2 no puede quitárselo · AC3 un no-host recibe 403 | 🟢 Completa (Fases 2 y 4). En navegador real: tras el `PUT` el silenciado envía 0 bytes, su `<audio>` queda mudo en los demás y no puede activarse; con `DELETE` vuelve. |
+| **HU-VOZ-05** Redes restrictivas | AC1 funciona por TURN · AC2 usa la ruta directa si existe · AC3 reconecta | 🟢 AC1: audio por `coturn` con `iceTransportPolicy: 'relay'` en navegador real (par elegido `relay`). AC2: sin forzar, ICE elige la ruta directa (`host`/`prflx`). AC3: ICE restart en `failed` (y tras 3 s en `disconnected`), al evento `online`, y reconexión del WebSocket con espera exponencial. El E2E corta la señalización de un navegador y comprueba que vuelve solo y se oye de nuevo (también por TURN); un cambio de red real (Wi-Fi → datos) no se probó. |
 | **HU-VOZ-06** Componente propio | AC1 si se detiene, chat y sync siguen · AC2 API de salas, membresía y moderación · AC3 aparece en las vistas | 🟢 AC1, AC2 (salas, membresía y moderación) y AC3 |
 
 ## 2. Vista general
@@ -134,6 +134,20 @@ sequenceDiagram
 | Levantar el silencio | `DELETE` (o `host_mute {muted:false}`): `host_muted` pasa a `false` pero `muted` sigue en `true`; el participante decide cuándo volver a hablar. |
 | Varias pestañas | El silencio del host es por usuario: alcanza todas sus conexiones. El propio es por conexión. |
 
+### 4.1 Web (`apps/web`)
+
+| Pieza | Rol |
+| :--- | :--- |
+| `src/lib/voiceProtocol.ts` | Tipos del protocolo, `parseVoiceMessage` defensivo, `buildSignal`/`buildSelfMute`/`buildHostMute`/`buildLeave`, textos de errores y cierres. `VITE_VOICE_WS_URL` (por defecto `ws://localhost:8085/ws/voice`, declarada en `src/voice-env.d.ts`). |
+| `src/lib/voiceMesh.ts` | Una `RTCPeerConnection` por peer. Quien llega ofrece; *perfect negotiation* (cede el de `peer_id` menor) para renegociar; `setSending` con `replaceTrack`; ICE restart en `failed`/`disconnected`; `energySamples()` para quién habla. |
+| `src/hooks/useVoiceChannel.ts` | Pide el micrófono al pulsar, abre `/ws/voice` (host: sync-ticket nuevo en cada intento; invitado: `tint_guest_token`), arma la malla, aplica `peer_muted` (propio: corta la pista) y reconecta con espera exponencial salvo `4001`/`4008`/`4003` de invitado. El silencio propio se repite tras reconectar. |
+| `src/lib/speaking.ts` · `src/hooks/useSpeaking.ts` | Nivel RMS (propio) y nivel por energía (`getStats`, los demás); histéresis 0,06/0,03 y retención 400 ms. |
+| `src/components/voice/VoicePanel.tsx` · `VoiceSection.tsx` | Tarjeta "Voz" bajo el reproductor en `WatchRoom`: "Unirse a la voz", micrófono (`aria-pressed`), "Salir de la voz", lista con anillo de quien habla, icono de silenciado, "Silenciar"/"Permitir hablar" para host/cohost y un `<audio>` por peer (mudo si el host lo silenció). |
+
+### 4.2 Quién habla y Chromium
+
+En la prueba con dos navegadores reales, el resaltado fallaba **solo por TURN**: un `AnalyserNode` sobre la pista remota recibía silencio (o nivel 0,03 en vez de 0,3) aunque el audio se oía y otro `AudioContext` creado después sí lo medía. En vez de depender de cuándo se crea el contexto, el nivel de los demás sale de `getStats` (`inbound-rtp`: `√(ΔtotalAudioEnergy / ΔtotalSamplesDuration)` cada 150 ms), que WebRTC calcula al decodificar. El micrófono propio sigue con Web Audio (pista local, sin ese problema).
+
 ## 5. Protocolo
 
 Ver la tabla completa en [voice-core/AGENTS.md § Protocolo](../services/voice-core/AGENTS.md#protocolo-del-canal-de-voz). Todos los eventos llevan `event_id`, `occurred_at` y `received_at` (Documento General §1.2). El `jti` nunca sale del servidor.
@@ -150,7 +164,7 @@ Ver la tabla completa en [voice-core/AGENTS.md § Protocolo](../services/voice-c
 | Guardar en Redis antes de anunciar | Si Redis falla no se anuncia un silencio que se perdería al reconectar (falla cerrado). |
 | Host y cohost moderan | Igual que la moderación del chat en social-core. |
 | `replaceTrack(null)` para silenciarse | `track.enabled = false` sigue enviando paquetes de silencio; AC1 pide que no se transmita audio. |
-| Detección de quién habla en el navegador (HU-VOZ-03) | Web Audio sobre cada pista: sin tráfico ni latencia del servidor. |
+| Detección de quién habla en el navegador (HU-VOZ-03) | Sin tráfico ni latencia del servidor. El micrófono propio con Web Audio (`AnalyserNode`); los demás con la energía que decodifica WebRTC (`getStats`), porque Web Audio sobre pistas remotas en Chromium recibía silencio por TURN (encontrado en la prueba con navegadores reales, §4.2). |
 | TURN con credenciales efímeras | REST API de TURN: `usuario = exp:user_id`, `clave = base64(HMAC-SHA1(TURN_SECRET, usuario))`; nada fijo en la web. |
 
 ## 7. Plan por fases
@@ -161,10 +175,10 @@ Ver la tabla completa en [voice-core/AGENTS.md § Protocolo](../services/voice-c
 | 1 | Handshake, membresía, señalización, `peer_left`, revocación en vivo | voice-core | 🟢 |
 | 2 | `self_mute`, `host_mute` (WS y REST `PUT/DELETE /api/v1/voice/rooms/{id}/mutes/{user_id}`, 403 sin rol host), persistencia `room:{id}:voice:muted` | voice-core | 🟢 |
 | 3 | `ice_servers` con credenciales TURN efímeras | voice-core | 🟢 |
-| 4 | `useVoiceChannel`, `VoicePanel` en `WatchRoom`, perfect negotiation, ICE restart, quién habla | web | ⏳ |
-| 5 | E2E con dos navegadores (`--use-fake-device-for-media-stream`, `getStats`), `iceTransportPolicy: 'relay'`, k6 de señalización | voice-core + web | ⏳ |
+| 4 | `useVoiceChannel`, `VoicePanel` en `WatchRoom`, perfect negotiation, ICE restart, quién habla | web | 🟢 |
+| 5 | E2E con dos navegadores (`--use-fake-device-for-media-stream`, `getStats`), `iceTransportPolicy: 'relay'`, k6 de señalización | voice-core + infra | 🟢 (`make e2e-voice` local; k6 en CI) |
 
-## 8. Verificación (Fases 1 a 3)
+## 8. Verificación (Fases 1 a 5)
 
 | Comprobación | Resultado |
 | :--- | :--- |
@@ -174,6 +188,11 @@ Ver la tabla completa en [voice-core/AGENTS.md § Protocolo](../services/voice-c
 | Cobertura de líneas (`src/` sin `main.cpp`, gcovr) | 97 % |
 | Imagen final: `/healthz`, 401 antes del upgrade, `PSUBSCRIBE` activo, parada con SIGTERM | OK |
 | `scripts/smoke.py` contra `docker compose` (handshake, HU-VOZ-01 sin audio, silencio propio, silencio del host por REST con 204/403, `HOST_MUTED`, persistencia y TURN Allocate contra `coturn` con la credencial efímera; una falsa da 401) | 13/13 |
+| Web: Vitest (`voiceProtocol`, `voiceMesh`, `speaking`, `useVoiceChannel`, `useSpeaking`, `VoicePanel`, `VoiceSection`, `WatchRoom.voice`) | 1309/1309 en toda la web; cobertura global 99,7 % líneas / 95,5 % ramas |
+| Dos Chromium reales (micrófono falso) contra la web y `docker compose`: entrar, oír (`getStats`), quién habla, silenciarse (0 bytes), activar, silencio del host por REST (403/204, sin audio, `<audio>` mudo, `HOST_MUTED`, `DELETE`), salir | 17/17 por ruta directa y 18/18 forzando TURN, 5 corridas seguidas |
+| `make e2e-voice` (Fase 5, en el repo): lo anterior + ruta directa sin TURN + reconexión tras cortar la señalización | 22/22 en cada modo. Reconexión por TURN en 250–570 ms; **una vez de 13** corridas tardó más de 15 s en conectar (luego se recuperó): el límite de espera es 30 s y el script imprime el estado de cada conexión si vuelve a pasar |
+| k6 `loadtest/voice.js` · 50 VUs, 20 s (igual que CI) | entrada p95 15–27 ms · reenvío p95 37–42 ms · 0 errores · 200/200 tokens falsos con 401 |
+| k6 · 400 VUs en salas de 8, 30 s | entrada p95 100 ms · reenvío p95 41 ms · 2000 entradas, 16 716 señales, 0 errores · voice-core en 6 MB de memoria |
 
 ## 9. Limitaciones conocidas
 - **Una réplica** (membresía en memoria). Escalar exige un registro compartido en Redis.
@@ -182,3 +201,5 @@ Ver la tabla completa en [voice-core/AGENTS.md § Protocolo](../services/voice-c
 - **Bloqueo por dispositivo:** hereda la limitación de [ADR 0013](adr/0013-bloqueo-de-invitados-por-dispositivo.md) (borrar los datos del navegador lo evade).
 - **Credencial TURN por sesión:** caduca en `TURN_TTL_SECONDS` (1 h). Una llamada más larga mantiene su relay (coturn lo refresca), pero un ICE restart después de esa hora necesita credenciales nuevas: la web debe reconectar el WebSocket para recibir otro `voice_state` (Fase 4).
 - **coturn local:** `network_mode: host` sin `--external-ip` ni TLS sirve en Linux y en la misma red. En producción hace falta IP pública, `turns:` (TLS 443) y quitar `--no-tls`.
+- **Variables de la web fuera de su dominio:** `VITE_VOICE_WS_URL` tiene valor por defecto y está declarada en `src/voice-env.d.ts`, pero falta en `apps/web/.env.example` y en `apps/web/AGENTS.md` (este trabajo solo tocó archivos nuevos de la web y `WatchRoom.tsx`).
+- **E2E fuera de CI:** `make e2e-voice` necesita la web, voice-core, Redis y coturn levantados y un Chromium; corre en local (imagen `minlag/mermaid-cli`, que trae Chromium y Puppeteer). En CI solo corre la carga k6. Sus tokens se firman con `JWT_SECRET` y sync-core rechaza uno de host inventado, por eso el silencio del host se prueba por REST y no con el botón.

@@ -151,7 +151,7 @@ Todos los mensajes son JSON con `event_id`, `type`, `room_id`, `position_ms`, `o
 | `internal/telemetry` | Emisión no bloqueante de `playback_command`, `drift_correction` y `buffering` (un solo canal con buffer; si se llena se descarta). Reutiliza el `event_id` del cliente si es UUID. |
 | `internal/hub` | Salas locales, despacho de comandos, heartbeat/drift, presencia del host. Independiente del transporte. |
 | `internal/ws` | Handshake y transporte WebSocket. |
-| `internal/server` | Rutas HTTP (`/healthz`, `/ws/sync`, `/metrics`). |
+| `internal/server` | Rutas HTTP (`/healthz`, `/ws/sync`, `/metrics`) y control interno de arranque/compensación. |
 
 **Modelo de concurrencia:** cada conexión tiene una goroutine **lectora** (la del handler HTTP, llama a `hub.Handle`) y una **escritora** (única dueña de `conn.Write`, drena la cola). `hub.Run` mantiene por réplica un solo temporizador de `HEARTBEAT` (que también cierra a los clientes sin respuesta) y el barrido de presencia. Cada cliente tiene una cola con buffer (64); `enqueue` nunca bloquea, así un cliente lento no frena a los demás. La réplica emisora no difunde localmente: todo comando pasa por Redis Pub/Sub, lo que da un único camino y orden consistente entre réplicas. `hub.rooms` se protege con `sync.Mutex` (`h.mu`), que **nunca** se mantiene durante I/O de red: `Subscribe`/`Unsubscribe` del bus se serializan con otro mutex (`subMu`, orden `subMu → mu`) y una sala está en `hub.rooms` solo mientras su suscripción está activa (se inserta tras `Subscribe`, se borra antes de `Unsubscribe` y la baja re-comprueba que nadie la volvió a crear). RTT, último latido, último drift y último seek son `atomic`.
 
@@ -163,6 +163,7 @@ Todos los mensajes son JSON con `event_id`, `type`, `room_id`, `position_ms`, `o
 5. **TDD:** Implementa pruebas unitarias e integración en Go con `go test -cover`, escribiendo la prueba primero. La cobertura no puede bajar del **85%**. `main.go` debe ser mínimo; la lógica vive en `internal/`.
 6. **Privacidad:** La telemetría nunca incluye `sub`, `nick` ni tokens (por eso no envía `user_id`, sino `role`).
 7. **Telemetría fuera del camino caliente:** emitir a `analytics:events` solo encola; nunca un `XADD` síncrono en `Handle`.
+8. **Control interno de arranque:** `POST /internal/events/start/{room_id}` recibe `{"hostId":"..."}`, inicializa `sync_state` y devuelve `roomId`, `sessionId`, `wsUrl` y `state`; `DELETE` elimina el estado para compensación. Estas rutas no se publican por gateway.
 
 ## Variables de Entorno
 | Variable | Por defecto | Descripción |

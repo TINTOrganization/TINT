@@ -19,10 +19,12 @@ import hmac
 import json
 import logging
 import re
+import uuid
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from threading import Lock
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
@@ -41,6 +43,8 @@ from analytics.kpis import (
 )
 
 logger = logging.getLogger(__name__)
+CORRELATION_HEADER = "X-Correlation-ID"
+SAFE_CORRELATION_ID = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
 
 DEFAULT_PORT = 8084
 DEFAULT_ALLOWED_ORIGINS = ("http://localhost:5173",)
@@ -85,6 +89,10 @@ class ApiError(Exception):
         self.headers = headers or {}
 
 
+def correlation_id(value: str | None) -> str:
+    return value if value and SAFE_CORRELATION_ID.fullmatch(value) else str(uuid.uuid4())
+
+
 def _iso(value: datetime | None) -> str | None:
     return None if value is None else format_timestamp(value)
 
@@ -119,25 +127,56 @@ class AnalyticsApi:
         self.allowed_origins = frozenset(allowed_origins)
         self.clock = clock
         self.admin_password = admin_password or None
+        self._started_rooms: set[str] = set()
+        self._started_rooms_lock = Lock()
 
     def handle(self, method: str, target: str, headers: Mapping[str, str]) -> Response:
         headers = {key.lower(): value for key, value in headers.items()}
+        incoming_id = headers.get(CORRELATION_HEADER.lower())
+        request_id = correlation_id(incoming_id)
+        include_in_body = bool(incoming_id and SAFE_CORRELATION_ID.fullmatch(incoming_id))
         cors = self._cors_headers(headers.get("origin"))
+        response_headers = {**cors, CORRELATION_HEADER: request_id}
         if method == "OPTIONS":
-            return Response(204, None, {**cors, **self._preflight_headers()})
+            return Response(204, None, {**response_headers, **self._preflight_headers()})
         try:
             status, body = self._route(method, target, headers)
         except ApiError as exc:
-            return Response(exc.status, {"error": exc.message}, {**cors, **exc.headers})
+            body = {"error": exc.message}
+            if include_in_body:
+                body["correlation_id"] = request_id
+            return Response(
+                exc.status,
+                body,
+                {**response_headers, **exc.headers},
+            )
         except Exception:
-            logger.exception("error no controlado en %s %s", method, urlsplit(target).path)
-            return Response(500, {"error": "error interno"}, cors)
-        return Response(status, body, cors)
+            logger.exception(
+                "error no controlado",
+                extra={
+                    "correlation_id": request_id,
+                    "method": method,
+                    "path": urlsplit(target).path,
+                },
+            )
+            body = {"error": "error interno"}
+            if include_in_body:
+                body["correlation_id"] = request_id
+            return Response(500, body, response_headers)
+        return Response(status, body, response_headers)
 
     # --- enrutamiento -------------------------------------------------------------------------
 
     def _route(self, method: str, target: str, headers: dict[str, str]) -> tuple[int, dict]:
         url = urlsplit(target)
+        internal_match = re.fullmatch(r"/internal/events/start/([^/]+)", url.path)
+        if internal_match:
+            room_id = internal_match.group(1)
+            if method == "POST":
+                return self._start_event(room_id)
+            if method == "DELETE":
+                return self._stop_event(room_id)
+            raise ApiError(405, "método no permitido", {"Allow": "POST, DELETE"})
         match = ROUTE.match(url.path)
         # Sin contraseña configurada el panel de negocio no existe (falla cerrado).
         overview = url.path == OVERVIEW_PATH and self.admin_password is not None
@@ -150,7 +189,6 @@ class AnalyticsApi:
             return 200, self._overview()
         if match is None:
             return 200, {"status": "ok"}
-
         room_id = match["room_id"]
         self._authorize(headers.get("authorization", ""), room_id)
         query = parse_qs(url.query, keep_blank_values=True)
@@ -160,6 +198,16 @@ class AnalyticsApi:
         if view == "reactions/heatmap":
             return 200, self._heatmap(room_id, _int_param(query, "bucket_ms", BUCKET_MS))
         return 200, self._timeline(room_id, _int_param(query, "step_s", STEP_S))
+
+    def _start_event(self, room_id: str) -> tuple[int, dict[str, Any]]:
+        with self._started_rooms_lock:
+            self._started_rooms.add(room_id)
+        return 200, {"roomId": room_id, "sessionId": f"analytics-{room_id}"}
+
+    def _stop_event(self, room_id: str) -> tuple[int, dict[str, Any] | None]:
+        with self._started_rooms_lock:
+            self._started_rooms.discard(room_id)
+        return 204, None
 
     # --- auth ---------------------------------------------------------------------------------
 
@@ -324,7 +372,13 @@ def make_handler(api: AnalyticsApi) -> type[BaseHTTPRequestHandler]:
 
         def log_message(self, format: str, *args: Any) -> None:
             # Solo método, ruta y estado: nunca cabeceras (el token va en Authorization).
-            logger.info("%s %s", self.address_string(), format % args)
+            logger.info(
+                "%s %s correlation_id=%s",
+                self.address_string(),
+                format % args,
+                self.headers.get(CORRELATION_HEADER, ""),
+                extra={"correlation_id": self.headers.get(CORRELATION_HEADER, "")},
+            )
 
     return Handler
 

@@ -24,6 +24,7 @@ class GatewayConfigTests(unittest.TestCase):
         self.assertIn("forward_auth @protected {$IDENTITY_API_UPSTREAM:host.docker.internal:8081}", caddyfile)
         self.assertIn("uri /api/v1/internal/auth/check", caddyfile)
         self.assertIn("copy_headers X-User-Id X-User-Sub X-User-Role X-User-Room-Id X-User-Nick", caddyfile)
+        self.assertIn("import service_timeout", caddyfile)
         self.assertIn(
             "reverse_proxy @identity {$IDENTITY_API_UPSTREAM:host.docker.internal:8081}",
             caddyfile,
@@ -44,6 +45,21 @@ class GatewayConfigTests(unittest.TestCase):
         self.assertIn("ANALYTICS_UPSTREAM:", compose)
         self.assertIn("VOICE_CORE_UPSTREAM:", compose)
 
+    def test_gateway_returns_clear_503_for_unavailable_upstreams(self):
+        caddyfile = CONFIG.read_text(encoding="utf-8")
+
+        self.assertIn("handle_errors", caddyfile)
+        self.assertIn("http.error.status_code", caddyfile)
+        self.assertIn("respond @upstream_unavailable", caddyfile)
+        self.assertIn('"error":"service_unavailable"', caddyfile)
+        self.assertIn(" 503", caddyfile)
+
+    def test_gateway_limits_upstream_waits_to_five_seconds(self):
+        caddyfile = CONFIG.read_text(encoding="utf-8")
+
+        self.assertGreaterEqual(caddyfile.count("dial_timeout 5s"), 1)
+        self.assertGreaterEqual(caddyfile.count("response_header_timeout 5s"), 1)
+
 
     def test_gateway_service_publishes_http_and_https_and_restarts(self):
         compose = COMPOSE.read_text(encoding="utf-8")
@@ -52,3 +68,12 @@ class GatewayConfigTests(unittest.TestCase):
         self.assertIn('"${GATEWAY_HTTP_PORT:-80}:80"', compose)
         self.assertIn('"${GATEWAY_HTTPS_PORT:-443}:443"', compose)
         self.assertIn("restart: unless-stopped", compose)
+
+    def test_gateway_preserves_or_generates_correlation_id(self):
+        caddyfile = CONFIG.read_text(encoding="utf-8")
+
+        self.assertIn("@missing_correlation not header X-Correlation-ID *", caddyfile)
+        self.assertIn("request_header @missing_correlation X-Correlation-ID {http.request.uuid}", caddyfile)
+        self.assertIn("header X-Correlation-ID {http.request.header.X-Correlation-ID}", caddyfile)
+        self.assertIn("format json", caddyfile)
+        self.assertIn("log_append correlation_id {http.request.header.X-Correlation-ID}", caddyfile)

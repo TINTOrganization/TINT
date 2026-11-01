@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -52,6 +53,53 @@ func TestHealthzRejectsPost(t *testing.T) {
 
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("status = %d, want 405", rec.Code)
+	}
+}
+
+func TestCorrelationIDIsReturnedOnHTTPError(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/ws/social", nil)
+	req.Header.Set("X-Correlation-ID", "trace-123")
+	rec := httptest.NewRecorder()
+	NewRouterWithDeps(testDeps("secret")).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+	if got := rec.Header().Get("X-Correlation-ID"); got != "trace-123" {
+		t.Fatalf("correlation ID = %q, want trace-123", got)
+	}
+	var body map[string]string
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if body["correlation_id"] != "trace-123" {
+		t.Fatalf("error correlation ID = %q, want trace-123", body["correlation_id"])
+	}
+}
+
+func TestInternalEventStartAndStop(t *testing.T) {
+	router := NewRouterWithDeps(testDeps("secret"))
+
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(
+		rec,
+		httptest.NewRequest(http.MethodPost, "/internal/events/start/room-1", strings.NewReader(`{"hostId":"host-1"}`)),
+	)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("start status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var body map[string]string
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body["roomId"] != "room-1" || body["sessionId"] != "social-room-1" {
+		t.Fatalf("unexpected start body: %v", body)
+	}
+
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodDelete, "/internal/events/start/room-1", nil))
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("stop status = %d, body = %s", rec.Code, rec.Body.String())
 	}
 }
 

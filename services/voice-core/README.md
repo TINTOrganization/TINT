@@ -44,6 +44,8 @@ docker run --rm -v "$PWD/services/voice-core:/src" -w /src tint-voice-dev bash -
 docker compose up -d voice-core coturn
 curl localhost:8085/healthz
 python3 services/voice-core/scripts/smoke.py   # prueba rápida contra el servicio levantado
+make load-voice                                 # carga k6 de la señalización
+make e2e-voice                                  # dos Chromium reales (necesita la web en :5173)
 ```
 
 `scripts/smoke.py` solo usa la biblioteca estándar de Python: fabrica tokens con `JWT_SECRET` (del entorno o del `.env`) y comprueba el handshake (401/403/4003), entrar, `peer_joined`, `signal`, `peer_left`, la revocación (4001 al entrar y `REVOKED` en vivo) y los silencios (propio, del host por REST con 204/403, `HOST_MUTED` y persistencia al volver) y que `coturn` conceda un relay con la credencial TURN de `ice_servers` (y rechace una falsa). No prueba audio: eso es de la web.

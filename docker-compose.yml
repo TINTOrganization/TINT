@@ -1,4 +1,6 @@
 # Entorno local de TINT: PostgreSQL, Redis, MinIO, media-worker, analytics, social-core y sync-core.
+# identity-api se ejecuta desde services/identity-api y usa SYNC_CORE_URL,
+# SOCIAL_CORE_URL y ANALYTICS_URL del .env.example para coordinar el arranque.
 # Uso: cp .env.example .env && docker compose up -d
 
 services:

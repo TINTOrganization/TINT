@@ -153,6 +153,30 @@ func TestTriviaScheduleListDelete(t *testing.T) {
 	if m := nextOfType(t, colH, "error"); m["code"] != "TRIVIA_NOT_FOUND" {
 		t.Fatalf("borrar inexistente = %v, want TRIVIA_NOT_FOUND", m)
 	}
+	// Editar: la nueva versión reemplaza a la anterior (mismo trivia_id).
+	sendRaw(t, g, map[string]any{"event_id": "tu0", "type": "trivia_update", "trivia_id": tid,
+		"at_ms": 1000, "question": "q", "options": []string{"a", "b"}, "correct": 0})
+	if m := nextOfType(t, colG, "error"); m["code"] != "FORBIDDEN" {
+		t.Fatalf("invitado edita = %v, want FORBIDDEN", m)
+	}
+	sendRaw(t, h, map[string]any{"event_id": "tu1", "type": "trivia_update", "trivia_id": "nope",
+		"at_ms": 1000, "question": "q", "options": []string{"a", "b"}, "correct": 0})
+	if m := nextOfType(t, colH, "error"); m["code"] != "TRIVIA_NOT_FOUND" {
+		t.Fatalf("editar inexistente = %v, want TRIVIA_NOT_FOUND", m)
+	}
+	sendRaw(t, h, map[string]any{"event_id": "tu2", "type": "trivia_update", "trivia_id": tid,
+		"at_ms": 1000, "question": "q", "options": []string{"a"}, "correct": 0})
+	if m := nextOfType(t, colH, "error"); m["code"] != "INVALID_PAYLOAD" {
+		t.Fatalf("editar inválida = %v, want INVALID_PAYLOAD", m)
+	}
+	sendRaw(t, h, map[string]any{"event_id": "tu3", "type": "trivia_update", "trivia_id": tid,
+		"at_ms": 45_000, "question": " ¿Otra? ", "options": []string{"x", "y", "z"}, "correct": 2, "answer_window_s": 30})
+	m = nextOfType(t, colH, "trivia_schedule_state")
+	qs = questions(m)
+	if len(qs) != 1 || m["event_id_ref"] != "tu3" || qs[0]["trivia_id"] != tid || qs[0]["question"] != "¿Otra?" ||
+		qs[0]["at_ms"] != float64(45_000) || qs[0]["correct"] != float64(2) || qs[0]["answer_window_s"] != float64(30) {
+		t.Fatalf("tras editar = %v", m)
+	}
 	sendRaw(t, h, map[string]any{"event_id": "td1", "type": "trivia_delete", "trivia_id": tid})
 	if m := nextOfType(t, colH, "trivia_schedule_state"); len(questions(m)) != 0 || m["questions"] == nil {
 		t.Fatalf("tras borrar = %v, want questions []", m)
@@ -206,6 +230,11 @@ func TestTriviaFiresAtPositionScoresAndCloses(t *testing.T) {
 		t.Fatalf("estado tras disparar = %v, want open", q)
 	}
 	// Una pregunta ya lanzada no se borra.
+	sendRaw(t, h, map[string]any{"event_id": "tu", "type": "trivia_update", "trivia_id": tid,
+		"at_ms": 1000, "question": "q", "options": []string{"a", "b"}, "correct": 0})
+	if m := nextOfType(t, colH, "error"); m["code"] != "TRIVIA_CLOSED" {
+		t.Fatalf("editar lanzada = %v, want TRIVIA_CLOSED", m)
+	}
 	sendRaw(t, h, map[string]any{"event_id": "td", "type": "trivia_delete", "trivia_id": tid})
 	if m := nextOfType(t, colH, "error"); m["code"] != "TRIVIA_CLOSED" {
 		t.Fatalf("borrar lanzada = %v, want TRIVIA_CLOSED", m)
@@ -260,10 +289,11 @@ func TestTriviaFiresAtPositionScoresAndCloses(t *testing.T) {
 	for name, c := range map[string]struct {
 		col  *collector
 		mine float64
-	}{"host": {colH, 0}, "A": {colA, float64(fast)}, "B": {colB, 0}} {
+		rank any
+	}{"host": {colH, 0, nil}, "A": {colA, float64(fast), float64(1)}, "B": {colB, 0, float64(2)}} {
 		m := nextOfType(t, c.col, "trivia_result")
 		top, _ := m["top"].([]any)
-		if m["trivia_id"] != tid || m["correct"] != float64(1) || len(top) != 2 || m["my_score"] != c.mine {
+		if m["trivia_id"] != tid || m["correct"] != float64(1) || len(top) != 2 || m["my_score"] != c.mine || m["my_rank"] != c.rank {
 			t.Fatalf("%s trivia_result = %v", name, m)
 		}
 		first, _ := top[0].(map[string]any)
@@ -279,6 +309,28 @@ func TestTriviaFiresAtPositionScoresAndCloses(t *testing.T) {
 	answer(t, late, "l1", tid, 1)
 	if m := nextOfType(t, colL, "error"); m["code"] != "TRIVIA_CLOSED" {
 		t.Fatalf("respuesta tras el cierre = %v, want TRIVIA_CLOSED", m)
+	}
+
+	// The ranking is persistent: anyone who joins afterwards (even through a
+	// replica that never saw the game, i.e. after a restart) gets it at once,
+	// personalised with their own place.
+	restarted := triviaReplica(t, mr, secret, clock, &fakeTimers{}, &processed, nil)
+	for name, c := range map[string]struct {
+		token string
+		rank  any
+		total float64
+	}{
+		"A":        {guestTokenAs(t, secret, "guest:rapido", "Rápido", "r1", exp0()), float64(1), float64(fast)},
+		"newcomer": {guestTokenAs(t, secret, "guest:nuevo", "Nuevo", "r1", exp0()), nil, 0},
+	} {
+		conn, col := joinCol(t, restarted, c.token)
+		m := nextOfType(t, col, "trivia_leaderboard")
+		board, _ := m["leaderboard"].([]any)
+		first, _ := board[0].(map[string]any)
+		if len(board) != 2 || first["user_id"] != "guest:rapido" || m["room_id"] != "r1" || m["my_rank"] != c.rank || m["my_total"] != c.total {
+			t.Fatalf("%s trivia_leaderboard = %v", name, m)
+		}
+		conn.Close(websocket.StatusNormalClosure, "")
 	}
 	sendRaw(t, h, map[string]any{"event_id": "tl2", "type": "trivia_list"})
 	if q := questions(nextOfType(t, colH, "trivia_schedule_state"))[0]; q["status"] != "closed" {
@@ -417,6 +469,7 @@ func TestTriviaUnavailableWithoutRedis(t *testing.T) {
 		{"event_id": "1", "type": "trivia_schedule", "at_ms": 1, "question": "q", "options": []string{"a", "b"}, "correct": 0},
 		{"event_id": "2", "type": "trivia_list"},
 		{"event_id": "3", "type": "trivia_delete", "trivia_id": "t"},
+		{"event_id": "3b", "type": "trivia_update", "trivia_id": "t", "at_ms": 1, "question": "q", "options": []string{"a", "b"}, "correct": 0},
 		{"event_id": "4", "type": "trivia_answer", "trivia_id": "t", "option": 0},
 	} {
 		sendRaw(t, h, msg)

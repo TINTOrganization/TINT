@@ -310,8 +310,48 @@ func MountSocial(mux *http.ServeMux, d *Deps) {
 func NewRouterWithDeps(d *Deps) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", healthz)
+	mux.HandleFunc("POST /internal/events/start", startEvent)
+	mux.HandleFunc("POST /internal/events/start/{roomID}", startEvent)
+	mux.HandleFunc("DELETE /internal/events/start/{roomID}", stopEvent)
 	MountSocial(mux, d)
-	return mux
+	return withCorrelation(mux)
+}
+
+func startEvent(w http.ResponseWriter, r *http.Request) {
+	var input struct {
+		RoomID string `json:"roomId"`
+		HostID string `json:"hostId"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		http.Error(w, "roomId y hostId son obligatorios", http.StatusBadRequest)
+		return
+	}
+	if input.RoomID == "" {
+		input.RoomID = r.PathValue("roomID")
+	}
+	if input.RoomID == "" || input.HostID == "" {
+		http.Error(w, "roomId y hostId son obligatorios", http.StatusBadRequest)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{
+		"roomId":    input.RoomID,
+		"sessionId": "social-" + input.RoomID,
+		"wsUrl":     "/ws/social?room_id=" + input.RoomID,
+	})
+}
+
+func stopEvent(w http.ResponseWriter, r *http.Request) {
+	if r.PathValue("roomID") == "" {
+		http.Error(w, "roomId es obligatorio", http.StatusBadRequest)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func writeJSON(w http.ResponseWriter, status int, value any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(value)
 }
 
 func writeError(ctx context.Context, c *websocket.Conn, code, ref string) {
@@ -354,12 +394,12 @@ func handleSocial(w http.ResponseWriter, r *http.Request, d *Deps) {
 	ctx := r.Context()
 	roomID := r.URL.Query().Get("room_id")
 	if roomID == "" {
-		http.Error(w, "room_id es obligatorio", http.StatusBadRequest)
+		correlationError(w, r, "room_id es obligatorio", http.StatusBadRequest)
 		return
 	}
 	token, err := auth.BearerToken(r.Header.Get("Authorization"), r.URL.Query().Get("token"))
 	if err != nil {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		correlationError(w, r, "unauthorized", http.StatusUnauthorized)
 		return
 	}
 	claims, err := d.authenticate(ctx, token, roomID)
@@ -368,17 +408,17 @@ func handleSocial(w http.ResponseWriter, r *http.Request, d *Deps) {
 		if errors.Is(err, auth.ErrWrongRoom) {
 			status = http.StatusForbidden
 		}
-		http.Error(w, http.StatusText(status), status)
+		correlationError(w, r, http.StatusText(status), status)
 		return
 	}
 	// Un token revocado no reconecta; si no se puede comprobar, se rechaza.
 	revoked, err := d.checkRevoked(ctx, claims.JTI)
 	if err != nil {
-		http.Error(w, "no se pudo validar el token", http.StatusServiceUnavailable)
+		correlationError(w, r, "no se pudo validar el token", http.StatusServiceUnavailable)
 		return
 	}
 	if revoked {
-		http.Error(w, "token revocado", http.StatusUnauthorized)
+		correlationError(w, r, "token revocado", http.StatusUnauthorized)
 		return
 	}
 
@@ -502,6 +542,9 @@ func handleSocial(w http.ResponseWriter, r *http.Request, d *Deps) {
 			continue
 		case socialevent.TypeTriviaSchedule:
 			d.handleTriviaSchedule(ctx, c, roomID, claims, raw)
+			continue
+		case socialevent.TypeTriviaUpdate:
+			d.handleTriviaUpdate(ctx, c, roomID, claims, raw)
 			continue
 		case socialevent.TypeTriviaDelete:
 			d.handleTriviaDelete(ctx, c, roomID, claims, raw)

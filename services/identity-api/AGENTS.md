@@ -60,6 +60,7 @@ Prefijo `/api/v1`. Los errores siempre tienen la forma `{ "error": "<texto>" }`;
 | `GET /internal/auth/check` | Gateway | Verifica Firebase RS256 o tokens propios HS256, comprueba revocación y devuelve 204 con headers `X-User-*`; responde 401 si el token no es válido |
 | `POST /auth/verify` | Firebase | Verifica el token y crea o recupera el usuario |
 | `POST /rooms` | Firebase | Crea sala (`title` 1–150) + invitación inicial |
+| `POST /events/start` | Firebase | Orquesta en orden la creación de identidad, la inicialización de sync/social/analytics y devuelve room, invitación y sesiones; los fallos de dependencias responden 503 y compensan lo ya iniciado |
 | `GET /rooms` | Firebase | Salas activas del usuario, con su invitación vigente |
 | `GET /rooms/:id` · `PATCH /rooms/:id` · `DELETE /rooms/:id` | Firebase + dueño | Detalle, renombrar (`{ title }` ≤ 150) y borrado lógico. El borrado revoca las sesiones de invitado activas (`token:revoked:{jti}` + `REVOKED`); si Redis falla responde 503 y repetir el `DELETE` sobre la sala ya borrada re-publica las pendientes (410 cuando termina) |
 | `GET /rooms/:id/invitations` | Firebase + dueño | Invitaciones de la sala con `link` |
@@ -68,8 +69,10 @@ Prefijo `/api/v1`. Los errores siempre tienen la forma `{ "error": "<texto>" }`;
 | `POST /invitations/claim` | — | `{ code, nick, deviceId? }` → `{ token, roomId, nick, roomTitle }`. `deviceId` es un UUID opcional del navegador que se guarda en `guest_sessions.device_id`. Errores: 400, 404, 409 (revocada), 410 (vencida o sala borrada), **403 `{ error: "BANNED" }`** (dispositivo bloqueado en la sala; sin `deviceId` no se comprueba) |
 | `POST /rooms/:id/sync-ticket` | Firebase + dueño | Sync-ticket HS256 para `/ws/sync`. `nick` = `displayName`, si no la parte local del email, si no `Host` (nunca el email completo) |
 | `POST /rooms/:id/analytics-ticket` | Firebase + dueño | `{ token, expiresAt }`: ticket de host HS256 (mismos claims y TTL que el sync-ticket, `generateHostTicket`) para la API de lectura de analytics. **Sin** `requireActiveRoom`: también se entrega para una sala borrada, para ver sus KPIs |
-| `POST /rooms/:id/media/uploads` | Firebase + dueño | `{ filename, contentType: video/*, sizeBytes }` → `{ videoId, uploadUrl, storageKey, expiresAt, headers }` (PUT firmado a MinIO; 413 si supera `MAX_UPLOAD_BYTES`) |
-| `POST /rooms/:id/media/uploads/:videoId/complete` | Firebase + dueño | HEAD del objeto (409 `Upload missing`; 413 y se borra si el tamaño real supera `sizeBytes` o `MAX_UPLOAD_BYTES`), `pending → processing` condicional, `XADD media:uploads` (503 si Redis falla, vuelve a `pending`) y asigna el vídeo → `{ mediaId, mediaKey, status }`. Idempotente: si ya no está en `pending` devuelve el estado actual sin re-encolar |
+| `POST /rooms/:id/media/uploads` | Firebase + dueño | `{ filename, contentType: video/*, sizeBytes }` → `{ videoId, uploadUrl, storageKey, expiresAt, headers }` (PUT firmado a MinIO; 413 si supera `MAX_UPLOAD_BYTES`, con cuerpo `{ error, maxUploadBytes }`). Antes de reservar borra las subidas `pending` de la sala abandonadas (creadas hace más de `UPLOAD_URL_TTL_SECONDS` + 1 h) y su objeto de `incoming/`; un fallo al limpiar no impide reservar |
+| `DELETE /rooms/:id/media/uploads/:videoId` | Firebase + dueño | Cancela una subida interrumpida o abandonada: borra la fila `pending` (borrado condicional) y su objeto de `incoming/`. Idempotente: `204` también si la fila ya no existe o es de otra sala; `409 Upload already confirmed` si ya está `processing`/`ready`; `404` si el id no es uuid; 403, 410. Un fallo al borrar el objeto se registra y se responde `204` (lo recoge la limpieza al reservar) |
+| `GET /uploads/limits` | Firebase | `{ maxUploadBytes }` (`MAX_UPLOAD_BYTES`): fuente de verdad del tamaño máximo; la web lo muestra y pre-valida el archivo, pero la decisión es del servidor |
+| `POST /rooms/:id/media/uploads/:videoId/complete` | Firebase + dueño | HEAD del objeto (409 `Upload missing`; 413 con `{ error, maxUploadBytes }` y se borra si el tamaño real supera `sizeBytes` o `MAX_UPLOAD_BYTES`), `pending → processing` condicional, `XADD media:uploads` (503 si Redis falla, vuelve a `pending`) y asigna el vídeo → `{ mediaId, mediaKey, status }`. Idempotente: si ya no está en `pending` devuelve el estado actual sin re-encolar |
 | `PUT /rooms/:id/media` | Firebase + dueño | `{ mediaKey }` (objeto que ya está en el bucket, `mediaId` nuevo) **o** `{ videoId }` (vídeo de su biblioteca: `mediaId = videoId`, `mediaKey = storage_key`; 404 si no lo subió él, no existe o no está `processing`/`ready`) → `{ mediaId, mediaKey }`. Enviar ambos es 400 |
 | `GET /videos` | Firebase | Biblioteca: `{ videos: [{ id, title, durationMs, status, createdAt, previewUrl }] }`, los vídeos con `uploaded_by` = el host y `status` en `processing`/`ready` (subida confirmada), recientes primero. `previewUrl` firma `{id}/360p.mp4` si está `ready` con `360` en `renditions`; si no, `storage_key` |
 | `PATCH /videos/:id` | Firebase + quien lo subió | `{ title }` (1–255) → `{ video }` con la forma de la biblioteca. 404 si no es suyo |
@@ -121,6 +124,7 @@ Middlewares: `requireAuthHost`, `requireRoomOwner` (no filtra por estado de la s
 | `PLAYBACK_URL_TTL_SECONDS` | `3600` | Vida de la URL firmada de reproducción |
 | `UPLOAD_URL_TTL_SECONDS` | `900` | Vida de la URL PUT de subida |
 | `MAX_UPLOAD_BYTES` | `2147483648` | Tamaño máximo de un vídeo (2 GiB) |
+| `SYNC_CORE_URL` / `SOCIAL_CORE_URL` / `ANALYTICS_URL` | `http://localhost:8083` / `http://localhost:8082` / `http://localhost:8084` | Upstreams internos para `POST /events/start`; cada llamada tiene deadline de 5 s |
 
 ## Comandos
 ```bash

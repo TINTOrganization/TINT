@@ -39,7 +39,8 @@ Gestionas la interactividad de la audiencia en **TINT**: chat, reacciones con co
 | `room:{id}:trivia:{tid}:state` | Redis Hash, TTL 12 h | `launched`, `opens_at_ms`, `closes_at_ms` (Lua `launch`, `HSETNX`) y `closed` (`HSETNX`) |
 | `room:{id}:trivia:{tid}:answers` | Redis Hash, TTL 12 h | `user_id → opción` (`HSETNX`: una respuesta por usuario) |
 | `room:{id}:trivia:{tid}:leaderboard` | Redis Sorted Set, TTL 12 h + 1 h | `user_id → puntos + fracción < 1` que desempata a favor de la respuesta más temprana (`trivia.LeaderboardKey`) |
-| `room:{id}:trivia:leaderboard` | Redis Sorted Set, TTL 12 h + 1 h | Ranking acumulado de la sala: `user_id → puntos` |
+| `room:{id}:trivia:leaderboard` | Redis Sorted Set, TTL 12 h + 1 h | Ranking acumulado de la sala: `user_id → puntos`. Persiste en Redis: sobrevive a reinicios de social-core |
+| `room:{id}:trivia:elapsed` | Redis Hash, TTL 12 h + 1 h | `user_id → ms` acumulados en respuestas correctas (`trivia.ElapsedKey`); desempata el acumulado a favor de quien acertó antes ([ADR 0016](../../docs/adr/0016-ranking-de-trivia-persistente-y-desempate.md)) |
 | `room:{id}:trivia:nicks` | Redis Hash, TTL 12 h + 1 h | `user_id → último nick` (para el top) |
 | `Reaction` | JSON | `user_id`, `emoji`, `position_ms` |
 | `room:{id}:social` | Redis Pub/Sub | `chat_message`, `reaction`, `laser`, `poll_state`, `chat_settings`, `trivia_question` y `trivia_result` entre réplicas (dedup por `event_id`; se re-serializan por tipo: un campo inyectado, como `correct` en `trivia_question`, se descarta) |
@@ -59,7 +60,7 @@ Gestionas la interactividad de la audiencia en **TINT**: chat, reacciones con co
 | `analytics:events` | Redis Stream (solo escritura) | `chat_message`, `presence`, `reaction` y `trivia_answer` para `services/analytics` (ver abajo) |
 
 ## Protocolo del Canal Social
-JSON sobre `/ws/social`. Todo lo que se emite a la sala viaja también por `room:{id}:social` a las demás réplicas (dedup por `event_id`). Al entrar, el cliente recibe, en este orden: `history`, `chat_settings` (con Redis), el `poll_state` de la encuesta vigente (con `my_vote`), `trivia_schedule_state` (solo host/cohost) y el `trivia_question` de la pregunta abierta, si la hay.
+JSON sobre `/ws/social`. Todo lo que se emite a la sala viaja también por `room:{id}:social` a las demás réplicas (dedup por `event_id`). Al entrar, el cliente recibe, en este orden: `history`, `chat_settings` (con Redis), el `poll_state` de la encuesta vigente (con `my_vote`), `trivia_leaderboard` (ranking acumulado, si ya hay puntos), `trivia_schedule_state` (solo host/cohost) y el `trivia_question` de la pregunta abierta, si la hay.
 
 | Cliente → servidor | Quién | Respuesta / efecto |
 | :--- | :--- | :--- |
@@ -73,6 +74,7 @@ JSON sobre `/ws/social`. Todo lo que se emite a la sala viaja también por `room
 | `poll_close{event_id, room_id?, poll_id}` | Host/cohost | `poll_state{closed: true}` a la sala |
 | `recap_request{event_id, room_id?}` | Todos | `recap` solo al que lo pide |
 | `trivia_schedule{event_id, room_id?, at_ms, question, options, correct, answer_window_s?}` (`at_ms` 0..24 h de vídeo; 1..140 / 2..4 de 1..60; `correct` = índice; ventana 10..60 s, por defecto 20) | Host/cohost | `trivia_schedule_state` solo al que la programó |
+| `trivia_update{event_id, room_id?, trivia_id, at_ms, question, options, correct, answer_window_s?}` (mismas reglas que `trivia_schedule`; reemplaza la pregunta y la nueva versión es la que se dispara) | Host/cohost | `trivia_schedule_state` solo a él; `TRIVIA_NOT_FOUND` si no existe, `TRIVIA_CLOSED` si ya salió |
 | `trivia_delete{event_id, room_id?, trivia_id}` | Host/cohost | `trivia_schedule_state` solo a él; `TRIVIA_NOT_FOUND` si no existe, `TRIVIA_CLOSED` si ya salió |
 | `trivia_list{event_id, room_id?}` | Host/cohost | `trivia_schedule_state` solo a él |
 | `trivia_answer{event_id, room_id?, trivia_id, option}` (índice) | Todos (10/s, compartido con votos y recap) | `trivia_ack` solo a quien respondió; una respuesta por usuario |
@@ -85,7 +87,8 @@ JSON sobre `/ws/social`. Todo lo que se emite a la sala viaja también por `room
 | `trivia_schedule_state` | `{type, room_id, event_id_ref?, questions: [{trivia_id, at_ms, question, options[], correct, answer_window_s, status}]}`; `status` ∈ `pending`, `open`, `closed`; ordenadas por `at_ms`. Solo para host/cohost (lleva `correct`) |
 | `trivia_question` | `{event_id, type, room_id, trivia_id, question, options[], opens_at_ms, closes_at_ms}` (sin `correct`; horas del reloj del servidor) |
 | `trivia_ack` | `{type, room_id, event_id_ref, trivia_id, option, score}` |
-| `trivia_result` | `{event_id, type, room_id, trivia_id, correct, top: [{user_id, nick, score}] (≤ 10, de esta pregunta), leaderboard: [{user_id, nick, score}] (≤ 10, acumulado de la sala), my_score, my_total}` |
+| `trivia_leaderboard` | `{event_id, type, room_id, leaderboard: [{user_id, nick, score}] (≤ 10, acumulado de la sala; más puntos primero y, a igualdad, menos tiempo acumulado en correctas), my_rank?, my_total?}`. Se envía a **todos** al entrar si la sala ya tiene puntos (persiste en Redis); después el ranking se actualiza con cada `trivia_result` |
+| `trivia_result` | `{event_id, type, room_id, trivia_id, correct, top: [{user_id, nick, score}] (≤ 10, de esta pregunta), leaderboard: [{user_id, nick, score}] (≤ 10, acumulado de la sala), my_score, my_total, my_rank}` (`my_rank` = puesto propio en el acumulado; ausente sin puntos) |
 | `recap` | `{type, room_id, event_id_ref, top_emoji_user: {user_id, nick, count}\|null, most_paused: {position_ms, count}\|null, peak_reactions: {position_ms, count, laughs}\|null, totals: {reactions, pauses, rewinds, polls}}` |
 | `error` | `{type, code, event_id_ref?, retry_after_ms?}` (`retry_after_ms` acompaña `SLOW_MODE` y `RATE_LIMITED`) |
 
@@ -152,6 +155,8 @@ Contrato: [docs/contrato-eventos-analitica.md](../../docs/contrato-eventos-anali
 | `SOCIAL_REACTION_LIMIT` | `5` | Reacciones por segundo por usuario (`sub`) |
 | `SOCIAL_REACTION_IP_LIMIT` | `5` | Reacciones por segundo por IP de origen |
 | `SOCIAL_REACTION_WINDOW_MS` | `1000` | Ventana deslizante compartida por ambos límites, en milisegundos |
+
+El control interno de arranque expone `POST /internal/events/start/{room_id}` con `{"hostId":"..."}` y `DELETE /internal/events/start/{room_id}` para compensación. Devuelve los datos de sesión WebSocket, no sustituye la conexión del cliente y no se publica por gateway.
 
 ## Reglas de Dominio
 1. **Bucketing & Rate Limiting:** Limita las reacciones a 5/s por usuario, el láser a 30/s y votos/recap a 10/s. Agrupa datos en buckets de 5 segundos.
