@@ -18,6 +18,10 @@ services:
       GATEWAY_HOST: ${GATEWAY_HOST:-localhost}
       GATEWAY_HTTPS_PORT: ${GATEWAY_HTTPS_PORT:-443}
       IDENTITY_API_UPSTREAM: ${IDENTITY_API_UPSTREAM:-host.docker.internal:8081}
+      SYNC_CORE_UPSTREAM: ${SYNC_CORE_UPSTREAM:-sync-core:8080}
+      SOCIAL_CORE_UPSTREAM: ${SOCIAL_CORE_UPSTREAM:-social-core:8082}
+      ANALYTICS_UPSTREAM: ${ANALYTICS_UPSTREAM:-analytics:8084}
+      VOICE_CORE_UPSTREAM: ${VOICE_CORE_UPSTREAM:-voice-core:8085}
     volumes:
       - ./gateway/Caddyfile:/etc/caddy/Caddyfile:ro
       - gateway-data:/data

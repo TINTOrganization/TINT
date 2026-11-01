@@ -15,8 +15,8 @@ https://{$GATEWAY_HOST:localhost} {
     header X-Correlation-ID {http.request.header.X-Correlation-ID}
     log {
         format json
-        log_append correlation_id {http.request.header.X-Correlation-ID}
     }
+    log_append correlation_id {http.request.header.X-Correlation-ID}
 
     handle_errors {
         @upstream_unavailable expression `{http.error.status_code} == 502 || {http.error.status_code} == 503 || {http.error.status_code} == 504`
@@ -42,7 +42,12 @@ https://{$GATEWAY_HOST:localhost} {
     respond @health 200
 
     @analytics path_regexp analytics ^/api/v1/rooms/[^/]+/(kpis|reactions/heatmap|timeline)$
-    reverse_proxy @analytics analytics:8084 {
+    reverse_proxy @analytics {$ANALYTICS_UPSTREAM:analytics:8084} {
+        import service_timeout
+    }
+
+    @voice_api path /api/v1/voice/*
+    reverse_proxy @voice_api {$VOICE_CORE_UPSTREAM:voice-core:8085} {
         import service_timeout
     }
 
@@ -52,12 +57,17 @@ https://{$GATEWAY_HOST:localhost} {
     }
 
     @sync path /ws/sync /ws/sync/*
-    reverse_proxy @sync sync-core:8080 {
+    reverse_proxy @sync {$SYNC_CORE_UPSTREAM:sync-core:8080} {
         import service_timeout
     }
 
     @social path /ws/social /ws/social/*
-    reverse_proxy @social social-core:8082 {
+    reverse_proxy @social {$SOCIAL_CORE_UPSTREAM:social-core:8082} {
+        import service_timeout
+    }
+
+    @voice path /ws/voice /ws/voice/*
+    reverse_proxy @voice {$VOICE_CORE_UPSTREAM:voice-core:8085} {
         import service_timeout
     }
 
