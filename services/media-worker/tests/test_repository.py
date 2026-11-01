@@ -1,6 +1,6 @@
 from unittest.mock import Mock
 
-from media_worker.probe import VideoStatus
+from media_worker.probe import FailureReason, VideoStatus
 from media_worker.repository import VideoRepository
 
 
@@ -51,14 +51,25 @@ def test_mark_ready_overwrites_renditions_so_reprocessing_is_idempotent():
     assert "renditions = renditions" not in first[0]
 
 
-def test_mark_failed_only_touches_status():
+def test_mark_failed_stores_the_reason_and_leaves_the_rest_alone():
     conn = Mock()
-    VideoRepository(conn).mark_failed("v1")
+    VideoRepository(conn).mark_failed("v1", FailureReason.UNREADABLE)
     sql, params = conn.execute.call_args.args
+    assert "failure_reason" in sql
     assert "duration_ms" not in sql
     assert "storage_key" not in sql
     assert "renditions" not in sql
-    assert params == (VideoStatus.FAILED.value, "v1")
+    assert params == (VideoStatus.FAILED.value, "unreadable", "v1")
+
+
+def test_a_new_attempt_and_a_success_clear_the_previous_failure_reason():
+    conn = Mock()
+    repo = VideoRepository(conn)
+    conn.execute.return_value.fetchone.return_value = ("v1",)
+    repo.start_processing("v1")
+    assert "failure_reason = NULL" in conn.execute.call_args.args[0]
+    repo.mark_ready("v1", 1000, "v1/source.mp4")
+    assert "failure_reason = NULL" in conn.execute.call_args.args[0]
 
 
 def test_get_video_returns_status_storage_key_and_uploader_sub():

@@ -35,7 +35,7 @@ Cómo funciona el servicio por dentro (consumo de `media:uploads`, pipeline, Amb
 
 | Entidad | Almacén | Campos clave |
 | :--- | :--- | :--- |
-| `videos` | PostgreSQL | `id`, `storage_key` (lo escribe el worker al publicar), `duration_ms`, `status` (`processing` → `ready` \| `failed`), `renditions` (jsonb, alturas publicadas en orden descendente, p. ej. `[720,360]`; `[]` si no hay), `updated_at` |
+| `videos` | PostgreSQL | `id`, `storage_key` (lo escribe el worker al publicar), `duration_ms`, `status` (`processing` → `ready` \| `failed`), `failure_reason` (código del motivo si `failed`: `unsupported_format`, `unreadable`, `invalid_duration`, `missing_file`, `processing_failed`; se borra al reintentar o al quedar `ready`), `renditions` (jsonb, alturas publicadas en orden descendente, p. ej. `[720,360]`; `[]` si no hay), `updated_at` |
 | `incoming/{video_id}/original.*` | MinIO (`tint-media`) | Original subido por el navegador (staging; lo lee el worker, caduca a los 2 días) |
 | `{video_id}/source.mp4` | MinIO (`tint-media`) | Vídeo normalizado (MP4 H.264 + AAC, `+faststart`): re-codificado o, si el original ya cumple, remuxado. Nunca el original sin preprocesar |
 | `media:uploads` | Redis Stream (grupo `media-workers`) | Evento `{video_id}` que publica identity-api al confirmar la subida |
@@ -46,7 +46,7 @@ Cómo funciona el servicio por dentro (consumo de `media:uploads`, pipeline, Amb
 
 ## Reglas de Dominio
 
-1. **Inspección de Archivos:** Usa `ffprobe` para obtener la duración exacta en ms. Si el archivo está corrupto, actualiza el estado en SQL a `failed`.
+1. **Inspección de Archivos:** Usa `ffprobe` para obtener la duración exacta en ms. Si el archivo está corrupto, actualiza el estado en SQL a `failed` y guarda el motivo (`FailureReason` en `probe.py`: contrato con identity-api y la web).
 2. **Extracción Ambilight:** Analiza una franja del 10% en cada uno de los 4 bordes del fotograma a 1 FPS. Genera el archivo `ambilight.json` y súbelo al Blob Storage.
 3. **Normalización (`normalize.py`):** el original nunca se publica tal cual.
    - **Re-codificación** (caso general): `libx264 -preset veryfast -crf 23 -pix_fmt yuv420p`, keyframe cada 2 s (`-force_key_frames expr:gte(t,n_forced*2) -sc_threshold 0`), tope VBV `-maxrate 8000k -bufsize 16000k`, `-profile:v high` sin nivel fijo (conserva la resolución original, que puede ser 4K o 60 fps); audio `aac 128k -ac 2 -ar 48000`; `-movflags +faststart`.

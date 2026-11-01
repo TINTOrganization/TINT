@@ -7,7 +7,7 @@ from fakes import FakeBlobStore, FakeRepository
 
 from media_worker.jobs import INCOMING_PREFIX, handle_upload
 from media_worker.pipeline import VideoNotFoundError
-from media_worker.probe import VideoStatus
+from media_worker.probe import FailureReason, VideoStatus
 from media_worker.repository import VideoRow
 from media_worker.storage import BlobNotFoundError
 
@@ -96,7 +96,7 @@ def test_unknown_video_is_skipped(caplog):
 def test_missing_upload_marks_failed():
     repo = repo_with(("processing", STAGED))
     assert handle_upload(VIDEO_ID, repo, Blobs(), process=Mock()) is VideoStatus.FAILED
-    repo.mark_failed.assert_called_once_with(VIDEO_ID)
+    repo.mark_failed.assert_called_once_with(VIDEO_ID, FailureReason.MISSING_FILE)
 
 
 def test_row_deleted_while_processing_is_skipped():
@@ -131,7 +131,7 @@ def test_unsupported_extension_marks_failed_without_downloading():
     repo = repo_with(("processing", key))
     process = Mock()
     assert handle_upload(VIDEO_ID, repo, blobs, process=process) is VideoStatus.FAILED
-    repo.mark_failed.assert_called_once_with(VIDEO_ID)
+    repo.mark_failed.assert_called_once_with(VIDEO_ID, FailureReason.UNSUPPORTED_FORMAT)
     blobs.download.assert_not_called()
     process.assert_not_called()
 
