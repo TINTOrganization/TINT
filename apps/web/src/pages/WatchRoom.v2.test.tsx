@@ -15,8 +15,12 @@ vi.mock('../lib/api', async (orig) => ({
 const mockedApiFetch = vi.mocked(apiFetch);
 
 // El chat (/ws/social) se prueba en WatchRoomChat.test.tsx.
+const socialState = vi.hoisted(() => ({ revoked: false, expired: false }));
+
 vi.mock('../hooks/useSocialSocket', () => ({
   useSocialSocket: () => ({
+    revoked: socialState.revoked,
+    expired: socialState.expired,
     status: 'open' as const,
     messages: [],
     reactions: [],
@@ -58,6 +62,9 @@ const state = {
   media_id: 'm1',
 };
 
+/** HTTP de error que devuelve GET /playback (simula un token revocado tras unirse). */
+let playbackError: number | null = null;
+
 let playbackByCall: Array<{
   mediaId: string | null;
   url: string | null;
@@ -69,6 +76,7 @@ let playbackByCall: Array<{
 function routeApi(path: string, init?: RequestInit) {
   if (path.endsWith('/sync-ticket')) return Promise.resolve({ token: 'ticket', expiresAt: 'x' });
   if (path.endsWith('/playback')) {
+    if (playbackError) return Promise.reject(Object.assign(new Error('HTTP error'), { status: playbackError }));
     const next = playbackByCall.length > 1 ? playbackByCall.shift()! : playbackByCall[0];
     return Promise.resolve(next);
   }
@@ -124,6 +132,7 @@ beforeEach(() => {
   vi.stubGlobal('matchMedia', vi.fn(() => ({ matches: true, addListener: vi.fn(), removeListener: vi.fn() })));
   vi.stubEnv('VITE_SYNC_ENCODING', 'json');
   playbackByCall = [{ mediaId: 'm1', url: 'https://minio/m1?sig=1', expiresAt: '2099-01-01T00:00:00Z' }];
+  playbackError = null;
   mockedApiFetch.mockReset();
   mockedApiFetch.mockImplementation(routeApi as typeof apiFetch);
   vi.spyOn(HTMLMediaElement.prototype, 'play').mockResolvedValue(undefined);
@@ -389,6 +398,59 @@ describe('WatchRoom v2 — invitado', () => {
     expect(screen.getByText('El host no está: tienes el control temporal')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Reproducir' })).toBeEnabled();
     expect(screen.getByText('Controlas la reproducción de la sala')).toBeInTheDocument();
+  });
+
+  it('si el cierre llega como 1006 (sin código 4001), al reconectar la API confirma el ban y expulsa', async () => {
+    localStorage.setItem('tint_guest_token', testGuestToken());
+    renderWatch();
+    await flush();
+    const ws = MockWebSocket.last();
+    act(() => ws.open());
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    playbackError = 401; // el host lo bloqueó
+    act(() => ws.close(1006, ''));
+    await flush();
+    expect(screen.getByRole('alert')).toHaveTextContent('Fuiste retirado de la sala por el host');
+    expect(screen.queryByLabelText('Vídeo de la sala')).not.toBeInTheDocument();
+    expect(localStorage.getItem('tint_guest_token')).toBeNull();
+  });
+
+  it('un corte de red normal (la API sigue respondiendo) no expulsa: sigue reconectando', async () => {
+    localStorage.setItem('tint_guest_token', testGuestToken());
+    renderWatch();
+    await flush();
+    const ws = MockWebSocket.last();
+    act(() => ws.open());
+    act(() => ws.close(1006, ''));
+    await flush();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(localStorage.getItem('tint_guest_token')).not.toBeNull();
+  });
+
+  it('el chat cerrado con 4001 expulsa de la sala aunque el canal de sync siga abierto', async () => {
+    localStorage.setItem('tint_guest_token', testGuestToken());
+    socialState.revoked = true;
+    try {
+      renderWatch();
+      await flush();
+      expect(screen.getByRole('alert')).toHaveTextContent('Fuiste retirado de la sala por el host');
+      expect(screen.queryByLabelText('Vídeo de la sala')).not.toBeInTheDocument();
+      expect(screen.getByRole('link', { name: 'Volver al inicio' })).toHaveAttribute('href', '/');
+    } finally {
+      socialState.revoked = false;
+    }
+  });
+
+  it('el chat cerrado con 4003 (invitado) muestra "Tu invitación expiró"', async () => {
+    localStorage.setItem('tint_guest_token', testGuestToken());
+    socialState.expired = true;
+    try {
+      renderWatch();
+      await flush();
+      expect(screen.getByRole('alert')).toHaveTextContent('Tu invitación expiró');
+    } finally {
+      socialState.expired = false;
+    }
   });
 
   it('cierre 4001: muestra la expulsión y no reconecta', async () => {

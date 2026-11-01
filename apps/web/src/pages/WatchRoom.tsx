@@ -28,6 +28,7 @@ import { ease } from '../lib/motion';
 import { apiFetch } from '../lib/api';
 import { toAbsoluteInviteLink, pickLatestActiveInvitation, parseInviteCode } from '../lib/invite';
 import { getLocalIdentity, guestTokenGrantsRoom } from '../lib/identity';
+import { useRevocationProbe } from '../hooks/useRevocationProbe';
 import { useRoomPlayback, type MediaStatus } from '../hooks/useRoomPlayback';
 import { useRecapGate } from '../hooks/useRecapGate';
 
@@ -139,6 +140,8 @@ export default function WatchRoom() {
     muteUser,
     trivia,
     triviaSchedule,
+    revoked: socialRevoked,
+    expired: socialExpired,
     scheduleTrivia,
     updateTrivia,
     deleteTrivia,
@@ -175,7 +178,13 @@ export default function WatchRoom() {
   const sync = useSyncSocket({ roomId: roomId ?? '', role, getPositionMs: getHeartbeatPositionMs, enabled: hasAccess });
   const playback = useRoomPlayback(roomId ?? '', sync.state ? sync.state.media_id : undefined, {
     role,
-    enabled: hasAccess && !sync.revoked,
+    enabled: hasAccess && !sync.revoked && !socialRevoked,
+  });
+  // Si un cierre 4001 no llega (el navegador lo entrega como 1006), la API confirma la expulsión.
+  const probe = useRevocationProbe({
+    roomId,
+    role,
+    active: hasAccess && (sync.reconnect !== null || status === 'reconnecting'),
   });
   useEffect(() => {
     roomMediaRef.current = sync.state?.media_id ?? '';
@@ -332,7 +341,8 @@ export default function WatchRoom() {
   };
 
   // Antes que la puerta: al revocar se borra el guest token y hasAccess cae a false.
-  if (sync.revoked) {
+  // El chat (social-core) cierra con 4001 igual que sync: cualquiera de los dos expulsa.
+  if (sync.revoked || socialRevoked || probe.revoked) {
     if (videoFinished) {
       return (
         <RoomNotice
@@ -349,7 +359,7 @@ export default function WatchRoom() {
     );
   }
   // Cierre 4003: el token caducó (el host ya reintentó una vez con un ticket nuevo).
-  if (sync.expired) {
+  if (sync.expired || socialExpired) {
     // Al invitado ya se le borró el guest token: sin sesión de host, es un invitado.
     return !hostToken ? (
       <RoomNotice
