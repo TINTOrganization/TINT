@@ -68,7 +68,7 @@ describe('chat: modo lento, silencio y spoilers', () => {
 
 describe('trivia', () => {
   it('parsea los mensajes trivia_*', () => {
-    for (const type of ['trivia_question', 'trivia_ack', 'trivia_result', 'trivia_schedule_state']) {
+    for (const type of ['trivia_question', 'trivia_ack', 'trivia_result', 'trivia_schedule_state', 'trivia_leaderboard']) {
       expect(parseSocialMessage(JSON.stringify({ type }))).toMatchObject({ type });
     }
   });
