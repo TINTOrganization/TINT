@@ -381,6 +381,37 @@ describe('GET /rooms/:id/playback con estado del procesamiento', () => {
     expect(res.body).toMatchObject({ mediaId: VID, url: null, expiresAt: null, status: 'failed', ambilightUrl: null, qualities: [] });
   });
 
+  it.each(['unsupported_format', 'unreadable', 'invalid_duration', 'missing_file', 'processing_failed'])(
+    'un vídeo failed devuelve el motivo (%s) en failureReason',
+    async (reason) => {
+      vi.mocked(findRoom).mockResolvedValue({ ...activeRoom, mediaId: VID, mediaKey: pending.storageKey } as any);
+      vi.mocked(findVideo).mockResolvedValueOnce({ ...pending, status: 'failed', failureReason: reason } as any);
+      const res = await play();
+      expect(res.body).toMatchObject({ status: 'failed', failureReason: reason, url: null });
+    },
+  );
+
+  it('failed sin motivo (worker anterior) o con un código desconocido → failureReason null', async () => {
+    vi.mocked(findRoom).mockResolvedValue({ ...activeRoom, mediaId: VID, mediaKey: pending.storageKey } as any);
+    vi.mocked(findVideo).mockResolvedValueOnce({ ...pending, status: 'failed', failureReason: null } as any);
+    expect((await play()).body).toMatchObject({ status: 'failed', failureReason: null });
+    vi.mocked(findVideo).mockResolvedValueOnce({ ...pending, status: 'failed', failureReason: 'SELECT * FROM users' } as any);
+    expect((await play()).body).toMatchObject({ status: 'failed', failureReason: null });
+  });
+
+  it('failureReason es null si el vídeo no está failed (aunque la fila conserve un motivo)', async () => {
+    vi.mocked(findRoom).mockResolvedValue({ ...activeRoom, mediaId: VID, mediaKey: pending.storageKey } as any);
+    vi.mocked(findVideo).mockResolvedValueOnce({ ...pending, status: 'ready', failureReason: 'unreadable' } as any);
+    expect((await play()).body.failureReason).toBeNull();
+    vi.mocked(findVideo).mockResolvedValueOnce(pending as any);
+    expect((await play()).body.failureReason).toBeNull();
+  });
+
+  it('failureReason null también sin vídeo en la sala', async () => {
+    vi.mocked(findRoom).mockResolvedValue({ ...activeRoom, mediaId: null, mediaKey: null } as any);
+    expect((await play()).body).toMatchObject({ mediaId: null, status: null, failureReason: null });
+  });
+
   it('status null si el vídeo se asignó por clave manual (sin fila en videos)', async () => {
     vi.mocked(findRoom).mockResolvedValue({ ...activeRoom, mediaId: VID, mediaKey: 'manual/a.mp4' } as any);
     vi.mocked(findVideo).mockResolvedValueOnce(null as any);
