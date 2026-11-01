@@ -279,12 +279,16 @@ sequenceDiagram
         CV->>ID: "PUT /rooms/:id/media {videoId}"
         ID-->>CV: "{mediaId}"
     else Subir nuevo
+        CV->>ID: "GET /uploads/limits (al abrir el panel)"
+        ID-->>CV: "{maxUploadBytes} → «Tamaño máximo: 2.0 GB»"
         H->>CV: elige un archivo video/*
+        Note over CV: "si pesa más que el máximo: «El archivo pesa X y el máximo es Y», sin llamar a la API"
         CV->>ID: "POST /rooms/:id/media/uploads {filename, contentType, sizeBytes}"
         ID-->>CV: "{videoId, uploadUrl, headers, expiresAt}"
         CV->>MI: "XHR PUT uploadUrl (cabeceras exactas, sin Authorization)"
         MI-->>CV: "upload.onprogress → Subiendo… N %"
         Note over CV,MI: Cancelar aborta el XHR con un AbortSignal
+        CV->>ID: "DELETE /rooms/:id/media/uploads/:videoId (si la subida se corta, se cancela o falla la confirmación)"
         CV->>ID: POST /rooms/:id/media/uploads/:videoId/complete
         ID-->>CV: "{mediaId}"
         CV->>ID: "GET /videos (recarga la biblioteca)"
@@ -296,6 +300,8 @@ sequenceDiagram
     ID-->>PB: "url, status pending o processing"
     PB->>PB: "re-consulta cada 5 s hasta ready (ambilightUrl y qualities)"
 ```
+
+El **límite de tamaño** lo informa identity-api (`GET /uploads/limits`, `fetchUploadLimit`): el panel lo muestra junto al selector y rechaza antes de subir un archivo mayor; si el endpoint falla no hay pre-chequeo y decide el servidor, cuyo 413 también trae `maxUploadBytes` (`ApiError.body`) para mostrarlo en el mensaje. Una **subida interrumpida** (corte de red, «Cancelar subida», panel desmontado o fallo al confirmar) llama a `cancelUpload` (`DELETE …/uploads/:videoId`, sin bloquear ni lanzar) para que el reintento empiece limpio; si no llegó, identity-api limpia las filas `pending` abandonadas al reservar la siguiente. `apiFetch` devuelve `null` en las respuestas `204`.
 
 Si el socket no está abierto al confirmar, el panel guarda el `mediaId` y ofrece reintentar el aviso a la sala. Los errores se traducen a mensajes simples (`uploadErrorMessage`, `assignVideoErrorMessage`), sin jerga como HTTP, MinIO o bucket.
 
