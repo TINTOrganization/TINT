@@ -12,6 +12,9 @@ package trivia
 //     desempate (la respuesta más temprana gana). TTL 12 h + 1 h.
 //   - room:{id}:trivia:leaderboard      ZSET acumulado user_id → puntos.
 //     TTL 12 h + 1 h.
+//   - room:{id}:trivia:elapsed          Hash user_id → suma (ms) del tiempo de
+//     respuesta de sus respuestas correctas; desempata el acumulado (menos
+//     tiempo = mejor puesto). TTL 12 h + 1 h.
 //   - room:{id}:trivia:nicks            Hash user_id → último nick.
 //     TTL 12 h + 1 h.
 //
@@ -110,6 +113,9 @@ func AnswersKey(roomID, triviaID string) string { return prefix(roomID) + trivia
 
 // TotalKey es el ranking acumulado de la sala.
 func TotalKey(roomID string) string { return prefix(roomID) + "leaderboard" }
+
+// ElapsedKey acumula el tiempo de respuesta de las respuestas correctas.
+func ElapsedKey(roomID string) string { return prefix(roomID) + "elapsed" }
 
 // NicksKey guarda el último nick de cada usuario que respondió.
 func NicksKey(roomID string) string { return prefix(roomID) + "nicks" }
@@ -306,7 +312,8 @@ redis.call('EXPIRE', KEYS[2], ARGV[7])
 redis.call('ZADD', KEYS[3], ARGV[5], ARGV[1])
 redis.call('ZINCRBY', KEYS[4], ARGV[4], ARGV[1])
 redis.call('HSET', KEYS[5], ARGV[1], ARGV[6])
-for i = 3, 5 do redis.call('EXPIRE', KEYS[i], ARGV[8]) end
+if tonumber(ARGV[4]) > 0 then redis.call('HINCRBY', KEYS[6], ARGV[1], ARGV[9]) end
+for i = 3, 6 do redis.call('EXPIRE', KEYS[i], ARGV[8]) end
 return 1
 `)
 
@@ -339,9 +346,9 @@ func (s *Store) Answer(ctx context.Context, roomID, triviaID, userID, nick strin
 	}
 	ranked := float64(res.Score) + float64(window-elapsed+1)/float64(window+2)
 	keys := []string{StateKey(roomID, triviaID), AnswersKey(roomID, triviaID),
-		LeaderboardKey(roomID, triviaID), TotalKey(roomID), NicksKey(roomID)}
+		LeaderboardKey(roomID, triviaID), TotalKey(roomID), NicksKey(roomID), ElapsedKey(roomID)}
 	n, err := answerScript.Run(ctx, s.client, keys, userID, option, nowMS, res.Score,
-		strconv.FormatFloat(ranked, 'f', -1, 64), nick, secs(s.ttl), secs(s.boardTTL())).Int64()
+		strconv.FormatFloat(ranked, 'f', -1, 64), nick, secs(s.ttl), secs(s.boardTTL()), res.ResponseMS).Int64()
 	if err != nil {
 		return AnswerResult{}, err
 	}
@@ -405,9 +412,82 @@ func (s *Store) Top(ctx context.Context, roomID, triviaID string, n int) ([]Entr
 	return s.top(ctx, roomID, LeaderboardKey(roomID, triviaID), n)
 }
 
+// ranking devuelve el acumulado completo de la sala: más puntos primero y,
+// a igualdad, menos tiempo acumulado en respuestas correctas (quien acertó
+// antes); el id fija el orden si todo empata.
+func (s *Store) ranking(ctx context.Context, roomID string) ([]Entry, error) {
+	zs, err := s.client.ZRevRangeWithScores(ctx, TotalKey(roomID), 0, -1).Result()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]Entry, 0, len(zs))
+	if len(zs) == 0 {
+		return out, nil
+	}
+	ids := make([]string, len(zs))
+	for i, z := range zs {
+		ids[i], _ = z.Member.(string)
+	}
+	pipe := s.client.Pipeline()
+	nicks := pipe.HMGet(ctx, NicksKey(roomID), ids...)
+	elapsed := pipe.HMGet(ctx, ElapsedKey(roomID), ids...)
+	if _, err := pipe.Exec(ctx); err != nil {
+		return nil, err
+	}
+	spent := make(map[string]int64, len(ids))
+	for i, id := range ids {
+		if v, ok := elapsed.Val()[i].(string); ok {
+			spent[id], _ = strconv.ParseInt(v, 10, 64)
+		}
+		nick, _ := nicks.Val()[i].(string)
+		out = append(out, Entry{UserID: id, Nick: nick, Score: int(math.Floor(zs[i].Score))})
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		a, b := out[i], out[j]
+		if a.Score != b.Score {
+			return a.Score > b.Score
+		}
+		if spent[a.UserID] != spent[b.UserID] {
+			return spent[a.UserID] < spent[b.UserID]
+		}
+		return a.UserID < b.UserID
+	})
+	return out, nil
+}
+
 // TotalTop devuelve los n mejores del ranking acumulado de la sala.
 func (s *Store) TotalTop(ctx context.Context, roomID string, n int) ([]Entry, error) {
-	return s.top(ctx, roomID, TotalKey(roomID), n)
+	all, err := s.ranking(ctx, roomID)
+	if err != nil {
+		return nil, err
+	}
+	if len(all) > n {
+		all = all[:n]
+	}
+	return all, nil
+}
+
+// Ranks devuelve el puesto (1 = primero) de cada usuario en el acumulado;
+// quien aún no tiene puntos no aparece en el mapa.
+func (s *Store) Ranks(ctx context.Context, roomID string, users []string) (map[string]int, error) {
+	ranks := make(map[string]int, len(users))
+	if len(users) == 0 {
+		return ranks, nil
+	}
+	all, err := s.ranking(ctx, roomID)
+	if err != nil {
+		return nil, err
+	}
+	pos := make(map[string]int, len(all))
+	for i, e := range all {
+		pos[e.UserID] = i + 1
+	}
+	for _, u := range users {
+		if p, ok := pos[u]; ok {
+			ranks[u] = p
+		}
+	}
+	return ranks, nil
 }
 
 // Scores devuelve, para cada usuario, sus puntos en la pregunta y en el

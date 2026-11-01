@@ -223,6 +223,44 @@ func TestAnswerScoresAndRanks(t *testing.T) {
 	}
 }
 
+func TestTotalTieBreakEarlierCorrectAnswerWins(t *testing.T) {
+	s, mr := testStore(t)
+	ctx := context.Background()
+	_ = s.Schedule(ctx, "r1", sample("q", 30_000))
+	_, _, _ = s.Launch(ctx, "r1", "q", t0)
+	// Same points (both past the bonus window); "zeta" answered first, and
+	// Redis alone would sort the tie by member name, putting "alfa" first.
+	_, _ = s.Answer(ctx, "r1", "q", "zeta", "Zeta", 1, t0+12_000)
+	_, _ = s.Answer(ctx, "r1", "q", "alfa", "Alfa", 1, t0+15_000)
+	_, _ = s.Answer(ctx, "r1", "q", "nada", "Nada", 0, t0+11_000)
+
+	total, err := s.TotalTop(ctx, "r1", 10)
+	if err != nil || len(total) != 3 || total[0].UserID != "zeta" || total[1].UserID != "alfa" || total[0].Score != total[1].Score || total[2].UserID != "nada" {
+		t.Fatalf("TotalTop = %+v %v, want zeta, alfa, nada", total, err)
+	}
+	ranks, err := s.Ranks(ctx, "r1", []string{"alfa", "zeta", "nada", "nadie"})
+	if err != nil || ranks["zeta"] != 1 || ranks["alfa"] != 2 || ranks["nada"] != 3 || ranks["nadie"] != 0 {
+		t.Fatalf("Ranks = %v %v", ranks, err)
+	}
+
+	// A later question with identical times: the accumulated response time of
+	// correct answers (24 s vs 27 s) keeps zeta ahead.
+	_ = s.Schedule(ctx, "r1", sample("q2", 90_000))
+	_, _, _ = s.Launch(ctx, "r1", "q2", t0+100_000)
+	_, _ = s.Answer(ctx, "r1", "q2", "zeta", "Zeta", 1, t0+112_000)
+	_, _ = s.Answer(ctx, "r1", "q2", "alfa", "Alfa", 1, t0+112_000)
+	total, _ = s.TotalTop(ctx, "r1", 1)
+	if len(total) != 1 || total[0].UserID != "zeta" {
+		t.Fatalf("TotalTop(1) = %+v, want zeta", total)
+	}
+	if ttl := mr.TTL(ElapsedKey("r1")); ttl != DefaultTTL+LeaderboardTTL {
+		t.Fatalf("TTL elapsed = %v", ttl)
+	}
+	if r, err := s.Ranks(ctx, "r1", nil); err != nil || len(r) != 0 {
+		t.Fatalf("Ranks vacío = %v %v", r, err)
+	}
+}
+
 func TestCloseOnce(t *testing.T) {
 	s, _ := testStore(t)
 	ctx := context.Background()
@@ -279,5 +317,8 @@ func TestStoreRedisDown(t *testing.T) {
 	}
 	if _, _, err := s.Scores(ctx, "r1", "q", []string{"u"}); err == nil {
 		t.Error("Scores")
+	}
+	if _, err := s.Ranks(ctx, "r1", []string{"u"}); err == nil {
+		t.Error("Ranks")
 	}
 }

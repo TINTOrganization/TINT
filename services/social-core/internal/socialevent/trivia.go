@@ -15,6 +15,7 @@ const (
 	TypeTriviaAnswer        Type = "trivia_answer"
 	TypeTriviaAck           Type = "trivia_ack"
 	TypeTriviaResult        Type = "trivia_result"
+	TypeTriviaLeaderboard   Type = "trivia_leaderboard"
 )
 
 // Límites de producto de una trivia.
@@ -268,5 +269,18 @@ type TriviaResult struct {
 	Top         []TriviaScore `json:"top"`
 	Leaderboard []TriviaScore `json:"leaderboard"`
 	MyScore     *int          `json:"my_score,omitempty"`
+	MyTotal     *int          `json:"my_total,omitempty"`
+	MyRank      *int          `json:"my_rank,omitempty"`
+}
+
+// TriviaLeaderboard es el ranking acumulado de la sala que recibe cada
+// cliente al entrar (persiste en Redis, así que sobrevive a reinicios).
+// my_rank y my_total se agregan por cliente; sin puntos no hay my_rank.
+type TriviaLeaderboard struct {
+	EventID     string        `json:"event_id"`
+	Type        Type          `json:"type"`
+	RoomID      string        `json:"room_id"`
+	Leaderboard []TriviaScore `json:"leaderboard"`
+	MyRank      *int          `json:"my_rank,omitempty"`
 	MyTotal     *int          `json:"my_total,omitempty"`
 }
