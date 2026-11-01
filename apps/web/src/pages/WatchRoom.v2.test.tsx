@@ -71,6 +71,7 @@ let playbackByCall: Array<{
   url: string | null;
   expiresAt: string | null;
   status?: string | null;
+  failureReason?: string | null;
   ambilightUrl?: string | null;
 }>;
 
@@ -322,6 +323,24 @@ describe('WatchRoom v2 — estado del procesamiento (Ambilight)', () => {
     expect(screen.queryByText('Sin video configurado')).not.toBeInTheDocument();
   });
 
+  it.each([
+    ['unsupported_format', 'Formato no soportado. Usa MP4, MOV, MKV o WebM.'],
+    ['unreadable', 'No pudimos leer el archivo: parece dañado o no es un vídeo.'],
+    ['invalid_duration', 'No pudimos determinar la duración del vídeo.'],
+    ['missing_file', 'La subida no llegó completa. Sube el archivo de nuevo.'],
+    ['processing_failed', 'No se pudo preparar el vídeo. Prueba con otro archivo.'],
+  ])('failed (%s): el invitado sigue viendo solo el texto genérico', async (failureReason, specific) => {
+    localStorage.setItem('tint_guest_token', testGuestToken());
+    playbackByCall = [{ mediaId: 'm1', url: null, expiresAt: null, status: 'failed', failureReason, ambilightUrl: null }];
+    renderWatch();
+    await flush();
+    expect(screen.getByRole('status', { name: 'Estado del vídeo' })).toHaveTextContent(
+      'No se pudo procesar el vídeo (archivo dañado o formato no soportado)',
+    );
+    expect(screen.getByText('Este vídeo no se pudo procesar. El host puede subir otro.')).toBeInTheDocument();
+    expect(document.body.textContent).not.toContain(specific);
+  });
+
   it('sin fila de vídeo (status null) no muestra estado de procesamiento', async () => {
     localStorage.setItem('tint_guest_token', testGuestToken());
     playbackByCall = [{ ...base, status: null }];
@@ -333,6 +352,29 @@ describe('WatchRoom v2 — estado del procesamiento (Ambilight)', () => {
 
 describe('WatchRoom v2 — host', () => {
   beforeEach(() => localStorage.setItem('tint_token', 'firebase'));
+
+  it.each([
+    ['unsupported_format', 'Formato no soportado. Usa MP4, MOV, MKV o WebM.'],
+    ['unreadable', 'No pudimos leer el archivo: parece dañado o no es un vídeo.'],
+    ['invalid_duration', 'No pudimos determinar la duración del vídeo.'],
+    ['missing_file', 'La subida no llegó completa. Sube el archivo de nuevo.'],
+    ['processing_failed', 'No se pudo preparar el vídeo. Prueba con otro archivo.'],
+  ])('vídeo failed (%s): el host ve el motivo específico en el estado y en el reproductor', async (failureReason, specific) => {
+    playbackByCall = [{ mediaId: 'm1', url: null, expiresAt: null, status: 'failed', failureReason, ambilightUrl: null }];
+    renderWatch();
+    await flush();
+    expect(screen.getByRole('status', { name: 'Estado del vídeo' })).toHaveTextContent(specific);
+    expect(screen.getAllByText(new RegExp(specific.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))).length).toBeGreaterThan(1);
+  });
+
+  it('vídeo failed sin motivo (versión anterior): el host ve el texto genérico', async () => {
+    playbackByCall = [{ mediaId: 'm1', url: null, expiresAt: null, status: 'failed', ambilightUrl: null }];
+    renderWatch();
+    await flush();
+    expect(screen.getByRole('status', { name: 'Estado del vídeo' })).toHaveTextContent(
+      'No se pudo procesar el vídeo (archivo dañado o formato no soportado)',
+    );
+  });
 
   it('sube un vídeo a MinIO, lo confirma y envía LOAD por el canal', async () => {
     MockXhr.reset();
