@@ -471,13 +471,15 @@ stateDiagram-v2
 
 | Cierre o error | Canal Sync (`useSyncSocket`) | Qué ve el usuario (`WatchRoom`) |
 | :--- | :--- | :--- |
-| `4001` (revocado) | No reconecta; el invitado borra `tint_guest_token`; `revoked = true`. | "Fuiste retirado de la sala por el host" (o "El host terminó la sala" si el vídeo ya había terminado). |
-| `4003` (token caducado) | Invitado: no reconecta y borra el token. Host: pide un sync-ticket nuevo **una vez** (se rearma al recibir `STATE`); si se repite, se rinde. `expired = true`. | "Tu invitación expiró" o "Tu sesión de sincronía caducó". |
+| `4001` (revocado) | No reconecta (Sync y Social); el invitado borra `tint_guest_token`; `revoked = true`. | "Fuiste retirado de la sala por el host" (o "El host terminó la sala" si el vídeo ya había terminado). |
+| `4003` (token caducado) | Invitado (Sync y Social): no reconecta y borra el token. Host: pide un sync-ticket nuevo **una vez** (se rearma al recibir `STATE`); si se repite, se rinde. `expired = true`. | "Tu invitación expiró" o "Tu sesión de sincronía caducó". |
 | sync-ticket 403 / 404 / 410 | `fatalError = NOT_HOST / ROOM_GONE`, sin reintentos. | "No eres el host de esta sala" o "La sala ya no existe". |
 | `GET /playback` 401/403 (invitado) | `useRoomPlayback` borra el token y expone `revoked`. | "Tu invitación ya no es válida". |
 | Cualquier otro cierre | Reintento con backoff; `reconnect = {attempt, nextRetryAt}`. | "Reconectando… intento N · S s" sin desmontar el reproductor. |
 
-El **Canal Social** no distingue códigos: reconecta siempre, salvo que el sync-ticket responda 403/404/410 (`status: 'closed'`). Al revocar, el invitado pierde `tint_guest_token`, `WatchRoom` deja de tener acceso y `useSocialSocket` recibe `roomId` indefinido, que cierra el socket social. Solo el socket vigente puede programar reconexiones: el cierre tardío de un socket viejo (StrictMode, limpieza) se ignora.
+El **Canal Social** (`useSocialSocket`) aplica los mismos cierres terminales: `4001` borra `tint_guest_token`, expone `revoked = true`, queda `closed` y no vuelve a reconectar (antes reconectaba siempre y entraba en bucle, porque social-core hace el upgrade y cierra con `4001` en cada intento); `4003` de un invitado expone `expired = true` y tampoco reconecta (el host sí: pide un ticket nuevo en cada intento). `WatchRoom` expulsa si **cualquiera** de los dos canales dice `revoked` (o `expired`), así que un ban saca al participante de la sala aunque solo el chat haya recibido el cierre. Sigue reconectando ante cualquier otro cierre, salvo que el sync-ticket responda 403/404/410 (`status: 'closed'`). 
+
+**Red de seguridad (`useRevocationProbe`).** En Chromium el cierre `4001` puede llegar como `1006` ("Close received after close": al responder el navegador el cierre, sync-core y social-core envían una segunda trama de cierre y el navegador aborta la conexión), así que el invitado nunca vería el código y reconectaría para siempre con la sala a la vista. Mientras algún canal esté reconectando, un invitado consulta `GET /rooms/:id/playback` de inmediato y cada 3 s: un **401/403** (token revocado o de otra sala) es una expulsión (borra `tint_guest_token`, `WatchRoom` muestra "Fuiste retirado de la sala por el host"); un fallo de red o un 5xx no expulsa y se vuelve a preguntar. Se detiene al recuperarse la conexión. Así el ban expulsa en ~1 s aunque el código de cierre no llegue.Solo el socket vigente puede programar reconexiones: el cierre tardío de un socket viejo (StrictMode, limpieza) se ignora.
 
 ---
 

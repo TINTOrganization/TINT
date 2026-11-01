@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { apiFetch } from '../lib/api';
 import { errorStatus } from '../lib/errorStatus';
 import { getLocalIdentity } from '../lib/identity';
+import { CLOSE_EXPIRED, CLOSE_REVOKED } from '../lib/syncProtocol';
 import {
   buildChatMute,
   buildChatSend,
@@ -133,6 +134,9 @@ export function useSocialSocket(roomId: string | undefined, opts: UseSocialSocke
   const [chatCooldownUntil, setChatCooldownUntil] = useState<number | null>(null);
   const [trivia, setTrivia] = useState<TriviaView>(EMPTY_TRIVIA);
   const [triviaSchedule, setTriviaSchedule] = useState<ScheduledTrivia[]>([]);
+  // Cierres terminales de social-core: el host retiró o bloqueó al participante (4001) o su token caducó (4003).
+  const [revoked, setRevoked] = useState(false);
+  const [expired, setExpired] = useState(false);
   /** Último voto propio visto por poll_id: los broadcasts no traen my_vote. */
   const myVotesRef = useRef<Map<string, number>>(new Map());
   const wsRef = useRef<WebSocket | null>(null);
@@ -193,6 +197,8 @@ export function useSocialSocket(roomId: string | undefined, opts: UseSocialSocke
     }
     closedRef.current = false;
     attemptRef.current = 0;
+    setRevoked(false);
+    setExpired(false);
     // Por efecto: un ticket que llega tras desmontar (o tras cambiar de sala) se descarta.
     let disposed = false;
 
@@ -275,13 +281,29 @@ export function useSocialSocket(roomId: string | undefined, opts: UseSocialSocke
           }
         }
       };
-      ws.onclose = () => {
+      ws.onclose = (ev: CloseEvent) => {
         // Solo el socket vigente puede cambiar el estado/programar
         // reconexión: un cierre tardío del socket viejo (StrictMode,
         // limpieza) no debe matar al nuevo.
         if (wsRef.current !== ws) return;
         wsRef.current = null;
         if (closedRef.current) {
+          setStatus('closed');
+          return;
+        }
+        if (ev.code === CLOSE_REVOKED) {
+          // Retirado o bloqueado por el host: reconectar solo repetiría el cierre.
+          closedRef.current = true;
+          if (role === 'guest') localStorage.removeItem('tint_guest_token');
+          setRevoked(true);
+          setStatus('closed');
+          return;
+        }
+        if (ev.code === CLOSE_EXPIRED && role === 'guest') {
+          // El invitado no puede renovar su token (el host sí: pide un ticket nuevo al reconectar).
+          closedRef.current = true;
+          localStorage.removeItem('tint_guest_token');
+          setExpired(true);
           setStatus('closed');
           return;
         }
@@ -466,6 +488,8 @@ export function useSocialSocket(roomId: string | undefined, opts: UseSocialSocke
     muteUser,
     trivia,
     triviaSchedule,
+    revoked,
+    expired,
     scheduleTrivia,
     updateTrivia,
     deleteTrivia,
