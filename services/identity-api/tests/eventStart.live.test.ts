@@ -1,6 +1,6 @@
 /**
- * Pruebas de aceptación (ROJAS) de las salas `live` en `POST /events/start`
- * (ADR 0018 · docs/dominio-transmision.md).
+ * Pruebas de aceptación de las salas `live` en `POST /events/start`
+ * (ADR 0019 · docs/dominio-transmision.md).
  *
  * Se prueba la orquestación real (eventStart.service + eventStart.clients):
  * solo se sustituyen los repos, Redis (setRedisClient) y `fetch` (los upstreams).
@@ -101,7 +101,7 @@ afterEach(() => {
   setRedisClient(null);
 });
 
-describe('POST /events/start con kind=live (ADR 0018)', () => {
+describe('POST /events/start con kind=live (ADR 0019)', () => {
   it('HU-LIVE-05: una sala live se crea con kind=live y registra stream-core en lugar de sync-core', async () => {
     const res = await request(app).post('/api/v1/events/start').send({ title: 'Directo', kind: 'live' });
 
@@ -119,7 +119,33 @@ describe('POST /events/start con kind=live (ADR 0018)', () => {
 
     expect(res.status).toBe(200);
     const kindWrite = redis.set.mock.calls.find(([key]) => key === 'room:room-1:kind');
-    expect(kindWrite?.[1]).toBe('live');
+    // Mismo TTL que room:{id}:stream:enabled: 24 h.
+    expect(kindWrite).toEqual(['room:room-1:kind', 'live', 'EX', 86400]);
+    expect(res.body.room).toMatchObject({ kind: 'live' });
+  });
+
+  it('ADR 0019: si no se puede escribir room:{id}:kind responde 503 y compensa todo (falla cerrado)', async () => {
+    redis.set.mockRejectedValueOnce(new Error('redis down'));
+
+    const res = await request(app).post('/api/v1/events/start').send({ title: 'Directo', kind: 'live' });
+
+    expect(res.status).toBe(503);
+    const urls = calledUrls();
+    expect(urls).toContain(`DELETE ${STREAM}/internal/events/start/room-1`);
+    expect(urls).toContain(`DELETE ${SOCIAL}/internal/events/start/room-1`);
+    expect(urls).toContain(`DELETE ${ANALYTICS}/internal/events/start/room-1`);
+    expect(softRemoveById).toHaveBeenCalledWith('room-1');
+  });
+
+  it('ADR 0019: si social-core falla en una sala live compensa stream-core con DELETE', async () => {
+    failing = SOCIAL;
+
+    const res = await request(app).post('/api/v1/events/start').send({ title: 'Directo', kind: 'live' });
+
+    expect(res.status).toBe(503);
+    expect(calledUrls()).toContain(`DELETE ${STREAM}/internal/events/start/room-1`);
+    expect(calledUrls().some((u) => u.includes(SYNC))).toBe(false);
+    expect(redis.set.mock.calls.some(([key]) => key === 'room:room-1:kind')).toBe(false);
   });
 
   it('HU-LIVE-05: si stream-core falla responde 503 y compensa (borra la sala) sin tocar sync-core', async () => {
@@ -133,7 +159,7 @@ describe('POST /events/start con kind=live (ADR 0018)', () => {
     expect(softRemoveById).toHaveBeenCalledWith('room-1');
   });
 
-  it('ADR 0018: un kind desconocido responde 400', async () => {
+  it('ADR 0019: un kind desconocido responde 400', async () => {
     const res = await request(app).post('/api/v1/events/start').send({ title: 'Directo', kind: 'cine' });
 
     expect(res.status).toBe(400);
@@ -141,7 +167,7 @@ describe('POST /events/start con kind=live (ADR 0018)', () => {
   });
 
   // Guarda de no regresión (verde hoy a propósito): sin kind la sala es watch y nada cambia.
-  it('ADR 0018: sin kind la sala es watch: registra sync-core, no stream-core ni room:{id}:kind', async () => {
+  it('ADR 0019: sin kind la sala es watch: registra sync-core, no stream-core ni room:{id}:kind', async () => {
     const res = await request(app).post('/api/v1/events/start').send({ title: 'Cine' });
 
     expect(res.status).toBe(200);

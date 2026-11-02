@@ -1,13 +1,15 @@
 /**
- * Pruebas de aceptación (ROJAS) del cierre de sala `ROOM_CLOSED` (ADR 0018 ·
- * docs/dominio-transmision.md, HU-LIVE-05 y HU-LIVE-09).
+ * Pruebas de aceptación del cierre de sala `ROOM_CLOSED` (ADR 0019 ·
+ * docs/dominio-transmision.md §6.1, HU-LIVE-05 y HU-LIVE-09).
  *
  * Contrato que fijan para la implementación:
  * - `rooms.repo.disableById(id)`: `UPDATE rooms SET status='disabled'` (devuelve la sala).
  *   Se declara en el mock con `vi.hoisted` para no importar un export que aún no existe.
  * - `POST /rooms/:id/end` (Firebase + dueño) y `POST /internal/rooms/:id/disable`
  *   (`X-Internal-Token` = `INTERNAL_API_SECRET`) hacen, en orden: `SET room:{id}:closed 1`
- *   (sin TTL) → `status='disabled'` → `PUBLISH room:{id}:sync ROOM_CLOSED` → `XADD room_closed`.
+ *   (sin TTL) → `PUBLISH room:{id}:sync ROOM_CLOSED` → `status='disabled'` → `XADD room_closed`.
+ *   Si falla alguno de los tres primeros: 503 y la sala sigue `active` (el reintento repite todo).
+ * - `reason` es `host_ended` (end) o `grace_expired` (interno), igual en ROOM_CLOSED y en analítica.
  * - Una sala `disabled` responde `410 {error:'Disabled'}` al unirse, al reproducir y en
  *   `requireActiveRoom`; el analytics-ticket sigue disponible y reactivar responde 409.
  */
@@ -175,22 +177,44 @@ describe('POST /rooms/:id/end (HU-LIVE-05)', () => {
     expect(message.occurred_at).toMatch(ISO_RE);
   });
 
-  it('HU-LIVE-05 AC1: publica room_closed reason=host_closed en analytics:events', async () => {
+  it('HU-LIVE-05 AC1: responde el cuerpo de §6.1 (room_id, status, reason, closed_at)', async () => {
     const res = await request(app).post('/api/v1/rooms/room-1/end').send({});
 
     expect(res.status).toBe(200);
-    await vi.waitFor(() => expect(roomClosedFields()).toMatchObject({ room_id: 'room-1', reason: 'host_closed' }));
+    expect(res.body).toEqual({
+      room_id: 'room-1',
+      status: 'disabled',
+      reason: 'host_ended',
+      closed_at: expect.stringMatching(ISO_RE),
+    });
+    // closed_at es el mismo instante que occurred_at del ROOM_CLOSED.
+    expect(res.body.closed_at).toBe(roomClosedMessage().occurred_at);
   });
 
-  it('ADR 0018: el orden es SET closed → status disabled → PUBLISH ROOM_CLOSED → XADD room_closed', async () => {
+  it('HU-LIVE-05 AC1: ROOM_CLOSED tiene exactamente los campos de §6.1', async () => {
+    await request(app).post('/api/v1/rooms/room-1/end').send({});
+
+    expect(Object.keys(roomClosedMessage()).sort()).toEqual(['event_id', 'occurred_at', 'reason', 'room_id', 'type']);
+  });
+
+  it('HU-LIVE-05 AC1: publica room_closed reason=host_ended en analytics:events', async () => {
+    const res = await request(app).post('/api/v1/rooms/room-1/end').send({});
+
+    expect(res.status).toBe(200);
+    await vi.waitFor(() =>
+      expect(roomClosedFields()).toMatchObject({ room_id: 'room-1', user_id: 'sub-1', reason: 'host_ended' }),
+    );
+  });
+
+  it('ADR 0019: el orden es SET closed → PUBLISH ROOM_CLOSED → status disabled → XADD room_closed', async () => {
     const res = await request(app).post('/api/v1/rooms/room-1/end').send({});
 
     expect(res.status).toBe(200);
     await vi.waitFor(() => expect(state.calls).toContain('redis:xadd'));
     expect(state.calls).toEqual([
       'redis:set room:room-1:closed',
-      'db:disable',
       'redis:publish room:room-1:sync',
+      'db:disable',
       'redis:xadd',
     ]);
   });
@@ -201,12 +225,14 @@ describe('POST /rooms/:id/end (HU-LIVE-05)', () => {
     const res = await request(app).post('/api/v1/rooms/room-1/end').send({});
 
     expect(res.status).toBe(409);
+    expect(res.body).toEqual({ error: 'AlreadyDisabled' });
     expect(state.disableById).not.toHaveBeenCalled();
+    expect(redis.set).not.toHaveBeenCalled();
     expect(redis.publish).not.toHaveBeenCalled();
     expect(redis.xadd).not.toHaveBeenCalled();
   });
 
-  it('ADR 0018: si Redis falla responde 503 y la sala sigue active (se puede reintentar)', async () => {
+  it('ADR 0019: si falla el SET responde 503 y la sala sigue active (se puede reintentar)', async () => {
     redis.set.mockRejectedValueOnce(new Error('redis down'));
 
     const res = await request(app).post('/api/v1/rooms/room-1/end').send({});
@@ -214,9 +240,75 @@ describe('POST /rooms/:id/end (HU-LIVE-05)', () => {
     expect(res.status).toBe(503);
     expect(state.disableById).not.toHaveBeenCalled();
     expect(redis.publish).not.toHaveBeenCalled();
+    expect(redis.xadd).not.toHaveBeenCalled();
   });
 
-  it('ADR 0018: quien no es dueño de la sala recibe 403 y no se cierra nada', async () => {
+  it('ADR 0019: si falla el PUBLISH responde 503 y la sala sigue active', async () => {
+    redis.publish.mockRejectedValueOnce(new Error('redis down'));
+
+    const res = await request(app).post('/api/v1/rooms/room-1/end').send({});
+
+    expect(res.status).toBe(503);
+    expect(state.disableById).not.toHaveBeenCalled();
+    expect(redis.xadd).not.toHaveBeenCalled();
+  });
+
+  it('ADR 0019: si falla el UPDATE responde 503 y el reintento repite SET y PUBLISH (el aviso no se pierde)', async () => {
+    state.disableById.mockRejectedValueOnce(new Error('db down'));
+
+    const first = await request(app).post('/api/v1/rooms/room-1/end').send({});
+
+    expect(first.status).toBe(503);
+    expect(redis.xadd).not.toHaveBeenCalled();
+
+    const retry = await request(app).post('/api/v1/rooms/room-1/end').send({});
+
+    expect(retry.status).toBe(200);
+    expect(redis.set).toHaveBeenCalledTimes(2);
+    expect(redis.publish).toHaveBeenCalledTimes(2);
+    expect(state.disableById).toHaveBeenCalledTimes(2);
+  });
+
+  it('ADR 0019: una sala watch responde 409 NotLive (se borra con DELETE) sin cerrar nada', async () => {
+    vi.mocked(findById).mockResolvedValue({ ...liveRoom, kind: 'watch' } as any);
+
+    const res = await request(app).post('/api/v1/rooms/room-1/end').send({});
+
+    expect(res.status).toBe(409);
+    expect(res.body).toEqual({ error: 'NotLive' });
+    expect(redis.set).not.toHaveBeenCalled();
+    expect(state.disableById).not.toHaveBeenCalled();
+  });
+
+  it('ADR 0019: una sala borrada responde 410 Deleted', async () => {
+    vi.mocked(findById).mockResolvedValue({ ...liveRoom, status: 'deleted' } as any);
+
+    const res = await request(app).post('/api/v1/rooms/room-1/end').send({});
+
+    expect(res.status).toBe(410);
+    expect(res.body).toEqual({ error: 'Deleted' });
+    expect(redis.set).not.toHaveBeenCalled();
+  });
+
+  it('ADR 0019: si la sala desaparece tras la autorización responde 404', async () => {
+    vi.mocked(findById).mockResolvedValue(null);
+
+    const res = await request(app).post('/api/v1/rooms/room-1/end').send({});
+
+    expect(res.status).toBe(404);
+    expect(redis.set).not.toHaveBeenCalled();
+  });
+
+  it('ADR 0019: sin ID token de Firebase responde 401', async () => {
+    state.auth = 'none';
+
+    const res = await request(app).post('/api/v1/rooms/room-1/end').send({});
+
+    expect(res.status).toBe(401);
+    expect(redis.set).not.toHaveBeenCalled();
+  });
+
+  it('ADR 0019: quien no es dueño de la sala recibe 403 y no se cierra nada', async () => {
     vi.mocked(isOwner).mockResolvedValue(false);
 
     const res = await request(app).post('/api/v1/rooms/room-1/end').send({});
@@ -261,6 +353,12 @@ describe('POST /internal/rooms/:id/disable (HU-LIVE-05 AC2, gracia vencida)', ()
     const res = await disable().set('X-Internal-Token', INTERNAL_SECRET).send({ reason: 'grace_expired' });
 
     expect(res.status).toBe(200);
+    expect(res.body).toEqual({
+      room_id: 'room-1',
+      status: 'disabled',
+      reason: 'grace_expired',
+      closed_at: expect.stringMatching(ISO_RE),
+    });
     expect(redis.set).toHaveBeenCalledWith('room:room-1:closed', '1');
     expect(state.disableById).toHaveBeenCalledWith('room-1');
     const message = roomClosedMessage();
@@ -270,8 +368,8 @@ describe('POST /internal/rooms/:id/disable (HU-LIVE-05 AC2, gracia vencida)', ()
     await vi.waitFor(() => expect(roomClosedFields()).toMatchObject({ room_id: 'room-1', reason: 'grace_expired' }));
     expect(state.calls).toEqual([
       'redis:set room:room-1:closed',
-      'db:disable',
       'redis:publish room:room-1:sync',
+      'db:disable',
       'redis:xadd',
     ]);
   });
@@ -286,14 +384,35 @@ describe('POST /internal/rooms/:id/disable (HU-LIVE-05 AC2, gracia vencida)', ()
     expect(redis.publish).not.toHaveBeenCalled();
   });
 
-  it('ADR 0018: un reason distinto de grace_expired responde 400', async () => {
+  it.each([
+    ['inexistente', null, 404, { error: 'Not found' }],
+    ['watch', { ...liveRoom, kind: 'watch' }, 409, { error: 'NotLive' }],
+    ['borrada', { ...liveRoom, status: 'deleted' }, 410, { error: 'Deleted' }],
+  ])('ADR 0019: sala %s responde el error de §6.1', async (_name, room, status, body) => {
+    vi.mocked(findById).mockResolvedValue(room as any);
+
+    const res = await disable().set('X-Internal-Token', INTERNAL_SECRET).send({ reason: 'grace_expired' });
+
+    expect(res.status).toBe(status);
+    expect(res.body).toEqual(body);
+    expect(redis.set).not.toHaveBeenCalled();
+  });
+
+  it('ADR 0019: un reason distinto de grace_expired responde 400', async () => {
     const res = await disable().set('X-Internal-Token', INTERNAL_SECRET).send({ reason: 'porque_si' });
 
     expect(res.status).toBe(400);
     expect(state.disableById).not.toHaveBeenCalled();
   });
 
-  it('ADR 0018: si Redis falla responde 503 y la sala sigue active (stream-core reintenta)', async () => {
+  it('ADR 0019: reason=host_ended no se acepta por la ruta interna (solo la usa la gracia) → 400', async () => {
+    const res = await disable().set('X-Internal-Token', INTERNAL_SECRET).send({ reason: 'host_ended' });
+
+    expect(res.status).toBe(400);
+    expect(redis.set).not.toHaveBeenCalled();
+  });
+
+  it('ADR 0019: si Redis falla responde 503 y la sala sigue active (stream-core reintenta)', async () => {
     redis.set.mockRejectedValueOnce(new Error('redis down'));
 
     const res = await disable().set('X-Internal-Token', INTERNAL_SECRET).send({ reason: 'grace_expired' });
@@ -357,10 +476,35 @@ describe('sala deshabilitada (HU-LIVE-09)', () => {
     expect(typeof res.body.token).toBe('string');
   });
 
-  it('HU-LIVE-05 AC4 / HU-LIVE-09 AC4: POST /rooms/:id/reactivate sobre una sala deshabilitada responde 409', async () => {
+  it('HU-LIVE-05 AC4 / HU-LIVE-09 AC4: POST /rooms/:id/reactivate sobre una sala deshabilitada responde 409 NotReactivable', async () => {
     const res = await request(app).post('/api/v1/rooms/room-1/reactivate').send({});
 
     expect(res.status).toBe(409);
+    expect(res.body).toEqual({ error: 'NotReactivable' });
     expect(redis.set).not.toHaveBeenCalled();
+  });
+
+  it('ADR 0019: reactivar responde 409 NotReactivable siempre (también con la sala activa)', async () => {
+    vi.mocked(findById).mockResolvedValue(liveRoom as any);
+
+    const res = await request(app).post('/api/v1/rooms/room-1/reactivate').send({});
+
+    expect(res.status).toBe(409);
+    expect(res.body).toEqual({ error: 'NotReactivable' });
+  });
+
+  it('ADR 0019: reactivar exige ser el dueño (403)', async () => {
+    vi.mocked(isOwner).mockResolvedValue(false);
+
+    const res = await request(app).post('/api/v1/rooms/room-1/reactivate').send({});
+
+    expect(res.status).toBe(403);
+  });
+
+  it('HU-LIVE-09: GET /rooms/:id sigue devolviendo la sala deshabilitada (con status y kind) para el dueño', async () => {
+    const res = await request(app).get('/api/v1/rooms/room-1');
+
+    expect(res.status).toBe(200);
+    expect(res.body.room).toMatchObject({ status: 'disabled', kind: 'live' });
   });
 });
