@@ -5,7 +5,7 @@ COVERAGE_MIN := 85
 NODE_SERVICES := services/identity-api
 CPP_SERVICES := services/voice-core
 
-.PHONY: up down test-all test-go test-python test-web test-node test-cpp test-stream smoke-stream load-stream load-voice e2e-voice
+.PHONY: up down test-all test-go test-python test-web test-node test-cpp test-stream smoke-stream load-stream load-voice e2e-voice e2e-stream
 
 up:
 	docker compose up -d
@@ -77,3 +77,8 @@ load-voice:
 # E2E de la voz con dos Chromium reales (ruta libre y solo TURN). Requiere la web, voice-core y coturn.
 e2e-voice:
 	services/voice-core/e2e/run.sh
+
+# E2E de la transmisión en vivo con Chromium real (spike S1, TTFF, glass-to-glass, audio, relay y gracia).
+# Levanta su propio entorno aislado (Redis, stream-core de este árbol, la web y coturn) y lo borra al terminar.
+e2e-stream:
+	services/stream-core/e2e/run.sh
