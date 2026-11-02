@@ -25,13 +25,14 @@ jobs:
       matrix:
         service: [sync-core, social-core]
     # MongoDB real para las pruebas de los metadatos del chat (social-core, ADR 0025);
-    # sin MONGO_TEST_URI esas pruebas se omiten.
+    # sin MONGO_TEST_URI esas pruebas se omiten. 7.0 y no 8.0: MongoDB 8.0+ no arranca
+    # en el kernel 6.19+ de los runners (SERVER-121912).
     services:
       mongo:
-        image: mongo:8.0
+        image: mongo:7.0
         ports: ["27017:27017"]
         options: >-
-          --health-cmd "mongosh --quiet --eval 'db.adminCommand(\"ping\").ok'"
+          --health-cmd "mongosh --quiet --eval 'db.runCommand({ping:1}).ok'"
           --health-interval 2s --health-timeout 5s --health-retries 30
     env:
       MONGO_TEST_URI: mongodb://localhost:27017

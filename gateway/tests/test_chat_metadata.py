@@ -47,7 +47,9 @@ class ChatMetadataInfraTests(unittest.TestCase):
     def test_ci_runs_social_core_against_a_real_mongo(self):
         job = yaml.safe_load(CI.read_text(encoding="utf-8"))["jobs"]["go"]
         self.assertIn("mongo", job.get("services", {}), "El job de Go necesita MongoDB para las pruebas de integración")
-        self.assertTrue(job["services"]["mongo"]["image"].startswith("mongo:8"))
+        # MongoDB 8.0+ no arranca en kernels Linux 6.19+ (los runners de GitHub):
+        # su TCMalloc choca con rseq (SERVER-121912). 7.0 soporta todo lo que usan las pruebas.
+        self.assertEqual(job["services"]["mongo"]["image"], "mongo:7.0")
         self.assertIn("MONGO_TEST_URI", job.get("env", {}))
 
 
