@@ -143,7 +143,8 @@ std::string stream_started_payload(const std::string& room_id, std::int64_t star
                         {"type", "STREAM_STARTED"},
                         {"room_id", room_id},
                         {"started_at", rfc3339_ms(started_at_ms)},
-                        {"started_at_ms", started_at_ms}}
+                        {"started_at_ms", started_at_ms},
+                        {"occurred_at", rfc3339_ms(now_ms())}}
       .dump();
 }
 
@@ -172,6 +173,10 @@ std::optional<SyncMessage> parse_sync_message(std::string_view channel, std::str
   if (type == j.end() || !type->is_string()) return std::nullopt;
   if (*type == "ROOM_CLOSED") {
     m.type = SyncMessage::Type::RoomClosed;
+    auto reason = j.find("reason");
+    if (reason != j.end() && reason->is_string())
+      m.reason =
+          sfu::parse_end_reason(reason->get_ref<const std::string&>()).value_or(sfu::EndReason::HostEnded);
     return m;
   }
   if (*type == "REVOKED") {

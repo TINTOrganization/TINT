@@ -9,8 +9,9 @@ using nlohmann::json;
 std::string stream_state(sfu::State state, std::optional<std::int64_t> grace_deadline_ms,
                          std::string_view reason) {
   json j{{"type", "stream_state"}, {"state", sfu::to_string(state)}};
-  if (grace_deadline_ms) j["grace_deadline_ms"] = *grace_deadline_ms;
-  if (!reason.empty()) j["reason"] = reason;
+  // §4: grace_deadline_ms solo con reconnecting y reason solo con ended.
+  if (grace_deadline_ms && state == sfu::State::HostGrace) j["grace_deadline_ms"] = *grace_deadline_ms;
+  if (!reason.empty() && state == sfu::State::Ended) j["reason"] = reason;
   return j.dump();
 }
 

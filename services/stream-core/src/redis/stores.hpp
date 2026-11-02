@@ -75,6 +75,8 @@ struct SyncMessage {
   enum class Type { Revoked, RoomClosed } type = Type::Revoked;
   std::string room_id;
   std::string jti;
+  // ROOM_CLOSED: host_ended | grace_expired; si falta o es desconocido, host_ended (§6.1).
+  sfu::EndReason reason = sfu::EndReason::HostEnded;
 };
 std::optional<SyncMessage> parse_sync_message(std::string_view channel, std::string_view payload);
 

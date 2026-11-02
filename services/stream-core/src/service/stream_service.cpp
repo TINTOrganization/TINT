@@ -19,7 +19,7 @@ std::uint32_t random_u32() {
 }
 
 std::string end_reason(sfu::EndReason r) {
-  return r == sfu::EndReason::GraceExpired ? "grace_expired" : "room_closed";
+  return std::string(sfu::to_string(r == sfu::EndReason::None ? sfu::EndReason::HostEnded : r));
 }
 
 }  // namespace
@@ -333,12 +333,12 @@ bool StreamService::events_stop(const std::string& room_id) {
   return ok;
 }
 
-void StreamService::on_room_closed(const std::string& room_id) {
+void StreamService::on_room_closed(const std::string& room_id, sfu::EndReason reason) {
   auto e = entry(room_id, /*create=*/true);  // aunque nadie esté conectado, la sala queda Ended
   sfu::Effects effects;
   {
     std::lock_guard lock(e->state_mu);
-    effects = e->state.on_room_closed();
+    effects = e->state.on_room_closed(reason);
   }
   if (effects.teardown)
     apply(e, effects, clock_());

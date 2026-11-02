@@ -25,6 +25,17 @@ TEST(Messages, EndedCarriesReason) {
   EXPECT_EQ(j["reason"], "grace_expired");
 }
 
+TEST(Messages, ReasonOnlyWithEndedAndDeadlineOnlyWithReconnecting) {
+  auto live = json::parse(stream_state(sfu::State::Live, 61'000, "host_ended"));
+  EXPECT_FALSE(live.contains("reason"));
+  EXPECT_FALSE(live.contains("grace_deadline_ms"));
+  auto grace = json::parse(stream_state(sfu::State::HostGrace, 61'000, "grace_expired"));
+  EXPECT_FALSE(grace.contains("reason"));
+  auto ended = json::parse(stream_state(sfu::State::Ended, 61'000, "host_ended"));
+  EXPECT_FALSE(ended.contains("grace_deadline_ms"));
+  EXPECT_EQ(ended["reason"], "host_ended");
+}
+
 TEST(Messages, ViewerCountAndScene) {
   EXPECT_EQ(json::parse(viewer_count(12)), (json{{"type", "viewer_count"}, {"count", 12}}));
   EXPECT_EQ(json::parse(scene("brb")), (json{{"type", "scene"}, {"name", "brb"}}));

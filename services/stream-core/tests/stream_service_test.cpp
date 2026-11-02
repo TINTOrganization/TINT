@@ -219,9 +219,31 @@ TEST_F(StreamServiceTest, RoomClosedTearsDownEverything) {
   svc.on_room_closed("room-1");
   EXPECT_TRUE(peer(h.session_id).peer->closed);
   EXPECT_TRUE(peer(v.session_id).peer->closed);
-  EXPECT_TRUE(peer(v.session_id).peer->has_event(R"("reason":"room_closed")"));
+  EXPECT_TRUE(peer(v.session_id).peer->has_event(R"("reason":"host_ended")"));
   EXPECT_FALSE(svc.session(h.session_id));
   EXPECT_TRUE(identity.calls.empty()) << "identity-api ya la deshabilitó";
+  ASSERT_EQ(store.ended.size(), 1u);
+  EXPECT_EQ(store.ended[0], (std::pair<std::string, std::string>{"room-1", "host_ended"}));
+}
+
+TEST_F(StreamServiceTest, RoomClosedPropagatesReasonOfTheMessage) {
+  auto v = watch("ana");
+  svc.on_room_closed("room-1", sfu::EndReason::GraceExpired);
+  EXPECT_TRUE(peer(v.session_id).peer->has_event(R"("reason":"grace_expired")"));
+  ASSERT_EQ(store.ended.size(), 1u);
+  EXPECT_EQ(store.ended[0].second, "grace_expired");
+}
+
+TEST_F(StreamServiceTest, GraceExpiryEndsWithGraceExpiredEverywhere) {
+  auto h = publish_host();
+  auto v = watch("ana");
+  host_sends_keyframe(h.session_id);
+  peer(h.session_id).callbacks.on_closed();
+  now += 60'000;
+  svc.tick();
+  EXPECT_TRUE(peer(v.session_id).peer->has_event(R"("reason":"grace_expired")"));
+  ASSERT_EQ(store.ended.size(), 1u);
+  EXPECT_EQ(store.ended[0].second, "grace_expired");
 }
 
 TEST_F(StreamServiceTest, RevokedClosesSessionsWithThatJti) {

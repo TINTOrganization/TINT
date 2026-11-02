@@ -16,6 +16,24 @@ std::string_view to_string(State state) {
   return "unknown";
 }
 
+std::string_view to_string(EndReason reason) {
+  switch (reason) {
+    case EndReason::HostEnded:
+      return "host_ended";
+    case EndReason::GraceExpired:
+      return "grace_expired";
+    case EndReason::None:
+      break;
+  }
+  return "";
+}
+
+std::optional<EndReason> parse_end_reason(std::string_view text) {
+  if (text == "host_ended") return EndReason::HostEnded;
+  if (text == "grace_expired") return EndReason::GraceExpired;
+  return std::nullopt;
+}
+
 StreamState::StreamState(std::chrono::milliseconds grace, std::chrono::milliseconds media_timeout)
     : grace_(grace), media_timeout_(media_timeout) {}
 
@@ -72,10 +90,10 @@ Effects StreamState::on_tick(std::int64_t now_ms) {
   return {};
 }
 
-Effects StreamState::on_room_closed() {
+Effects StreamState::on_room_closed(EndReason reason) {
   if (state_ == State::Ended) return {};
   state_ = State::Ended;
-  end_reason_ = EndReason::RoomClosed;
+  end_reason_ = reason == EndReason::None ? EndReason::HostEnded : reason;
   host_present_ = false;
   return {.notify_state = true, .teardown = true};
 }

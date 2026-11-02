@@ -82,7 +82,7 @@ int main() {
   redis::SyncListener listener(*endpoint, [&](const redis::SyncMessage& m) {
     boost::asio::post(workers, [&svc, m] {
       if (m.type == redis::SyncMessage::Type::RoomClosed)
-        svc.on_room_closed(m.room_id);
+        svc.on_room_closed(m.room_id, m.reason);
       else
         svc.on_revoked(m.jti);
     });

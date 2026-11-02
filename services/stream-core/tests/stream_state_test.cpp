@@ -103,11 +103,27 @@ TEST(StreamState, RoomClosedEndsFromAnyState) {
     if (start == 2) s.on_host_lost(2);
     auto e = s.on_room_closed();
     EXPECT_EQ(s.state(), State::Ended);
-    EXPECT_EQ(s.end_reason(), EndReason::RoomClosed);
+    EXPECT_EQ(s.end_reason(), EndReason::HostEnded);
     EXPECT_TRUE(e.teardown);
     EXPECT_FALSE(e.request_disable) << "identity-api ya la deshabilitó";
     EXPECT_FALSE(s.on_room_closed().teardown) << "idempotente";
   }
+}
+
+TEST(StreamState, RoomClosedKeepsTheReasonOfTheMessage) {
+  auto s = make();
+  s.on_room_closed(EndReason::GraceExpired);
+  EXPECT_EQ(s.end_reason(), EndReason::GraceExpired);
+  s.on_room_closed(EndReason::HostEnded);
+  EXPECT_EQ(s.end_reason(), EndReason::GraceExpired) << "el primer cierre manda";
+}
+
+TEST(StreamState, EndReasonNames) {
+  EXPECT_EQ(to_string(EndReason::HostEnded), "host_ended");
+  EXPECT_EQ(to_string(EndReason::GraceExpired), "grace_expired");
+  EXPECT_EQ(parse_end_reason("grace_expired"), EndReason::GraceExpired);
+  EXPECT_EQ(parse_end_reason("host_ended"), EndReason::HostEnded);
+  EXPECT_EQ(parse_end_reason("room_closed"), std::nullopt);
 }
 
 TEST(StreamState, MediaWatchdog3sTriggersHostLost) {

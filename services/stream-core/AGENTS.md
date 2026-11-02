@@ -42,8 +42,8 @@ La tabla completa de rutas y respuestas está en [dominio-transmision §3](../..
 | `room:{id}:closed` | String | identity-api | Sala deshabilitada: `410 ROOM_DISABLED`. |
 | `room:{id}:stream:enabled` | String (TTL 24 h) | stream-core | Sala `live` dada de alta por `/internal/events/start`. |
 | `room:{id}:stream:started_at` | String ms (`SET NX`, 24 h) | stream-core | Primer keyframe. Una reconexión no lo reinicia. |
-| `room:{id}:sync` | Pub/Sub | identity-api | Lee `REVOKED{jti}` y `ROOM_CLOSED`. |
-| `room:{id}:stream` | Pub/Sub | stream-core | `STREAM_STARTED{started_at, started_at_ms}` y `STREAM_ENDED{reason}`. |
+| `room:{id}:sync` | Pub/Sub | identity-api | Lee `REVOKED{jti}` y `ROOM_CLOSED{reason}` (`host_ended`\|`grace_expired`; si falta o es desconocido, `host_ended`). |
+| `room:{id}:stream` | Pub/Sub | stream-core | `STREAM_STARTED{event_id, room_id, started_at, started_at_ms, occurred_at}` y `STREAM_ENDED{event_id, room_id, reason, occurred_at}` ([§6.1](../../docs/dominio-transmision.md#61-formatos-estándar)). |
 | Salas, sesiones y viewers | Memoria | stream-core | Una réplica (ver Limitaciones). |
 
 ## Estructura
@@ -76,8 +76,9 @@ La tabla completa de rutas y respuestas está en [dominio-transmision §3](../..
    - Única excepción documentada: el mutex por capa de `NackBuffer`, porque los NACK son raros.
 4. **Instantáneas en variables.** Nunca `for (… : *viewers())`: el `shared_ptr` temporal muere antes del bucle (GCC 14 no aplica P2718). La prueba concurrente lo detectó.
 5. **Callbacks de libdatachannel.** No captures estado de la pila. `Peer::close()` desconecta los callbacks antes de cerrar.
-6. **Falla cerrado** en autorización y en el estado de la sala: sin Redis responde `503`.
-7. **Formato:** `clang-format` (Google, 110 columnas) **de la imagen dev** (clang-format 19). Otras versiones formatean distinto.
+6. **`reason` único** (`host_ended` | `grace_expired`, §6.1): el de `ROOM_CLOSED` se propaga tal cual a `stream_state{state:"ended",reason}` y a `STREAM_ENDED`; la gracia vencida local es `grace_expired`. `stream_state` lleva `reason` solo con `ended` y `grace_deadline_ms` solo con `reconnecting`.
+7. **Falla cerrado** en autorización y en el estado de la sala: sin Redis responde `503`.
+8. **Formato:** `clang-format` (Google, 110 columnas) **de la imagen dev** (clang-format 19). Otras versiones formatean distinto.
 
 ## Comandos
 ```bash

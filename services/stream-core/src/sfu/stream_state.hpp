@@ -8,9 +8,12 @@
 namespace stream::sfu {
 
 enum class State { Waiting, Live, HostGrace, Ended };
-enum class EndReason { None, RoomClosed, GraceExpired };
+// reason de cierre único (dominio-transmision §6.1): ROOM_CLOSED, STREAM_ENDED, stream_state y analítica.
+enum class EndReason { None, HostEnded, GraceExpired };
 
 std::string_view to_string(State state);
+std::string_view to_string(EndReason reason);  // "host_ended" | "grace_expired" ("" con None)
+std::optional<EndReason> parse_end_reason(std::string_view text);
 
 // Qué tiene que hacer quien llama (sin IO aquí dentro).
 struct Effects {
@@ -39,7 +42,7 @@ class StreamState {
   Effects on_host_rtp(std::int64_t now_ms, bool keyframe);
   Effects on_host_lost(std::int64_t now_ms);  // PeerConnection Disconnected/Failed/Closed o DELETE
   Effects on_tick(std::int64_t now_ms);       // vence la gracia o el watchdog de medios
-  Effects on_room_closed();                   // ROOM_CLOSED de identity-api
+  Effects on_room_closed(EndReason reason = EndReason::HostEnded);  // ROOM_CLOSED de identity-api
 
  private:
   Effects enter_grace(std::int64_t now_ms);

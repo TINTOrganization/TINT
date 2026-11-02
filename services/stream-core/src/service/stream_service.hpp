@@ -94,9 +94,10 @@ class StreamService : public http::SessionLookup {
 
   bool events_start(const std::string& room_id);  // /internal/events/start/{id}
   bool events_stop(const std::string& room_id);
-  void on_room_closed(const std::string& room_id);  // ROOM_CLOSED (identity-api)
-  void on_revoked(const std::string& jti);          // REVOKED: cierra sesiones con ese jti
-  void tick();                                      // gracia, watchdog, capas, viewer_count
+  // ROOM_CLOSED (identity-api): el reason del mensaje llega a stream_state y STREAM_ENDED.
+  void on_room_closed(const std::string& room_id, sfu::EndReason reason = sfu::EndReason::HostEnded);
+  void on_revoked(const std::string& jti);  // REVOKED: cierra sesiones con ese jti
+  void tick();                              // gracia, watchdog, capas, viewer_count
 
   // http::SessionLookup
   std::optional<http::SessionInfo> session(const std::string& session_id) override;

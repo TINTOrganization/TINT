@@ -5,6 +5,7 @@
 
 #include <cstdlib>
 #include <nlohmann/json.hpp>
+#include <regex>
 #include <thread>
 
 #include "util/uuid.hpp"
@@ -22,6 +23,22 @@ TEST(SyncMessages, ParsesRoomClosed) {
   ASSERT_TRUE(m);
   EXPECT_EQ(m->type, SyncMessage::Type::RoomClosed);
   EXPECT_EQ(m->room_id, "abc");
+  EXPECT_EQ(m->reason, sfu::EndReason::HostEnded);
+}
+
+TEST(SyncMessages, RoomClosedCarriesGraceExpiredReason) {
+  auto m = parse_sync_message("room:abc:sync", R"({"type":"ROOM_CLOSED","reason":"grace_expired"})");
+  ASSERT_TRUE(m);
+  EXPECT_EQ(m->reason, sfu::EndReason::GraceExpired);
+}
+
+TEST(SyncMessages, RoomClosedWithoutOrUnknownReasonIsHostEnded) {
+  for (auto payload : {R"({"type":"ROOM_CLOSED"})", R"({"type":"ROOM_CLOSED","reason":"room_closed"})",
+                       R"({"type":"ROOM_CLOSED","reason":42})"}) {
+    auto m = parse_sync_message("room:abc:sync", payload);
+    ASSERT_TRUE(m) << payload;
+    EXPECT_EQ(m->reason, sfu::EndReason::HostEnded) << payload;
+  }
 }
 
 TEST(SyncMessages, ParsesRevoked) {
@@ -45,10 +62,17 @@ TEST(StreamChannelPayloads, StartedAndEndedShape) {
   EXPECT_EQ(started["room_id"], "r1");
   EXPECT_EQ(started["started_at_ms"], 1'700'000'000'123);
   EXPECT_EQ(started["started_at"], "2023-11-14T22:13:20.123Z") << "RFC 3339 en UTC con milisegundos";
-  EXPECT_TRUE(started.contains("event_id"));
+  const std::regex uuid_v4("^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$");
+  const std::regex rfc3339_ms(R"(^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$)");
+  EXPECT_TRUE(std::regex_match(started["event_id"].get<std::string>(), uuid_v4));
+  ASSERT_TRUE(started.contains("occurred_at")) << "§6.1: todo mensaje del bus lleva occurred_at";
+  EXPECT_TRUE(std::regex_match(started["occurred_at"].get<std::string>(), rfc3339_ms));
   auto ended = json::parse(stream_ended_payload("r1", "grace_expired"));
   EXPECT_EQ(ended["type"], "STREAM_ENDED");
+  EXPECT_EQ(ended["room_id"], "r1");
   EXPECT_EQ(ended["reason"], "grace_expired");
+  EXPECT_TRUE(std::regex_match(ended["event_id"].get<std::string>(), uuid_v4));
+  EXPECT_TRUE(std::regex_match(ended["occurred_at"].get<std::string>(), rfc3339_ms));
 }
 
 TEST(RedisClient, UnreachableRedisFailsClosed) {
