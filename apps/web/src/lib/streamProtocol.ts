@@ -8,9 +8,19 @@ export const STREAM_EVENTS_LABEL = 'stream-events';
 /** DataChannel negociado: id fijo 0, creado antes de `createOffer` (§4). */
 export const STREAM_EVENTS_INIT: RTCDataChannelInit = { negotiated: true, id: 0 };
 
-/** Origen de stream-core (o del gateway); las rutas cuelgan de `/api/v1/stream`. */
+/** stream-core directo, para `npm run dev` sin la variable definida. */
+export const DEFAULT_STREAM_API_URL = 'http://localhost:8086';
+
+/**
+ * Origen de stream-core o del gateway; las rutas cuelgan de `/api/v1/stream`.
+ * - variable sin definir → `http://localhost:8086` (desarrollo con Vite);
+ * - variable vacía → `''`: **mismo origen** (la web servida por el gateway; Caddy enruta
+ *   `/api/v1/stream/*` a stream-core);
+ * - cualquier otro valor → ese origen.
+ */
 export function resolveStreamApiUrl(override?: string): string {
-  const base = override || import.meta.env.VITE_STREAM_API_URL || 'http://localhost:8086';
+  const configured = override ?? import.meta.env.VITE_STREAM_API_URL;
+  const base = configured === undefined ? DEFAULT_STREAM_API_URL : configured.trim();
   return base.replace(/\/+$/, '');
 }
 

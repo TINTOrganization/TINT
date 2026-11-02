@@ -22,9 +22,18 @@ describe('URLs', () => {
   it('la base sale de VITE_STREAM_API_URL (sin barra final) o del puerto local 8086', () => {
     vi.stubEnv('VITE_STREAM_API_URL', 'https://gw.test/');
     expect(resolveStreamApiUrl()).toBe('https://gw.test');
-    vi.stubEnv('VITE_STREAM_API_URL', '');
+    vi.stubEnv('VITE_STREAM_API_URL', undefined);
     expect(resolveStreamApiUrl()).toBe('http://localhost:8086');
     expect(resolveStreamApiUrl('http://x:1')).toBe('http://x:1');
+  });
+
+  it('vacía significa mismo origen (build servido por el gateway): rutas relativas', () => {
+    vi.stubEnv('VITE_STREAM_API_URL', '');
+    expect(resolveStreamApiUrl()).toBe('');
+    vi.stubEnv('VITE_STREAM_API_URL', '  ');
+    const base = resolveStreamApiUrl();
+    expect(streamRoomUrl(base, 'r1', 'whip')).toBe('/api/v1/stream/rooms/r1/whip');
+    expect(sessionUrl(base, '/api/v1/stream/sessions/s1')).toBe('/api/v1/stream/sessions/s1');
   });
 
   it('arma las rutas de sala y resuelve el Location', () => {
