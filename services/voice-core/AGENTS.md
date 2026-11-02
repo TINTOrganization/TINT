@@ -8,8 +8,9 @@ Eres el agente del **Canal de Voz** de TINT: los participantes de una sala habla
 - **Autorización:** el mismo JWT HS256 de identity-api que usan sync-core y social-core, más la revocación `token:revoked:{jti}` (falla cerrado).
 - **Señalización:** reenvía offer/answer/candidatos ICE (`signal`) solo entre miembros de la misma sala, con el remitente que fija el servidor.
 - **Moderación:** silencio propio (`self_mute`) y silencio del host (`host_mute` por WebSocket o REST), persistido en Redis para que siga vigente al volver a entrar.
+- **Salas `live` (ADR 0019):** cierre de la sala (`ROOM_CLOSED` → `4010`) y **modo escenario**: en una sala `live` solo entran a la voz el host, los cohost y los invitados al escenario (`4009` para el resto).
 
-Documento de dominio: [docs/dominio-voz.md](../../docs/dominio-voz.md) · decisión: [ADR 0015](../../docs/adr/0015-voice-core-en-cpp-con-webrtc-p2p.md).
+Documento de dominio: [docs/dominio-voz.md](../../docs/dominio-voz.md) · decisiones: [ADR 0015](../../docs/adr/0015-voice-core-en-cpp-con-webrtc-p2p.md), [ADR 0019](../../docs/adr/0019-salas-live-y-cierre-room-closed.md) (salas live, formatos en [dominio-transmision §6.1](../../docs/dominio-transmision.md#61-formatos-estándar)).
 
 ## Stack Técnico
 | Pieza | Versión | Por qué |
@@ -17,7 +18,7 @@ Documento de dominio: [docs/dominio-voz.md](../../docs/dominio-voz.md) · decisi
 | C++23 · GCC 14 (Debian trixie) / GCC 13 (Ubuntu 24.04 en CI) | — | Lenguaje nuevo del monorepo (ADR 0015); `std::expected` para errores sin excepciones. |
 | CMake ≥ 3.25 + Ninja | — | Build y `ctest`. |
 | Boost.Beast / Boost.Asio | 1.83 (paquete del sistema) | HTTP y WebSocket en un solo puerto, asíncrono. Solo cabeceras. |
-| hiredis | 1.1/1.2 | `EXISTS token:revoked:{jti}` y `PSUBSCRIBE room:*:sync`. |
+| hiredis | 1.1/1.2 | `EXISTS token:revoked:{jti}`, estado de sala (`room:{id}:closed`, `:kind`, `:voice:stage`) y `PSUBSCRIBE room:*:sync`. |
 | nlohmann/json | 3.11 | Protocolo JSON. |
 | OpenSSL (libcrypto) | 3.x | HMAC-SHA256 del JWT y comparación en tiempo constante (`CRYPTO_memcmp`). **No** se usa una librería de JWT: es una dependencia menos y el verificador tiene sus pruebas. |
 | GoogleTest / GoogleMock · gcovr | 1.14+ · 7+ | Pruebas y cobertura. |
@@ -27,9 +28,10 @@ Las versiones las fija la imagen base (`debian:trixie-slim` en el `Dockerfile`, 
 ## Límites de Dominio
 - ❌ No transporta audio ni vídeo: solo señalización. Si algún día hiciera falta un SFU, es una decisión nueva (ADR).
 - ❌ No toca el Canal Sync ni el Canal Social: si voice-core se cae, sync y chat siguen (contenedor y socket propios).
-- ❌ No lee PostgreSQL ni llama a identity-api: autoriza con el JWT y la clave de revocación en Redis.
+- ❌ No lee PostgreSQL ni llama a identity-api: autoriza con el JWT y las claves de Redis (revocación, sala cerrada, tipo de sala, escenario).
+- ❌ No escribe `room:{id}:closed` ni `room:{id}:kind` (las escribe identity-api); solo escribe sus claves `room:{id}:voice:*`.
 - ❌ Nunca expone el `jti` a otros clientes (`peer_json` no lo incluye).
-- ✅ Lee `room:{id}:sync` **solo** para `REVOKED` (mismo contrato que social-core).
+- ✅ Lee `room:{id}:sync` **solo** para `REVOKED` y `ROOM_CLOSED` (mismo contrato que social-core).
 
 ## Protocolo del Canal de Voz
 `GET /ws/voice?room_id=<id>&token=<guest token o sync-ticket>` · JSON · todo evento lleva `event_id`, `occurred_at` (reloj del emisor) y `received_at` (reloj del servidor).
@@ -47,6 +49,17 @@ Las versiones las fija la imagen base (`debian:trixie-slim` en el `Dockerfile`, 
 | C → S | `leave` | — | Sale de la voz; el servidor cierra con `1000`. |
 | S → C | `error` | `code`, `event_id_ref?` | `INVALID_MESSAGE`, `UNKNOWN_TYPE`, `MESSAGE_TOO_LARGE`, `PEER_NOT_FOUND`, `VOICE_FULL`, `HOST_MUTED`, `FORBIDDEN`, `UNAVAILABLE`. No cierra la conexión salvo `VOICE_FULL`. |
 
+**Códigos de cierre** (todos tras el upgrade, ADR 0014; tabla común en [dominio-transmision §6.1](../../docs/dominio-transmision.md#61-formatos-estándar)):
+
+| Código | Nombre | Cuándo |
+| :--- | :--- | :--- |
+| `1000` | — | `leave` del cliente. |
+| `4001` | `REVOKED` | `jti` revocado: en el handshake o por `REVOKED` en `room:{id}:sync`. |
+| `4003` | `TOKEN_EXPIRED` | Token caducado (firma válida) en el handshake. |
+| `4008` | `VOICE_FULL` | Voz llena (`VOICE_MAX_MEMBERS`), tras `error{VOICE_FULL}`. |
+| `4009` | `NOT_ON_STAGE` | Sala `live` y el usuario no es host/cohost ni está en `room:{id}:voice:stage` (handshake), o el host lo retiró con `DELETE …/stage/{user_id}`. |
+| `4010` | `ROOM_DISABLED` | La sala se deshabilitó: `room:{id}:closed` en el handshake (también para el host) o `ROOM_CLOSED` en `room:{id}:sync` (cierra a **todos**). |
+
 | Handshake | Respuesta |
 | :--- | :--- |
 | Ruta distinta de `/ws/voice` | 404 |
@@ -54,10 +67,16 @@ Las versiones las fija la imagen base (`debian:trixie-slim` en el `Dockerfile`, 
 | Falta `room_id` o `token` | 400 |
 | Firma, `alg`, `iss`, `aud`, claims o rol inválidos | 401 antes del upgrade |
 | `room_id` del token ≠ el de la URL | 403 |
-| Redis no responde (revocación o silencios) | 503 (falla cerrado) |
+| Redis no responde (revocación, estado de sala o silencios) | 503 (falla cerrado) |
 | Token caducado (firma válida) | upgrade y cierre **4003** |
 | `jti` revocado (retirado o bloqueado) | upgrade y cierre **4001** |
+| `room:{id}:closed` existe (también el host; gana sobre 4009) | upgrade y cierre **4010** |
+| `room:{id}:kind = live`, rol `participant` y `sub` fuera de `room:{id}:voice:stage` | upgrade y cierre **4009** (host y cohost entran siempre) |
 | Sala de voz llena | upgrade, `error{VOICE_FULL}` y cierre **4008** |
+
+El orden de las comprobaciones es el de la tabla: con el token revocado responde `4001` aunque la sala esté cerrada. Un `join` que llega hasta 60 s después de un `ROOM_CLOSED` (pasó el handshake justo antes del cierre) también se cierra con `4010` (`kClosedRoomMemoryMs`).
+
+**`ROOM_CLOSED`** (lo publica solo identity-api en `room:{id}:sync`): `{"type":"ROOM_CLOSED","event_id":"<uuid>","room_id":"r1","reason":"host_ended|grace_expired","occurred_at":"<RFC 3339>"}`. Se exige `event_id`, `occurred_at`, `reason` válido y `room_id` igual al del canal; si no, se descarta (§6.1). Es idempotente: uno repetido no hace nada nuevo.
 
 Mensajes de hasta 64 KiB (`kMaxMessageBytes`); uno mayor cierra la conexión.
 
@@ -75,12 +94,28 @@ Mensajes de hasta 64 KiB (`kMaxMessageBytes`); uno mayor cierra la conexión.
 
 CORS: `OPTIONS` responde `204` con `Access-Control-Allow-Methods: PUT, DELETE` y `Allow-Headers: Authorization` solo para los orígenes permitidos. Un usuario que no está en la voz también se puede silenciar: entra ya silenciado.
 
+### Escenario de las salas `live` (ADR 0019)
+`PUT` (invitar) o `DELETE` (retirar) `/api/v1/voice/rooms/{room_id}/stage/{user_id}` con `Authorization: Bearer <sync-ticket>`, mismas reglas de autorización y CORS que los silencios. Los errores van como `{"error":"UPPER_SNAKE"}` (§6.1).
+
+| Caso | Respuesta |
+| :--- | :--- |
+| Host o cohost de esa sala, `PUT` | `204`: `SADD room:{id}:voice:stage {user_id}` + `EXPIRE` 24 h (el mismo TTL que `room:{id}:voice:muted`) |
+| Host o cohost de esa sala, `DELETE` | `204`: `SREM` y, si la sala es `live`, cierra con **4009** las conexiones de ese usuario en la sala (los demás reciben `peer_left`). Host y cohost nunca se cierran. En una sala `watch` no se cierra a nadie. |
+| Rol `participant`, token de otra sala u `Origin` fuera de `ALLOWED_ORIGINS` | `403 FORBIDDEN` |
+| Sin `Bearer`, firma inválida, caducado o revocado | `401 UNAUTHORIZED` |
+| Ruta mal formada bajo `/api/v1/voice/rooms/` | `404 NOT_FOUND` |
+| Método distinto de `PUT`/`DELETE` | `405 METHOD_NOT_ALLOWED` |
+| Redis no responde (revocación, el SET o, en `DELETE`, `room:{id}:kind`) | `503 UNAVAILABLE` (el reintento es idempotente) |
+
 ## Modelo de Datos Involucrado
 | Dato | Dónde | Notas |
 | :--- | :--- | :--- |
 | Membresía de la voz | Memoria del proceso (`hub::Hub`) | **Una réplica** en esta fase (ver Limitaciones). |
 | `token:revoked:{jti}` | Redis (lo escribe identity-api) | `EXISTS` en cada handshake. |
-| `room:{id}:sync` | Redis Pub/Sub (lo publica identity-api) | `PSUBSCRIBE room:*:sync`; solo se usa `{"type":"REVOKED","jti":…}`. |
+| `room:{id}:sync` | Redis Pub/Sub (lo publica identity-api) | `PSUBSCRIBE room:*:sync`; solo se usan `REVOKED` (`{"type":"REVOKED","jti":…}` → `4001` a ese `jti`) y `ROOM_CLOSED` (→ `4010` a toda la sala). |
+| `room:{id}:closed` | Redis STRING (lo escribe identity-api, sin TTL) | `EXISTS` en cada handshake válido → `4010`. |
+| `room:{id}:kind` | Redis STRING `watch`/`live` (lo escribe identity-api) | `GET` en el handshake de un `participant` (y en `DELETE …/stage`). Sin clave = `watch`; otro tipo de dato = `503`. |
+| `room:{id}:voice:stage` | Redis SET (lo escribe voice-core) | `user_id` invitados al escenario. `SISMEMBER` en el handshake de un `participant` de una sala `live`; `SADD` + `EXPIRE` 24 h al invitar, `SREM` al retirar. |
 | `room:{id}:voice:muted` | Redis SET (lo escribe voice-core) | `user_id` silenciados por el host. `SISMEMBER` en cada handshake; `SADD` + `EXPIRE` 24 h al silenciar, `SREM` al levantar. El silencio propio **no** se persiste. |
 
 ## Estructura
@@ -90,19 +125,20 @@ CORS: `OPTIONS` responde `204` con `Access-Control-Allow-Methods: PUT, DELETE` y
 | `src/domain/voice_room` | Membresía y cupo de una sala, sin red. |
 | `src/protocol/messages` | Parseo defensivo de mensajes del cliente y construcción de los del servidor. |
 | `src/moderation/mute_store` | Interfaz `MuteStore` y `can_moderate` (host/cohost). |
+| `src/rooms/room_state` | Interfaz `RoomStateStore`: sala cerrada, sala `live` y escenario. |
 | `src/ice/ice_servers` | Credenciales TURN efímeras y lista `RTCIceServer` por usuario. |
-| `src/hub/hub` | Salas, `join`/`leave`/`revoke`, reenvío de `signal`, `self_mute`/`host_mute`/`apply_host_mute`. Thread-safe; guarda `weak_ptr<Peer>`. La escritura en Redis de `host_mute` corre en `run_blocking`, sin el mutex. |
-| `src/net/handshake` | Decisión pura del handshake (404/403/400/401/503 o 4001/4003) y lectura del silencio del host. |
-| `src/net/mute_api` | Decisión pura del REST de silencios (404/405/401/403/503 o `MuteCommand`). |
-| `src/net/server` | Boost.Beast: `/healthz`, REST de silencios con CORS, upgrade, sesiones WebSocket con cola de escritura y keep-alive. Lo que toca Redis corre en un `thread_pool` aparte. |
-| `src/redis/` | `parse_redis_url`, `open_context` compartido, `RedisRevocationChecker`, `RevokedListener` (reconexión con espera exponencial), `RedisMuteStore`. |
+| `src/hub/hub` | Salas, `join`/`leave`/`revoke`/`close_room` (4010)/`remove_from_stage` (4009), reenvío de `signal`, `self_mute`/`host_mute`/`apply_host_mute`. Thread-safe; guarda `weak_ptr<Peer>`. La escritura en Redis de `host_mute` corre en `run_blocking`, sin el mutex. |
+| `src/net/handshake` | Decisión pura del handshake (404/403/400/401/503 o 4001/4003/4010/4009) y lectura del silencio del host. |
+| `src/net/mute_api` | Decisión pura del REST de silencios y del escenario (404/405/401/403/503 o `MuteCommand`/`StageCommand`). |
+| `src/net/server` | Boost.Beast: `/healthz`, REST de silencios y del escenario con CORS, upgrade, sesiones WebSocket con cola de escritura y keep-alive. Lo que toca Redis corre en un `thread_pool` aparte. |
+| `src/redis/` | `parse_redis_url`, `open_context`, `BlockingClient` (conexión síncrona compartida con un reintento), `RedisRevocationChecker`, `RedisMuteStore`, `RedisRoomStateStore`, `parse_sync_message` y `SyncListener` (`REVOKED` y `ROOM_CLOSED`, reconexión con espera exponencial). |
 | `src/config` | Variables de entorno validadas. |
 | `src/main.cpp` | Ensamblado y señales (fuera de la cobertura). |
 
 ## Reglas de Dominio
 1. **TDD:** prueba primero (GoogleTest) y verla fallar. Cobertura de líneas ≥ **85 %** en `src/` (sin `main.cpp`), medida con gcovr.
 2. **Sanitizers:** la suite debe pasar con ASan+UBSan y con TSan (equivalente al `-race` de Go).
-3. **Falla cerrado** en autorización: sin Redis no se entra.
+3. **Falla cerrado** en autorización: sin Redis no se entra (revocación, sala cerrada, tipo de sala y escenario).
 4. **Peer asíncrono:** `Peer::send`/`close` solo encolan; el Hub los llama con su mutex tomado.
 5. **Formato:** `clang-format` (`.clang-format`, Google, 110 columnas).
 
@@ -120,7 +156,18 @@ make test-cpp     # requiere las dependencias en el host o correrlo dentro de ti
 
 # Prueba rápida contra el servicio levantado (docker compose up -d voice-core), solo stdlib
 python3 services/voice-core/scripts/smoke.py
+
+# Carga de la señalización (k6 en Docker; en CI: job voice-load-smoke con 50 VUs)
+make load-voice                       # VUS=400 DURATION=30s make load-voice para más carga
+
+# E2E con dos Chromium reales (micrófono falso), ruta libre y solo TURN; necesita la web en :5173
+make e2e-voice                        # MODES=relay services/voice-core/e2e/run.sh para un modo
 ```
+
+| Prueba | Qué mide | Umbrales / comprobaciones |
+| :--- | :--- | :--- |
+| `loadtest/voice.js` (k6) | Cada VU firma su token, entra a una sala de `ROOM_SIZE` (5), ofrece a cada peer, manda una señal por segundo, se silencia, sale a los `SESSION_S` (6 s) y vuelve; además prueba un token falso | p95 hasta `voice_state` < 300 ms · p95 de reenvío de `signal` < 100 ms · entradas ok > 99 % · token falso → 401 siempre · 0 errores |
+| `e2e/voice-e2e.cjs` (Puppeteer) | Dos navegadores aislados en `WatchRoom`, audio medido con `getStats` | Se oyen; ruta directa sin TURN (o solo TURN en modo `relay`); quién habla; silencio propio = 0 bytes; silencio del host por REST (403/204, sin audio, `<audio>` mudo, `HOST_MUTED`); reconexión tras caer la señalización; salida |
 Sanitizers: `-DVOICE_SANITIZE=address` o `-DVOICE_SANITIZE=thread`. Cobertura: `-DVOICE_COVERAGE=ON` y `gcovr --root . --filter src/ --exclude src/main.cpp build-cov --fail-under-line 85`.
 
 ## Variables de Entorno
@@ -139,3 +186,4 @@ Sanitizers: `-DVOICE_SANITIZE=address` o `-DVOICE_SANITIZE=thread`. Cobertura: `
 - **Una réplica:** la membresía vive en memoria. Varias réplicas necesitarían un registro compartido en Redis (ZSET + Pub/Sub `room:{id}:voice`). Con mesh de ≤ 8 personas la carga por sala es baja.
 - **Mesh:** cada participante envía su audio a todos los demás; por eso el cupo.
 - **Formato de `REVOKED`:** se asume `{"type":"REVOKED","jti":"…"}` (el contrato del Canal Sync v2); verificar con sync-core si cambia.
+- **Escenario solo por REST:** no hay mensaje por WebSocket para "pedir subir al escenario" ni aviso a la sala cuando alguien entra o sale del escenario; la web consulta/gestiona con el REST.

@@ -2,8 +2,8 @@
 """Prueba rápida de voice-core contra el servicio levantado (docker compose up -d voice-core).
 
 Solo usa la biblioteca estándar: fabrica los JWT con JWT_SECRET, habla WebSocket, HTTP y
-RESP (Redis) a mano. Comprueba HU-VOZ-01, 02, 04 y 05 (TURN contra coturn) de punta a punta salvo el audio,
-que es de la web.
+RESP (Redis) a mano. Comprueba HU-VOZ-01, 02, 04 y 05 (TURN contra coturn) y el cierre de sala
+y el escenario de las salas live (ADR 0019) de punta a punta salvo el audio, que es de la web.
 
     python3 services/voice-core/scripts/smoke.py
 
@@ -360,9 +360,9 @@ def _():
     ana.close()
 
 
-def mute_api(method, room_id, user_id, token=None, origin=None):
-    """PUT/DELETE /api/v1/voice/rooms/{id}/mutes/{user_id} → código HTTP."""
-    url = f"{VOICE_URL}/api/v1/voice/rooms/{urllib.parse.quote(room_id)}/mutes/{urllib.parse.quote(user_id, safe='')}"
+def mute_api(method, room_id, user_id, token=None, origin=None, resource="mutes"):
+    """PUT/DELETE /api/v1/voice/rooms/{id}/{mutes|stage}/{user_id} → código HTTP."""
+    url = f"{VOICE_URL}/api/v1/voice/rooms/{urllib.parse.quote(room_id)}/{resource}/{urllib.parse.quote(user_id, safe='')}"
     req = urllib.request.Request(url, method=method)
     if token:
         req.add_header("Authorization", f"Bearer {token}")
@@ -456,6 +456,48 @@ def _():
     assert 0 < int(expires) - time.time() <= 24 * 3600, "caduca según TURN_TTL_SECONDS"
     assert turn_allocate(turn["username"], turn["credential"]) == 0, "coturn no concedió el relay"
     assert turn_allocate(turn["username"], "clave-falsa") == 401
+
+
+@check("ADR 0019: sala live → 4009 fuera del escenario; PUT stage deja entrar y DELETE lo cierra con 4009")
+def _():
+    room = f"{ROOM}-live"
+    redis("SET", f"room:{room}:kind", "live", "EX", "600")
+    th, _ = make_token(room, "Host", role="host")
+    ta, ca = make_token(room, "Ana")
+    ana = WS(room, ta)
+    assert ana.recv() is None and ana.close_code == 4009, ana.close_code
+    host = WS(room, th)
+    host.recv_type("voice_state")
+    assert mute_api("PUT", room, ca["sub"], ta, resource="stage") == 403, "un participante no invita"
+    assert mute_api("PUT", room, ca["sub"], th, resource="stage") == 204
+    ana = WS(room, ta)
+    ana.recv_type("voice_state")
+    host.recv_type("peer_joined")
+    assert mute_api("DELETE", room, ca["sub"], th, resource="stage") == 204
+    assert ana.recv() is None and ana.close_code == 4009, ana.close_code
+    host.recv_type("peer_left")
+    host.close()
+
+
+@check("ADR 0019: ROOM_CLOSED cierra a todos con 4010 y room:{id}:closed cierra al que vuelve")
+def _():
+    room = f"{ROOM}-closed"
+    th, _ = make_token(room, "Host", role="host")
+    ta, _ = make_token(room, "Ana")
+    host = WS(room, th)
+    host.recv_type("voice_state")
+    ana = WS(room, ta)
+    ana.recv_type("voice_state")
+    host.recv_type("peer_joined")
+    redis("SET", f"room:{room}:closed", "1", "EX", "600")
+    redis("PUBLISH", f"room:{room}:sync", json.dumps({
+        "type": "ROOM_CLOSED", "event_id": str(uuid.uuid4()), "room_id": room,
+        "reason": "host_ended", "occurred_at": time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime()),
+    }))
+    for ws in (host, ana):
+        assert ws.recv() is None and ws.close_code == 4010, ws.close_code
+    again = WS(room, th)
+    assert again.recv() is None and again.close_code == 4010, again.close_code
 
 
 ok = all(r[0] for r in results)

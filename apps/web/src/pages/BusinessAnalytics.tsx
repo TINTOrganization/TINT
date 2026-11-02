@@ -16,6 +16,8 @@ export const PASSWORD_KEY = 'tint_analytics_password';
 const CLOSE_REASONS: Record<string, string> = {
   deleted: 'Borrada por el host',
   host_closed: 'Cerrada por el host',
+  // room_closed de salas live (ADR 0019, dominio-transmision §6.1).
+  host_ended: 'Evento terminado por el host',
   grace_expired: 'Por inactividad',
 };
 

@@ -20,6 +20,8 @@ const Arquitectura = lazy(() => import('./pages/Arquitectura'));
 const RoomAnalytics = lazy(() => import('./pages/RoomAnalytics'));
 // Carga diferida: panel de negocio de analítica, oculto y protegido con contraseña.
 const BusinessAnalytics = lazy(() => import('./pages/BusinessAnalytics'));
+// Carga diferida: la sala live (WHIP/WHEP, mezclador y compositor) solo la abre quien la usa.
+const LiveRoom = lazy(() => import('./pages/LiveRoom'));
 
 const page = (node: ReactNode) => <PageTransition>{node}</PageTransition>;
 
@@ -65,6 +67,8 @@ export function AnimatedRoutes({ initialData }: { initialData?: AppInitialData |
           element={page(<ProtectedRoute><Suspense fallback={null}><RoomAnalytics /></Suspense></ProtectedRoute>)}
         />
         <Route path="/watch/:roomId" element={page(<WatchRoom />)} />
+        {/* Sala live (ADR 0019): transmisión por stream-core, sin Canal Sync. */}
+        <Route path="/live/:roomId" element={page(<Suspense fallback={null}><LiveRoom /></Suspense>)} />
         <Route path="/403" element={page(<Forbidden />)} />
         {/* Ruta oculta: cuestionario del monorepo, sin enlaces desde la UI. */}
         <Route path="/test-me" element={<Suspense fallback={null}><TestMe /></Suspense>} />

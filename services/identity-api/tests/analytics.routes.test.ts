@@ -19,6 +19,7 @@ vi.mock('../src/modules/rooms/rooms.repo.js', () => ({
   setMedia: vi.fn(),
 }));
 
+vi.mock('../src/modules/rooms/rooms.create.js', () => ({ createRoomWithInvitation: vi.fn() }));
 vi.mock('../src/modules/invitations/invitations.repo.js', () => ({
   create: vi.fn(),
   findByCode: vi.fn(),
@@ -40,8 +41,9 @@ import app from '../src/app.js';
 import { env } from '../src/config/env.js';
 import { setRedisClient } from '../src/modules/tokens/revocation.js';
 import { listActiveByRoom } from '../src/modules/guests/guestSessions.repo.js';
-import { create as createRoom, findById, isOwner, softRemoveById } from '../src/modules/rooms/rooms.repo.js';
-import { create as createInvitation, findByCode } from '../src/modules/invitations/invitations.repo.js';
+import { createRoomWithInvitation } from '../src/modules/rooms/rooms.create.js';
+import { findById, isOwner, softRemoveById } from '../src/modules/rooms/rooms.repo.js';
+import { findByCode } from '../src/modules/invitations/invitations.repo.js';
 
 const ROOM_ID = '3d97d007-29c0-4cec-bb61-cb37683c3256';
 const room = { id: ROOM_ID, hostId: 'host-1', title: 'Noche de cine', status: 'active', mediaId: null, mediaKey: null };
@@ -105,8 +107,7 @@ describe('eventos de analítica emitidos por las rutas', () => {
   });
 
   it('POST /rooms publica room_created con room_id y el provider_sub del host', async () => {
-    vi.mocked(createRoom).mockResolvedValueOnce(room as any);
-    vi.mocked(createInvitation).mockResolvedValueOnce(invitation as any);
+    vi.mocked(createRoomWithInvitation).mockResolvedValueOnce({ room, invitation } as any);
     const res = await request(app).post('/api/v1/rooms').send({ title: 'Noche de cine' });
     expect(res.status).toBe(200);
     expect(events()).toEqual([expect.objectContaining({ type: 'room_created', room_id: ROOM_ID, user_id: 'firebase-uid-1' })]);
@@ -115,7 +116,7 @@ describe('eventos de analítica emitidos por las rutas', () => {
 
   it('POST /rooms no publica nada si la creación falla', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => {});
-    vi.mocked(createRoom).mockRejectedValueOnce(new Error('db down'));
+    vi.mocked(createRoomWithInvitation).mockRejectedValueOnce(new Error('db down'));
     const res = await request(app).post('/api/v1/rooms').send({ title: 'Sala' });
     expect(res.status).toBe(500);
     expect(events()).toHaveLength(0);
@@ -184,8 +185,7 @@ describe('eventos de analítica emitidos por las rutas', () => {
         expect(verify.status).toBe(200);
         expect(verify.body.isRegistered).toBe(true);
 
-        vi.mocked(createRoom).mockResolvedValueOnce(room as any);
-        vi.mocked(createInvitation).mockResolvedValueOnce(invitation as any);
+        vi.mocked(createRoomWithInvitation).mockResolvedValueOnce({ room, invitation } as any);
         const created = await request(app).post('/api/v1/rooms').send({ title: 'Noche de cine' });
         expect(created.status).toBe(200);
         expect(created.body.invitation.code).toBe('abc123def456');

@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import functools
+import json
 import logging
 import os
 import signal
@@ -31,6 +32,18 @@ API_REDIS_TIMEOUT_S = 2.0
 SHUTDOWN_TIMEOUT_S = 10.0
 
 
+class JsonFormatter(logging.Formatter):
+    def format(self, record: logging.LogRecord) -> str:
+        return json.dumps(
+            {
+                "level": record.levelname.lower(),
+                "message": record.getMessage(),
+                "correlation_id": getattr(record, "correlation_id", None),
+            },
+            ensure_ascii=False,
+        )
+
+
 def install_signal_handlers(stop: threading.Event) -> None:
     for sig in (signal.SIGTERM, signal.SIGINT):
         signal.signal(sig, lambda *_: stop.set())
@@ -44,7 +57,9 @@ def main(
     server_factory=create_server,
 ) -> int:
     env = os.environ if env is None else env
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+    logging.basicConfig(level=logging.INFO, force=True)
+    for handler in logging.getLogger().handlers:
+        handler.setFormatter(JsonFormatter())
     try:
         settings = Settings.from_env(env)
     except ConfigError as exc:

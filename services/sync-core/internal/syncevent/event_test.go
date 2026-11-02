@@ -375,3 +375,23 @@ func TestJSONContractBuffering(t *testing.T) {
 		t.Errorf("duration_ms vacío no debe serializarse: %s", out)
 	}
 }
+
+func TestValidRoomClosed(t *testing.T) {
+	ok := Event{Type: RoomClosed, RoomID: "r1", Reason: ReasonGraceExpired}
+	if !ok.ValidRoomClosed("r1") {
+		t.Error("ROOM_CLOSED válido rechazado")
+	}
+	for name, ev := range map[string]Event{
+		"otra sala":   {Type: RoomClosed, RoomID: "r2", Reason: ReasonHostEnded},
+		"sin reason":  {Type: RoomClosed, RoomID: "r1"},
+		"reason raro": {Type: RoomClosed, RoomID: "r1", Reason: "kicked"},
+		"otro tipo":   {Type: Revoked, RoomID: "r1", Reason: ReasonHostEnded},
+	} {
+		if ev.ValidRoomClosed("r1") {
+			t.Errorf("%s: debe descartarse", name)
+		}
+	}
+	if ClosedKey("r1") != "room:r1:closed" {
+		t.Errorf("ClosedKey = %q", ClosedKey("r1"))
+	}
+}

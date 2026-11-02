@@ -17,7 +17,7 @@ from media_worker.pipeline import (
     validate_extension,
     validate_video_id,
 )
-from media_worker.probe import VideoStatus
+from media_worker.probe import FailureReason, VideoStatus
 from media_worker.storage import ambilight_key
 
 
@@ -169,6 +169,7 @@ def test_video_is_not_uploaded_when_normalization_fails(upload, runner):
     status = process_video("v1", upload, repo, blobs, runner, popen)
     assert status is VideoStatus.FAILED
     assert repo.history == [("v1", "processing"), ("v1", "failed")]
+    assert repo.reasons["v1"] is FailureReason.PROCESSING_FAILED
     assert popen.calls == []
     assert blobs.objects == {}
 
@@ -223,6 +224,7 @@ def test_corrupt_video_is_never_uploaded(upload):
     status = process_video("v1", upload, repo, blobs, fake_run(returncode=1, stderr="moov"), popen)
     assert status is VideoStatus.FAILED
     assert repo.history == [("v1", "processing"), ("v1", "failed")]
+    assert repo.reasons["v1"] is FailureReason.UNREADABLE
     assert popen.calls == []
     assert blobs.objects == {}
 
@@ -233,6 +235,7 @@ def test_missing_local_file_marks_failed_without_uploading(tmp_path):
     runner = fake_run(returncode=1, stderr="No such file or directory")
     assert process_video("v1", missing, repo, blobs, runner, FakePopen()) is VideoStatus.FAILED
     assert repo.statuses["v1"] == "failed"
+    assert repo.reasons["v1"] is FailureReason.UNREADABLE
     assert blobs.objects == {}
 
 
@@ -243,6 +246,7 @@ def test_video_is_not_uploaded_when_ambilight_fails(upload, caplog):
         status = process_video("v1", upload, repo, blobs, pipeline_runner(), popen)
     assert status is VideoStatus.FAILED
     assert repo.statuses["v1"] == "failed"
+    assert repo.reasons["v1"] is FailureReason.PROCESSING_FAILED
     assert blobs.objects == {}
     assert "decode error" in caplog.text
 
@@ -393,3 +397,19 @@ def test_reprocessing_an_hd_video_overwrites_the_same_renditions(upload):
     ]
     assert repo.renditions["v1"] == [720, 360]
     assert [status for _, status in repo.history] == ["processing", "ready"] * 2
+
+
+def test_zero_duration_video_fails_with_invalid_duration(upload):
+    repo, blobs = setup()
+    runner = fake_run(stdout='{"format": {"duration": "0"}}')
+    assert process_video("v1", upload, repo, blobs, runner, FakePopen()) is VideoStatus.FAILED
+    assert repo.reasons["v1"] is FailureReason.INVALID_DURATION
+
+
+def test_a_retry_clears_the_previous_failure_reason(upload):
+    repo, blobs = setup()
+    process_video("v1", upload, repo, blobs, fake_run(returncode=1), FakePopen())
+    assert repo.reasons["v1"] is FailureReason.UNREADABLE
+    process_video("v1", upload, repo, blobs, pipeline_runner(), two_red_frames())
+    assert repo.statuses["v1"] == "ready"
+    assert "v1" not in repo.reasons

@@ -55,6 +55,20 @@ def test_build_consumer_handler_runs_handle_upload(monkeypatch):
     assert repo.conn is not None and blobs.bucket == "tint-media"
 
 
+def test_build_consumer_marks_exhausted_jobs_failed(monkeypatch):
+    redis = FakeRedis()
+    exhausted = Mock()
+    monkeypatch.setattr(entry, "mark_exhausted", exhausted)
+    consumer = entry.build_consumer(
+        ENV, redis_factory=lambda *a, **k: redis, s3_factory=Mock(), connect=Mock()
+    )
+    consumer.on_exhausted("v1")
+    video_id, repo = exhausted.call_args.args
+    assert video_id == "v1" and repo.conn is not None
+    exhausted.call_args.kwargs["publish"]({"type": "media_processed"})
+    assert redis.entries("analytics:events") == [{"type": "media_processed"}]
+
+
 def test_build_consumer_publishes_analytics_on_the_same_redis(monkeypatch):
     redis = FakeRedis()
     handled = Mock(return_value=None)

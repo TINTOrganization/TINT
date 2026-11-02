@@ -47,6 +47,7 @@ const roomWithMedia = {
   id: 'room-1',
   hostId: 'host-1',
   title: 'Cine',
+  status: 'active',
   mediaId: '11111111-1111-4111-8111-111111111111',
   mediaKey: 'videos/peli.mp4',
 };
@@ -155,7 +156,7 @@ describe('GET /rooms/:id/playback', () => {
     const { token } = issueGuestToken('room-1', 'Ana');
     const res = await request(app).get('/api/v1/rooms/room-1/playback').set('Authorization', `Bearer ${token}`);
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ mediaId: null, url: null, expiresAt: null, status: null, ambilightUrl: null, qualities: [] });
+    expect(res.body).toEqual({ mediaId: null, url: null, expiresAt: null, status: null, failureReason: null, ambilightUrl: null, qualities: [] });
     expect(presignGet).not.toHaveBeenCalled();
   });
 

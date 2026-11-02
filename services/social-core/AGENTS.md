@@ -21,6 +21,7 @@ Gestionas la interactividad de la audiencia en **TINT**: chat, reacciones con co
 - *Previsto (sin implementar):* retransmisión de colores Ambilight. Hoy la web interpola `ambilight.json` directamente (ver [ADR 0011](../../docs/adr/0011-ambilight-precalculado-por-media-worker.md)).
 - Motor de trivias y puntuación (`internal/trivia`): preguntas programadas por posición del vídeo, respuestas y rankings.
 - Moderación del chat (`internal/moderation`): modo lento y silencio; spoilers en los mensajes.
+- Cierre de sala ([ADR 0019](../../docs/adr/0019-salas-live-y-cierre-room-closed.md)): `ROOM_CLOSED` cierra con `4010`; historial del chat por REST para el host; trivia por minuto del stream en salas `live`.
 
 ## Límites de Dominio
 - ❌ No emitas ni modifiques comandos de reproducción (→ `services/sync-core`).
@@ -32,6 +33,7 @@ Gestionas la interactividad de la audiencia en **TINT**: chat, reacciones con co
 | :--- | :--- | :--- |
 | `room:{id}:heatmap` | Redis Hash | *Previsto, sin implementar:* `bucket_index → {emoji: count}` (buckets de 5 s) |
 | `video:{id}:heatmap:history` | Redis/SQL | *Previsto, sin implementar:* histórico acumulado entre sesiones |
+| `room:{id}:chat:history` | Redis List, TTL 12 h | Últimos 100 `chat_message` (más nuevo primero); el WebSocket entrega los 50 más recientes y `GET …/chat` hasta 100 |
 | `room:{id}:chat:settings` | Redis Hash, TTL 12 h | `slow_mode_s` (0 = apagado) |
 | `room:{id}:chat:muted` | Redis Set, TTL 12 h | `user_id` silenciados |
 | `room:{id}:chat:last:{sub}` | Redis String, PX = modo lento | Último mensaje aceptado de ese `sub` (`SET NX PX`; vale entre réplicas y pestañas) |
@@ -39,11 +41,16 @@ Gestionas la interactividad de la audiencia en **TINT**: chat, reacciones con co
 | `room:{id}:trivia:{tid}:state` | Redis Hash, TTL 12 h | `launched`, `opens_at_ms`, `closes_at_ms` (Lua `launch`, `HSETNX`) y `closed` (`HSETNX`) |
 | `room:{id}:trivia:{tid}:answers` | Redis Hash, TTL 12 h | `user_id → opción` (`HSETNX`: una respuesta por usuario) |
 | `room:{id}:trivia:{tid}:leaderboard` | Redis Sorted Set, TTL 12 h + 1 h | `user_id → puntos + fracción < 1` que desempata a favor de la respuesta más temprana (`trivia.LeaderboardKey`) |
-| `room:{id}:trivia:leaderboard` | Redis Sorted Set, TTL 12 h + 1 h | Ranking acumulado de la sala: `user_id → puntos` |
+| `room:{id}:trivia:leaderboard` | Redis Sorted Set, TTL 12 h + 1 h | Ranking acumulado de la sala: `user_id → puntos`. Persiste en Redis: sobrevive a reinicios de social-core |
+| `room:{id}:trivia:elapsed` | Redis Hash, TTL 12 h + 1 h | `user_id → ms` acumulados en respuestas correctas (`trivia.ElapsedKey`); desempata el acumulado a favor de quien acertó antes ([ADR 0016](../../docs/adr/0016-ranking-de-trivia-persistente-y-desempate.md)) |
 | `room:{id}:trivia:nicks` | Redis Hash, TTL 12 h + 1 h | `user_id → último nick` (para el top) |
 | `Reaction` | JSON | `user_id`, `emoji`, `position_ms` |
 | `room:{id}:social` | Redis Pub/Sub | `chat_message`, `reaction`, `laser`, `poll_state`, `chat_settings`, `trivia_question` y `trivia_result` entre réplicas (dedup por `event_id`; se re-serializan por tipo: un campo inyectado, como `correct` en `trivia_question`, se descarta) |
-| `room:{id}:sync` | Redis Pub/Sub (solo lectura) | `REVOKED` de identity-api y comandos `PLAY`/`PAUSE`/`SEEK`/`RATE`/`LOAD` de sync-core (recap y disparo de trivias) |
+| `room:{id}:sync` | Redis Pub/Sub (solo lectura) | `REVOKED` y `ROOM_CLOSED` de identity-api y comandos `PLAY`/`PAUSE`/`SEEK`/`RATE`/`LOAD` de sync-core (recap y disparo de trivias) |
+| `room:{id}:stream` | Redis Pub/Sub (solo lectura) | `STREAM_STARTED`/`STREAM_ENDED` de stream-core (trivia por minuto del stream) |
+| `room:{id}:closed` | Redis String (solo lectura) | Sala deshabilitada (identity-api, sin TTL): el handshake hace upgrade y cierra con `4010` |
+| `room:{id}:kind` | Redis String (solo lectura) | `watch` o `live` (identity-api); `live` = trivias por minuto del stream |
+| `room:{id}:stream:started_at` | Redis String (solo lectura) | `started_at_ms` del stream (stream-core, `SET NX`); reconstruye la trivia live tras un reinicio |
 | `room:{id}:poll` | Redis Hash, TTL 12 h | Encuesta actual: `id`, `question`, `options` (JSON), `n_options`, `closes_at_ms`, `closed` (solo al cerrarse, `HSETNX`) |
 | `room:{id}:poll:{pid}:votes` | Redis Hash, TTL 12 h | `user_id → índice de opción` (un voto por usuario, cambiable) |
 | `room:{id}:poll:flush` | Redis String, PX 2 s | Marca de broadcast coalescido pendiente (una réplica emite por ventana de 250 ms) |
@@ -59,7 +66,7 @@ Gestionas la interactividad de la audiencia en **TINT**: chat, reacciones con co
 | `analytics:events` | Redis Stream (solo escritura) | `chat_message`, `presence`, `reaction` y `trivia_answer` para `services/analytics` (ver abajo) |
 
 ## Protocolo del Canal Social
-JSON sobre `/ws/social`. Todo lo que se emite a la sala viaja también por `room:{id}:social` a las demás réplicas (dedup por `event_id`). Al entrar, el cliente recibe, en este orden: `history`, `chat_settings` (con Redis), el `poll_state` de la encuesta vigente (con `my_vote`), `trivia_schedule_state` (solo host/cohost) y el `trivia_question` de la pregunta abierta, si la hay.
+JSON sobre `/ws/social`. Todo lo que se emite a la sala viaja también por `room:{id}:social` a las demás réplicas (dedup por `event_id`). Al entrar, el cliente recibe, en este orden: `history`, `chat_settings` (con Redis), el `poll_state` de la encuesta vigente (con `my_vote`), `trivia_leaderboard` (ranking acumulado, si ya hay puntos), `trivia_schedule_state` (solo host/cohost) y el `trivia_question` de la pregunta abierta, si la hay.
 
 | Cliente → servidor | Quién | Respuesta / efecto |
 | :--- | :--- | :--- |
@@ -73,8 +80,10 @@ JSON sobre `/ws/social`. Todo lo que se emite a la sala viaja también por `room
 | `poll_close{event_id, room_id?, poll_id}` | Host/cohost | `poll_state{closed: true}` a la sala |
 | `recap_request{event_id, room_id?}` | Todos | `recap` solo al que lo pide |
 | `trivia_schedule{event_id, room_id?, at_ms, question, options, correct, answer_window_s?}` (`at_ms` 0..24 h de vídeo; 1..140 / 2..4 de 1..60; `correct` = índice; ventana 10..60 s, por defecto 20) | Host/cohost | `trivia_schedule_state` solo al que la programó |
+| `trivia_update{event_id, room_id?, trivia_id, at_ms, question, options, correct, answer_window_s?}` (mismas reglas que `trivia_schedule`; reemplaza la pregunta y la nueva versión es la que se dispara) | Host/cohost | `trivia_schedule_state` solo a él; `TRIVIA_NOT_FOUND` si no existe, `TRIVIA_CLOSED` si ya salió |
 | `trivia_delete{event_id, room_id?, trivia_id}` | Host/cohost | `trivia_schedule_state` solo a él; `TRIVIA_NOT_FOUND` si no existe, `TRIVIA_CLOSED` si ya salió |
 | `trivia_list{event_id, room_id?}` | Host/cohost | `trivia_schedule_state` solo a él |
+| `trivia_launch_now{event_id, room_id?, trivia_id}` | Host/cohost | Abre ya una trivia programada que aún no salió: `trivia_question` a la sala (`opens_at_ms` = ahora) y `trivia_schedule_state` solo a él. `TRIVIA_NOT_FOUND` si no existe, `TRIVIA_CLOSED` si ya salió (o la abrió otra réplica o el timer) |
 | `trivia_answer{event_id, room_id?, trivia_id, option}` (índice) | Todos (10/s, compartido con votos y recap) | `trivia_ack` solo a quien respondió; una respuesta por usuario |
 
 | Servidor → cliente | Forma |
@@ -85,11 +94,12 @@ JSON sobre `/ws/social`. Todo lo que se emite a la sala viaja también por `room
 | `trivia_schedule_state` | `{type, room_id, event_id_ref?, questions: [{trivia_id, at_ms, question, options[], correct, answer_window_s, status}]}`; `status` ∈ `pending`, `open`, `closed`; ordenadas por `at_ms`. Solo para host/cohost (lleva `correct`) |
 | `trivia_question` | `{event_id, type, room_id, trivia_id, question, options[], opens_at_ms, closes_at_ms}` (sin `correct`; horas del reloj del servidor) |
 | `trivia_ack` | `{type, room_id, event_id_ref, trivia_id, option, score}` |
-| `trivia_result` | `{event_id, type, room_id, trivia_id, correct, top: [{user_id, nick, score}] (≤ 10, de esta pregunta), leaderboard: [{user_id, nick, score}] (≤ 10, acumulado de la sala), my_score, my_total}` |
+| `trivia_leaderboard` | `{event_id, type, room_id, leaderboard: [{user_id, nick, score}] (≤ 10, acumulado de la sala; más puntos primero y, a igualdad, menos tiempo acumulado en correctas), my_rank?, my_total?}`. Se envía a **todos** al entrar si la sala ya tiene puntos (persiste en Redis); después el ranking se actualiza con cada `trivia_result` |
+| `trivia_result` | `{event_id, type, room_id, trivia_id, correct, top: [{user_id, nick, score}] (≤ 10, de esta pregunta), leaderboard: [{user_id, nick, score}] (≤ 10, acumulado de la sala), my_score, my_total, my_rank}` (`my_rank` = puesto propio en el acumulado; ausente sin puntos) |
 | `recap` | `{type, room_id, event_id_ref, top_emoji_user: {user_id, nick, count}\|null, most_paused: {position_ms, count}\|null, peak_reactions: {position_ms, count, laughs}\|null, totals: {reactions, pauses, rewinds, polls}}` |
 | `error` | `{type, code, event_id_ref?, retry_after_ms?}` (`retry_after_ms` acompaña `SLOW_MODE` y `RATE_LIMITED`) |
 
-Códigos de `error`: `INVALID_PAYLOAD` (también opción de trivia fuera de rango o más de 50 trivias programadas), `TEXT_TOO_LONG`, `INVALID_EMOJI`, `RATE_LIMITED` (con `retry_after_ms`; reacciones limitadas por `sub` e IP), `FORBIDDEN` (láser, encuestas, moderación del chat o programación de trivias sin ser host o cohost), `POLL_ACTIVE`, `POLL_CLOSED` (votar o cerrar una encuesta ya cerrada o vencida), `POLL_NOT_FOUND` (`poll_id` que no es la encuesta actual), `SLOW_MODE` (con `retry_after_ms`), `MUTED`, `TRIVIA_NOT_FOUND` (no existe o todavía no se abrió), `TRIVIA_CLOSED` (responder tras `closes_at_ms` o borrar una que ya salió), `ALREADY_ANSWERED`, `UNAVAILABLE` (sin Redis o Redis caído: encuestas, recap, moderación y trivias; con Redis caído, el `chat_send` de los participantes falla cerrado porque no se puede comprobar el silencio).
+Códigos de `error`: `INVALID_PAYLOAD` (también opción de trivia fuera de rango o más de 50 trivias programadas), `TEXT_TOO_LONG`, `INVALID_EMOJI`, `RATE_LIMITED` (con `retry_after_ms`; reacciones limitadas por `sub` e IP), `FORBIDDEN` (láser, encuestas, moderación del chat, programación o `trivia_launch_now` de trivias sin ser host o cohost), `POLL_ACTIVE`, `POLL_CLOSED` (votar o cerrar una encuesta ya cerrada o vencida), `POLL_NOT_FOUND` (`poll_id` que no es la encuesta actual), `SLOW_MODE` (con `retry_after_ms`), `MUTED`, `TRIVIA_NOT_FOUND` (no existe o todavía no se abrió), `TRIVIA_CLOSED` (responder tras `closes_at_ms`, o borrar, editar o lanzar una que ya salió), `ALREADY_ANSWERED`, `UNAVAILABLE` (sin Redis o Redis caído: encuestas, recap, moderación y trivias; con Redis caído, el `chat_send` de los participantes falla cerrado porque no se puede comprobar el silencio).
 
 **Host/cohost** = un HS256 de identity-api ligado a la sala con `role` `host` o `cohost` (el sync-ticket). Un Firebase ID token no dice de qué sala es dueño el usuario, así que **no** da permisos de moderación (falla cerrado): la web debe abrir `/ws/social` con el sync-ticket para usar láser, encuestas, moderación del chat y trivias (y para quedar exenta del modo lento y del silencio).
 
@@ -103,6 +113,7 @@ Códigos de `error`: `INVALID_PAYLOAD` (también opción de trivia fuera de rang
 
 **Trivias:**
 - **Disparo:** cada réplica con clientes en la sala mantiene un timer hacia la próxima pregunta pendiente con `at_ms ≥ posición`, donde posición = `recap.Store.Position(now)` = `pos + (now − seen_at_ms) × rate` desde `last_pos`. Se rearma en cada evento de sync del relay, al programar o borrar y al entrar alguien; solo hay timer si el vídeo se reproduce. Al vencer, el Lua `launch` (`HSETNX launched`) deja que una sola réplica emita `trivia_question`. Un `SEEK` que salta la marca no la dispara: queda pendiente y sale si se vuelve atrás. Si el timer vence con la posición más de 1 s por debajo de la marca (un evento perdido), no lanza y se rearma.
+- **Salas `live`** (`room:{id}:kind == "live"`, [dominio-transmision §6.1](../../docs/dominio-transmision.md#61-formatos-estándar)): no hay vídeo; la posición es el minuto del stream, `now − started_at_ms` (reloj del servidor, velocidad 1), así que una trivia con `at_ms` se abre en `started_at_ms + at_ms`. `started_at_ms` llega en `STREAM_STARTED` por `room:{id}:stream`; uno repetido con el mismo valor no reprograma (uno con otro valor, sí). Sin `STREAM_STARTED`, lo programado queda pendiente; tras un reinicio se reconstruye con `GET room:{id}:stream:started_at`. `STREAM_ENDED` cancela lo pendiente. Como en `watch`, una marca que ya pasó cuando se programa no se dispara (se usa `trivia_launch_now`). Si Redis no responde al leer `kind`, no se dispara nada. En salas `watch` nada cambia.
 - **Relojes:** la proyección usa `seen_at_ms` (reloj de social-core al procesar el evento de sync), nunca `updated_at_ms` (reloj de sync-core). `elapsed` de una respuesta = `now(servidor) − opens_at_ms`; el reloj del cliente no interviene.
 - **Puntaje:** `trivia.Score(correcta, elapsed)`: 0 si falla; 1000 + bono lineal hasta 1000 si acierta dentro de 10 s. `trivia_ack` devuelve ese puntaje al instante (así que revela si acertó antes del cierre).
 - **Cierre:** cada réplica agenda el cierre a `closes_at_ms` (al lanzarla o al ver el `trivia_question` de otra); `HSETNX closed` deja que una sola emita `trivia_result`. Entre réplicas viaja sin `my_score`/`my_total` y cada una lo personaliza para sus conexiones (puntos de esta pregunta y acumulados; 0 si no respondió). Una pregunta vencida que nadie cerró (réplicas reiniciadas) se cierra cuando alguien entra.
@@ -118,7 +129,25 @@ El verificador se elige por el `alg` del header del token; nada se acepta sin fi
 | HS256 (guest token o sync-ticket de identity-api) | Invitado | Firma con `JWT_SECRET`, `iss` = `JWT_ISSUER`, `aud` = `JWT_AUDIENCE`, `exp` obligatorio, `sub` y `jti` no vacíos, `room_id` = sala (si no, 403). Un HS256 inválido **no** cae al camino de host. |
 | RS256 (Firebase ID token) | Host | Firma contra el certificado del `kid` ([certificados públicos de Google](https://www.googleapis.com/robot/v1/metadata/x509/securetoken@system.gserviceaccount.com), caché según `Cache-Control max-age`, refetch ante `kid` desconocido como mucho 1/min); `iss` = `https://securetoken.google.com/<FIREBASE_PROJECT_ID>`, `aud` = `FIREBASE_PROJECT_ID`, `exp` e `iat` obligatorios, `sub` no vacío. Sin `FIREBASE_PROJECT_ID` o sin certificados → 401. |
 
-**Revocación (contrato con identity-api):** en el handshake se consulta `EXISTS token:revoked:{jti}` (revocado → 401; Redis caído → 503). La suscripción Pub/Sub de cada sala con clientes locales escucha también `room:{id}:sync` y, ante `type: "REVOKED"`, cierra con **4001** los sockets de ese `jti` (borrar una sala revoca todos sus `jti`). Sin `REDIS_URL` (modo memoria) no hay fuente de revocación.
+**Handshake ([ADR 0014](../../docs/adr/0014-upgrade-y-cierre-4xxx-para-estados-terminales.md)):** los estados terminales hacen upgrade y cierran con un código `4xxx` (el `Origin` se comprueba antes, en el upgrade: fuera de `ALLOWED_ORIGINS` → 403):
+
+| Situación | Respuesta |
+| :--- | :--- |
+| Sin token, firma inválida, `iss`/`aud` incorrectos o `alg` desconocido | `401` sin upgrade |
+| HS256 de otra sala (aunque esté caducado) | `403` sin upgrade |
+| Bien firmado y de la sala, pero caducado | Upgrade + cierre **`4003`** `TOKEN_EXPIRED` |
+| `EXISTS token:revoked:{jti}` | Upgrade + cierre **`4001`** `REVOKED` |
+| `EXISTS room:{id}:closed` ([ADR 0019](../../docs/adr/0019-salas-live-y-cierre-room-closed.md)) | Upgrade + cierre **`4010`** `ROOM_DISABLED`, sin `history` |
+| Redis no responde a cualquiera de las dos consultas | `503` sin upgrade (falla cerrado) |
+
+**Revocación y cierre de sala (contrato con identity-api):** la suscripción Pub/Sub de cada sala con clientes locales escucha también `room:{id}:sync`: ante `REVOKED` cierra con **4001** los sockets de ese `jti` (borrar una sala revoca todos sus `jti`); ante `ROOM_CLOSED` cierra con **4010** todos los sockets de la sala, host incluido (repetirlo no hace nada nuevo). Los mensajes del bus (`ROOM_CLOSED`, `STREAM_*`) se validan contra [§6.1](../../docs/dominio-transmision.md#61-formatos-estándar) y se descartan si están mal formados: `event_id` no vacío, `room_id` igual a la sala del canal, `reason` ∈ {`host_ended`, `grace_expired`} en `ROOM_CLOSED`/`STREAM_ENDED` y `started_at_ms` entero > 0 en `STREAM_STARTED`. Sin `REDIS_URL` (modo memoria) no hay fuente de revocación ni de cierre.
+
+## REST
+| Ruta | Quién | Éxito | Errores |
+| :--- | :--- | :--- | :--- |
+| `GET /api/v1/social/rooms/{id}/chat` (`Authorization: Bearer <sync-ticket>`) | Host/cohost de esa sala (HS256); también con la sala deshabilitada (HU-LIVE-09 AC3) | `200 {"room_id","messages":[chat_message…]}`: los mismos objetos del WebSocket, del más antiguo al más nuevo, máx. 100 (mientras dure la clave: 12 h) | `401 {"error":"UNAUTHORIZED"}` (sin token, firma inválida, caducado o revocado) · `403 {"error":"FORBIDDEN"}` (participante, Firebase ID token o sala ajena) · `503 {"error":"UNAVAILABLE"}` (sin Redis o Redis caído) |
+
+Sin cabeceras CORS: como `/ws/social`, se sirve por el gateway en el mismo origen que la web.
 
 **Conexiones:** ping cada 20 s (10 s para el pong) y plazo de 5 s por escritura; una conexión muerta se corta y emite el aviso de salida. Los orígenes del handshake se limitan con `ALLOWED_ORIGINS`.
 

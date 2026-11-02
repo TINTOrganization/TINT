@@ -234,7 +234,7 @@ sequenceDiagram
     and Canal Social
         SO->>ID: "POST /rooms/:id/sync-ticket (solo host)"
         SO->>SOC: WS /ws/social
-        SOC-->>SO: "history, chat_settings, poll_state, trivia_schedule_state (host), trivia_question abierta"
+        SOC-->>SO: "history, chat_settings, poll_state, trivia_leaderboard, trivia_schedule_state (host), trivia_question abierta"
     end
 
     loop Cada latido
@@ -256,7 +256,7 @@ Detalles que conviene saber:
 - **El cliente no calcula el drift para corregir**: solo aplica lo que ordena sync-core (`drift.ts`). La única telemetría que envía es `BUFFERING` (stalls medidos por `stallTracker.ts`), por el mismo Canal Sync.
 - **`canControl`** lo decide el servidor (`STATE.can_control`/`CONTROL`); el host lo asume `true` hasta el primer `STATE`.
 - **Autoplay**: si `video.play()` se rechaza, `SyncedPlayer` muestra un botón para unirse con un gesto.
-- `useRoomPlayback` vuelve a pedir el playback al cambiar el `media_id` del estado sync, ~1 min antes de `expiresAt`, y cada 5 s (máx. 120) mientras el vídeo está `pending`/`processing`, sin cambiar el `src` del original.
+- `useRoomPlayback` vuelve a pedir el playback al cambiar el `media_id` del estado sync, ~1 min antes de `expiresAt`, y cada 5 s (máx. 120) mientras el vídeo está `pending`/`processing`, sin cambiar el `src` del original. Si el vídeo termina en `failed`, el hook expone `failureReason` (el código que guarda media-worker); `WatchRoom` muestra al **host** un mensaje específico (formato no soportado, archivo ilegible, duración inválida, subida incompleta o fallo al preparar el vídeo) en la barra de estado y en el reproductor vacío, y a los invitados el texto genérico de siempre. Sin motivo (worker anterior) o con un código desconocido, todos ven el genérico.
 
 ### 3.4 El host cambia de vídeo
 
@@ -279,12 +279,16 @@ sequenceDiagram
         CV->>ID: "PUT /rooms/:id/media {videoId}"
         ID-->>CV: "{mediaId}"
     else Subir nuevo
+        CV->>ID: "GET /uploads/limits (al abrir el panel)"
+        ID-->>CV: "{maxUploadBytes} → «Tamaño máximo: 2.0 GB»"
         H->>CV: elige un archivo video/*
+        Note over CV: "si pesa más que el máximo: «El archivo pesa X y el máximo es Y», sin llamar a la API"
         CV->>ID: "POST /rooms/:id/media/uploads {filename, contentType, sizeBytes}"
         ID-->>CV: "{videoId, uploadUrl, headers, expiresAt}"
         CV->>MI: "XHR PUT uploadUrl (cabeceras exactas, sin Authorization)"
         MI-->>CV: "upload.onprogress → Subiendo… N %"
         Note over CV,MI: Cancelar aborta el XHR con un AbortSignal
+        CV->>ID: "DELETE /rooms/:id/media/uploads/:videoId (si la subida se corta, se cancela o falla la confirmación)"
         CV->>ID: POST /rooms/:id/media/uploads/:videoId/complete
         ID-->>CV: "{mediaId}"
         CV->>ID: "GET /videos (recarga la biblioteca)"
@@ -296,6 +300,10 @@ sequenceDiagram
     ID-->>PB: "url, status pending o processing"
     PB->>PB: "re-consulta cada 5 s hasta ready (ambilightUrl y qualities)"
 ```
+
+El **límite de tamaño** lo informa identity-api (`GET /uploads/limits`, `fetchUploadLimit`): el panel lo muestra junto al selector y rechaza antes de subir un archivo mayor; si el endpoint falla no hay pre-chequeo y decide el servidor, cuyo 413 también trae `maxUploadBytes` (`ApiError.body`) para mostrarlo en el mensaje. Una **subida interrumpida** (corte de red, «Cancelar subida», panel desmontado o fallo al confirmar) llama a `cancelUpload` (`DELETE …/uploads/:videoId`, sin bloquear ni lanzar) para que el reintento empiece limpio; si no llegó, identity-api limpia las filas `pending` abandonadas al reservar la siguiente. `apiFetch` devuelve `null` en las respuestas `204`.
+
+**La biblioteca se mantiene al día:** mientras el panel está abierto y algún vídeo de "Mis vídeos" no está `ready`, `ChangeVideoPanel` vuelve a pedir `GET /videos` cada 5 s (`LIBRARY_POLL_MS`, `libraryPollMs`), así la tarjeta pasa de "Preparando…" a "Listo" sin cerrar y reabrir el panel (antes la lista solo se descargaba al abrirlo y quedaba desfasada respecto de la barra de estado del reproductor). Cada `GET /videos` firma URLs de miniatura nuevas, así que el refresco pasa por `mergeLibrary` (`lib/videos.ts`): cada vídeo conserva su `previewUrl` mientras su estado no cambie (al pasar a `ready` adopta la 360p) y, si no cambió nada más, la lista no se vuelve a pintar; sin eso, el `src` de todas las miniaturas cambiaba cada 5 s y el navegador las recargaba (parpadeo y salto de layout). Se detiene cuando todos están listos o al cerrar el panel; un fallo de red no muestra error y se reintenta.
 
 Si el socket no está abierto al confirmar, el panel guarda el `mediaId` y ofrece reintentar el aviso a la sala. Los errores se traducen a mensajes simples (`uploadErrorMessage`, `assignVideoErrorMessage`), sin jerga como HTTP, MinIO o bucket.
 
@@ -376,6 +384,7 @@ sequenceDiagram
     TP->>SO: "scheduleTrivia (validateTriviaDraft)"
     SO->>SOC: "trivia_schedule {at_ms, question, options, correct, answer_window_s}"
     SO->>SOC: trivia_list
+    Note over TP,SOC: "Editar (solo Pendiente): updateTrivia → trivia_update {trivia_id, …} reemplaza la pregunta antes de que salga"
     SOC-->>TP: "trivia_schedule_state (Pendiente · En curso · Terminada)"
     Note over SOC: social-core decide el disparo exacto
     SOC-->>POP: "trivia_question {trivia_id, options, opens_at_ms, closes_at_ms}"
@@ -384,7 +393,7 @@ sequenceDiagram
     POP->>SO: answerTrivia
     SO->>SOC: trivia_answer
     SOC-->>POP: "trivia_ack (solo Respuesta enviada, no revela si acertó)"
-    SOC-->>POP: "trivia_result {correct, top, leaderboard, my_score, my_total}"
+    SOC-->>POP: "trivia_result {correct, top, leaderboard, my_score, my_total, my_rank}"
 ```
 
 El puntaje lo calcula social-core. La cuenta regresiva se ancla al reloj local de llegada para **no comparar relojes** de cliente y servidor.
@@ -470,13 +479,15 @@ stateDiagram-v2
 
 | Cierre o error | Canal Sync (`useSyncSocket`) | Qué ve el usuario (`WatchRoom`) |
 | :--- | :--- | :--- |
-| `4001` (revocado) | No reconecta; el invitado borra `tint_guest_token`; `revoked = true`. | "Fuiste retirado de la sala por el host" (o "El host terminó la sala" si el vídeo ya había terminado). |
-| `4003` (token caducado) | Invitado: no reconecta y borra el token. Host: pide un sync-ticket nuevo **una vez** (se rearma al recibir `STATE`); si se repite, se rinde. `expired = true`. | "Tu invitación expiró" o "Tu sesión de sincronía caducó". |
+| `4001` (revocado) | No reconecta (Sync y Social); el invitado borra `tint_guest_token`; `revoked = true`. | "Fuiste retirado de la sala por el host" (o "El host terminó la sala" si el vídeo ya había terminado). |
+| `4003` (token caducado) | Invitado (Sync y Social): no reconecta y borra el token. Host: pide un sync-ticket nuevo **una vez** (se rearma al recibir `STATE`); si se repite, se rinde. `expired = true`. | "Tu invitación expiró" o "Tu sesión de sincronía caducó". |
 | sync-ticket 403 / 404 / 410 | `fatalError = NOT_HOST / ROOM_GONE`, sin reintentos. | "No eres el host de esta sala" o "La sala ya no existe". |
 | `GET /playback` 401/403 (invitado) | `useRoomPlayback` borra el token y expone `revoked`. | "Tu invitación ya no es válida". |
 | Cualquier otro cierre | Reintento con backoff; `reconnect = {attempt, nextRetryAt}`. | "Reconectando… intento N · S s" sin desmontar el reproductor. |
 
-El **Canal Social** no distingue códigos: reconecta siempre, salvo que el sync-ticket responda 403/404/410 (`status: 'closed'`). Al revocar, el invitado pierde `tint_guest_token`, `WatchRoom` deja de tener acceso y `useSocialSocket` recibe `roomId` indefinido, que cierra el socket social. Solo el socket vigente puede programar reconexiones: el cierre tardío de un socket viejo (StrictMode, limpieza) se ignora.
+El **Canal Social** (`useSocialSocket`) aplica los mismos cierres terminales: `4001` borra `tint_guest_token`, expone `revoked = true`, queda `closed` y no vuelve a reconectar (antes reconectaba siempre y entraba en bucle, porque social-core hace el upgrade y cierra con `4001` en cada intento); `4003` de un invitado expone `expired = true` y tampoco reconecta (el host sí: pide un ticket nuevo en cada intento). `WatchRoom` expulsa si **cualquiera** de los dos canales dice `revoked` (o `expired`), así que un ban saca al participante de la sala aunque solo el chat haya recibido el cierre. Sigue reconectando ante cualquier otro cierre, salvo que el sync-ticket responda 403/404/410 (`status: 'closed'`). 
+
+**Red de seguridad (`useRevocationProbe`).** En Chromium el cierre `4001` puede llegar como `1006` ("Close received after close": al responder el navegador el cierre, sync-core y social-core envían una segunda trama de cierre y el navegador aborta la conexión), así que el invitado nunca vería el código y reconectaría para siempre con la sala a la vista. Mientras algún canal esté reconectando, un invitado consulta `GET /rooms/:id/playback` de inmediato y cada 3 s: un **401/403** (token revocado o de otra sala) es una expulsión (borra `tint_guest_token`, `WatchRoom` muestra "Fuiste retirado de la sala por el host"); un fallo de red o un 5xx no expulsa y se vuelve a preguntar. Se detiene al recuperarse la conexión. Así el ban expulsa en ~1 s aunque el código de cierre no llegue.Solo el socket vigente puede programar reconexiones: el cierre tardío de un socket viejo (StrictMode, limpieza) se ignora.
 
 ---
 
@@ -529,11 +540,12 @@ Copia `.env.example` a `.env` (nunca lo subas). Todas las variables son opcional
 
 | Variable | Por defecto | Para qué |
 | :--- | :--- | :--- |
-| `VITE_IDENTITY_API_URL` | `http://localhost:8081/api/v1` | identity-api (REST). |
-| `VITE_SYNC_WS_URL` | `ws://localhost:8083/ws/sync` | Canal Sync de sync-core. |
-| `VITE_SOCIAL_WS_URL` | `ws://localhost:8082/ws/social` | Canal Social de social-core. |
+| `VITE_IDENTITY_API_URL` | `/api/v1` | identity-api (REST) a través del gateway. |
+| `VITE_SYNC_WS_URL` | `/ws/sync` | Canal Sync de sync-core a través del gateway (`wss` bajo HTTPS). |
+| `VITE_SOCIAL_WS_URL` | `/ws/social` | Canal Social de social-core a través del gateway (`wss` bajo HTTPS). |
+| `VITE_VOICE_WS_URL` | `/ws/voice` | Señalización del Canal de Voz a través del gateway (`wss` bajo HTTPS). |
 | `VITE_SYNC_ENCODING` | `json` | `json` o `msgpack` (pide el subprotocolo `tint.sync.msgpack`; si sync-core no lo acepta, sigue en JSON). |
-| `VITE_ANALYTICS_API_URL` | `http://localhost:8084/api/v1` | API de lectura de analytics. |
+| `VITE_ANALYTICS_API_URL` | `/api/v1` | API de lectura de analytics a través del gateway. |
 | `VITE_DEMO_VIDEO_URL` | vacío | Vídeo de respaldo, solo si la sala no tiene vídeo (`mediaId: null`). |
 | `VITE_FIREBASE_API_KEY` · `VITE_FIREBASE_AUTH_DOMAIN` · `VITE_FIREBASE_PROJECT_ID` | `test` | Configuración del cliente de Firebase Auth (login del host). |
 

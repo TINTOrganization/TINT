@@ -1,12 +1,15 @@
-const API_URL = import.meta.env.VITE_IDENTITY_API_URL || 'http://localhost:8081/api/v1';
+const API_URL = import.meta.env.VITE_IDENTITY_API_URL || '/api/v1';
 
 export class ApiError extends Error {
   readonly status: number;
+  /** Cuerpo JSON de la respuesta de error (p. ej. `maxUploadBytes` del 413), si lo había. */
+  readonly body: Record<string, unknown> | null;
 
-  constructor(status: number, message: string) {
+  constructor(status: number, message: string, body: Record<string, unknown> | null = null) {
     super(message);
     this.name = 'ApiError';
     this.status = status;
+    this.body = body;
   }
 }
 
@@ -110,8 +113,10 @@ export async function apiFetch(path: string, options: RequestInit = {}, auth: Ap
     }
   }
   if (!res.ok) {
-    const data = (await res.json().catch(() => null)) as { error?: string } | null;
-    throw new ApiError(res.status, data?.error || `API error ${res.status}`);
+    const data = (await res.json().catch(() => null)) as ({ error?: string } & Record<string, unknown>) | null;
+    throw new ApiError(res.status, data?.error || `API error ${res.status}`, data);
   }
+  // 204 No Content (p. ej. DELETE): no hay cuerpo que leer.
+  if (res.status === 204) return null;
   return res.json();
 }

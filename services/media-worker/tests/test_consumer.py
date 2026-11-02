@@ -83,8 +83,8 @@ def test_invalid_event_is_acked_and_discarded(caplog):
     assert message_id in caplog.text
 
 
-def test_run_survives_handler_errors_and_retries_pending():
-    """Un fallo de infraestructura no tumba el worker: el evento queda pendiente y se reintenta."""
+def test_run_retries_a_failed_event_and_then_succeeds():
+    """Un fallo temporal no tumba el worker: el evento se reintenta con `attempt` incrementado."""
     redis = FakeRedis()
     stop = threading.Event()
     redis.xadd(STREAM_KEY, {"video_id": "a"})
@@ -101,37 +101,126 @@ def test_run_survives_handler_errors_and_retries_pending():
     assert calls == ["a", "a"]
     assert redis.pending == {}
     assert sleeps == [5.0]
+    assert redis.entries(STREAM_KEY) == [{"video_id": "a"}, {"video_id": "a", "attempt": "2"}]
 
 
-def test_run_keeps_going_when_the_retry_also_fails(caplog):
+def test_failed_event_is_acked_and_requeued_with_the_next_attempt(caplog):
+    redis = FakeRedis()
+    message_id = redis.xadd(STREAM_KEY, {"video_id": "a"})
+    sleeps = []
+    handler = Mock(side_effect=ConnectionError("postgres caído"))
+    with caplog.at_level(logging.WARNING, logger="media_worker.consumer"):
+        make_consumer(redis, handler, sleep=sleeps.append).poll()
+    assert redis.acks == [message_id]
+    assert redis.pending == {}
+    assert redis.entries(STREAM_KEY)[-1] == {"video_id": "a", "attempt": "2"}
+    assert sleeps == [5.0]
+    assert "a" in caplog.text and "intento 1/3" in caplog.text and "postgres caído" in caplog.text
+
+
+@pytest.mark.parametrize("attempt", [None, "", "x", "0", "-3"])
+def test_missing_or_invalid_attempt_counts_as_the_first(attempt):
+    redis = FakeRedis()
+    fields = {"video_id": "a"} if attempt is None else {"video_id": "a", "attempt": attempt}
+    redis.xadd(STREAM_KEY, fields)
+    make_consumer(redis, Mock(side_effect=OSError()), sleep=lambda _s: None).poll()
+    assert redis.entries(STREAM_KEY)[-1]["attempt"] == "2"
+
+
+def test_exhausted_retries_move_the_job_to_failed_and_log_the_reason(caplog):
+    redis = FakeRedis()
+    message_id = redis.xadd(STREAM_KEY, {"video_id": "a", "attempt": "3"})
+    exhausted = Mock()
+    handler = Mock(side_effect=ConnectionError("minio caído"))
+    consumer = make_consumer(redis, handler, on_exhausted=exhausted, sleep=lambda _s: None)
+    with caplog.at_level(logging.ERROR, logger="media_worker.consumer"):
+        consumer.poll()
+    exhausted.assert_called_once_with("a")
+    assert redis.acks == [message_id]
+    assert len(redis.entries(STREAM_KEY)) == 1
+    assert "reintentos agotados" in caplog.text and "minio caído" in caplog.text
+
+
+def test_exhausted_retries_without_a_callback_are_only_acked():
+    redis = FakeRedis()
+    redis.xadd(STREAM_KEY, {"video_id": "a", "attempt": "3"})
+    make_consumer(redis, Mock(side_effect=OSError())).poll()
+    assert redis.pending == {}
+    assert len(redis.entries(STREAM_KEY)) == 1
+
+
+def test_max_attempts_is_configurable():
+    redis = FakeRedis()
+    redis.xadd(STREAM_KEY, {"video_id": "a"})
+    exhausted = Mock()
+    consumer = make_consumer(
+        redis, Mock(side_effect=OSError()), on_exhausted=exhausted, max_attempts=1
+    )
+    consumer.poll()
+    exhausted.assert_called_once_with("a")
+
+
+def test_exhausted_callback_error_leaves_the_message_pending():
+    redis = FakeRedis()
+    message_id = redis.xadd(STREAM_KEY, {"video_id": "a", "attempt": "3"})
+    exhausted = Mock(side_effect=ConnectionError("postgres caído"))
+    consumer = make_consumer(redis, Mock(side_effect=OSError()), on_exhausted=exhausted)
+    with pytest.raises(ConnectionError):
+        consumer.poll()
+    assert redis.acks == []
+    assert (STREAM_KEY, message_id) in redis.pending
+
+
+def test_run_gives_up_after_the_maximum_attempts_without_blocking_the_queue():
     redis = FakeRedis()
     stop = threading.Event()
-    redis.xadd(STREAM_KEY, {"video_id": "a"})
+    redis.xadd(STREAM_KEY, {"video_id": "bad"})
+    redis.xadd(STREAM_KEY, {"video_id": "good"})
+    seen, exhausted = [], []
+
+    def handler(video_id):
+        seen.append(video_id)
+        if video_id == "bad":
+            raise ValueError("ffmpeg murió")
+
+    def on_exhausted(video_id):
+        exhausted.append(video_id)
+        stop.set()
+
+    make_consumer(redis, handler, on_exhausted=on_exhausted, sleep=lambda _s: None).run(stop)
+    assert seen == ["bad", "good", "bad", "bad"]
+    assert exhausted == ["bad"]
+    assert redis.pending == {}
+
+
+def test_redis_errors_leave_the_message_pending_and_run_retries_it():
+    """Si Redis falla al reencolar, el evento sigue pendiente y `run` lo recupera."""
+    redis = FakeRedis()
+    stop = threading.Event()
+    message_id = redis.xadd(STREAM_KEY, {"video_id": "a"})
     calls = []
 
     def handler(video_id):
         calls.append(video_id)
-        if len(calls) <= 2:
+        if len(calls) == 1:
             raise ConnectionError("minio caído")
         stop.set()
 
+    real_xadd = redis.xadd
+    failures = iter([ConnectionError("redis caído")])
+
+    def flaky_xadd(*args, **kwargs):
+        error = next(failures, None)
+        if error:
+            raise error
+        return real_xadd(*args, **kwargs)
+
+    redis.xadd = flaky_xadd
     sleeps = []
-    with caplog.at_level(logging.ERROR, logger="media_worker.consumer"):
-        make_consumer(redis, handler, sleep=sleeps.append).run(stop)
-    assert calls == ["a", "a", "a"]
-    assert sleeps == [5.0, 5.0]
-    assert caplog.text.count("se reintenta") == 2
-    assert redis.pending == {}
-
-
-def test_handler_error_leaves_message_pending():
-    redis = FakeRedis()
-    message_id = redis.xadd(STREAM_KEY, {"video_id": "a"})
-    handler = Mock(side_effect=ConnectionError("postgres caído"))
-    with pytest.raises(ConnectionError):
-        make_consumer(redis, handler).poll()
-    assert redis.acks == []
-    assert (STREAM_KEY, message_id) in redis.pending
+    make_consumer(redis, handler, sleep=sleeps.append).run(stop)
+    assert calls == ["a", "a"]
+    assert (STREAM_KEY, message_id) not in redis.pending
+    assert sleeps == [5.0]
 
 
 def test_fake_redis_keeps_streams_apart():
@@ -148,8 +237,7 @@ def test_fake_redis_keeps_streams_apart():
 def test_recover_pending_retries_unacked_messages_after_restart():
     redis = FakeRedis()
     redis.xadd(STREAM_KEY, {"video_id": "a"})
-    with pytest.raises(ConnectionError):
-        make_consumer(redis, Mock(side_effect=ConnectionError())).poll()
+    redis.xreadgroup(CONSUMER_GROUP, "w1", {STREAM_KEY: ">"}, count=1)  # entregado y sin ACK
     handler = Mock()
     assert make_consumer(redis, handler).recover_pending() == 1
     handler.assert_called_once_with("a")
@@ -205,3 +293,88 @@ def test_run_returns_immediately_when_already_stopped():
     make_consumer(redis, handler).run(stop)
     handler.assert_not_called()
     assert redis.groups == {(STREAM_KEY, CONSUMER_GROUP)}
+
+
+def test_claim_stale_takes_over_jobs_left_by_a_dead_worker():
+    redis = FakeRedis()
+    message_id = redis.xadd(STREAM_KEY, {"video_id": "a"})
+    redis.xreadgroup(CONSUMER_GROUP, "dead", {STREAM_KEY: ">"}, count=1)
+    redis.idle_ms[message_id] = 20 * 60 * 1000
+    handler = Mock()
+    assert make_consumer(redis, handler, claim_idle_ms=600_000).claim_stale() == 1
+    handler.assert_called_once_with("a")
+    assert redis.acks == [message_id]
+    assert redis.autoclaim_calls == [("w1", 600_000, 10)]
+
+
+def test_claim_stale_leaves_recent_jobs_to_their_worker():
+    redis = FakeRedis()
+    message_id = redis.xadd(STREAM_KEY, {"video_id": "a"})
+    redis.xreadgroup(CONSUMER_GROUP, "busy", {STREAM_KEY: ">"}, count=1)
+    redis.idle_ms[message_id] = 1_000
+    handler = Mock()
+    assert make_consumer(redis, handler, claim_idle_ms=600_000).claim_stale() == 0
+    handler.assert_not_called()
+    assert redis.pending[(STREAM_KEY, message_id)][0] == "busy"
+
+
+def test_claim_stale_accepts_the_two_element_reply_of_older_redis():
+    redis = Mock()
+    redis.xautoclaim.return_value = ["0-0", [("1-0", {"video_id": "a"})]]
+    handler = Mock()
+    assert make_consumer(redis, handler).claim_stale() == 1
+    handler.assert_called_once_with("a")
+
+
+def test_claim_stale_discards_entries_deleted_from_the_stream():
+    redis = Mock()
+    redis.xautoclaim.return_value = ["0-0", [("1-0", None)], []]
+    handler = Mock()
+    assert make_consumer(redis, handler).claim_stale() == 1
+    handler.assert_not_called()
+    redis.xack.assert_called_once_with(STREAM_KEY, CONSUMER_GROUP, "1-0")
+
+
+def test_run_claims_stale_jobs_at_startup(caplog):
+    redis = FakeRedis()
+    stop = threading.Event()
+    message_id = redis.xadd(STREAM_KEY, {"video_id": "orphan"})
+    redis.xreadgroup(CONSUMER_GROUP, "dead", {STREAM_KEY: ">"}, count=1)
+    redis.idle_ms[message_id] = 10**9
+    with caplog.at_level(logging.INFO, logger="media_worker.consumer"):
+        make_consumer(redis, lambda _v: stop.set()).run(stop)
+    assert redis.pending == {}
+    assert "reclamados 1 eventos de otros workers" in caplog.text
+
+
+def test_run_sweeps_for_stale_jobs_only_once_per_interval():
+    redis = FakeRedis()
+    stop = threading.Event()
+    now = [0.0]
+    polls = []
+
+    def poll(last_id=">"):
+        polls.append(now[0])
+        now[0] += 30.0
+        if len(polls) == 6:
+            stop.set()
+        return 0
+
+    consumer = make_consumer(redis, clock=lambda: now[0])
+    consumer.poll = poll
+    consumer.run(stop)
+    # Barrido inicial (t=0) y uno por cada 60 s de espera con la cola vacía.
+    assert [call[0] for call in redis.autoclaim_calls] == ["w1"] * 3
+
+
+def test_claim_stale_follows_the_cursor_until_the_scan_is_complete():
+    redis = Mock()
+    redis.xautoclaim.side_effect = [
+        ["5-0", [("1-0", {"video_id": "a"})], []],
+        ["0-0", [("5-0", {"video_id": "b"})], []],
+    ]
+    handler = Mock()
+    assert make_consumer(redis, handler).claim_stale() == 2
+    assert [call.args[0] for call in handler.call_args_list] == ["a", "b"]
+    starts = [call.kwargs["start_id"] for call in redis.xautoclaim.call_args_list]
+    assert starts == ["0-0", "5-0"]

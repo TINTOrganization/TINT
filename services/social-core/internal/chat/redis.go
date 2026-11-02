@@ -4,6 +4,8 @@ package chat
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"strconv"
 	"time"
 
 	"github.com/HanamDavid/tint-monorepo/services/social-core/internal/socialevent"
@@ -114,13 +116,60 @@ func (s *RedisStore) IsRevoked(ctx context.Context, jti string) (bool, error) {
 	return n > 0, nil
 }
 
+// IsRoomClosed indica si identity-api deshabilitó la sala
+// (EXISTS room:{id}:closed). Un error se devuelve: el llamador falla cerrado.
+func (s *RedisStore) IsRoomClosed(ctx context.Context, roomID string) (bool, error) {
+	n, err := s.client.Exists(ctx, ClosedKey(roomID)).Result()
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
+}
+
+// IsLive indica si la sala es de transmisión (room:{id}:kind == "live").
+func (s *RedisStore) IsLive(ctx context.Context, roomID string) (bool, error) {
+	kind, err := s.client.Get(ctx, KindKey(roomID)).Result()
+	if errors.Is(err, redis.Nil) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return kind == "live", nil
+}
+
+// StreamStartedAt lee started_at_ms del stream (ok = false si no empezó o
+// el valor no es un entero positivo).
+func (s *RedisStore) StreamStartedAt(ctx context.Context, roomID string) (int64, bool, error) {
+	raw, err := s.client.Get(ctx, StreamStartedKey(roomID)).Result()
+	if errors.Is(err, redis.Nil) {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, err
+	}
+	ms, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || ms <= 0 {
+		return 0, false, nil
+	}
+	return ms, true, nil
+}
+
+// Fuentes de un payload de Pub/Sub.
+const (
+	sourceSocial = iota
+	sourceSync
+	sourceStream
+)
+
 // Subscribe abre UNA suscripción por sala a room:{id}:social (eventos de
-// otras réplicas) y room:{id}:sync (REVOKED de identity-api y comandos de
-// reproducción de sync-core para el recap; solo lectura).
+// otras réplicas), room:{id}:sync (REVOKED y ROOM_CLOSED de identity-api y
+// comandos de reproducción de sync-core para el recap) y room:{id}:stream
+// (STREAM_STARTED/STREAM_ENDED de stream-core); los dos últimos, solo lectura.
 func (s *RedisStore) Subscribe(ctx context.Context, roomID string) (<-chan Inbound, func()) {
 	out := make(chan Inbound, 64)
-	social, sync := ChannelKey(roomID), SyncChannelKey(roomID)
-	sub := s.client.Subscribe(ctx, social, sync)
+	social, sync, stream := ChannelKey(roomID), SyncChannelKey(roomID), StreamChannelKey(roomID)
+	sub := s.client.Subscribe(ctx, social, sync, stream)
 	ch := sub.Channel()
 	done := make(chan struct{})
 	go func() {
@@ -135,12 +184,20 @@ func (s *RedisStore) Subscribe(ctx context.Context, roomID string) (<-chan Inbou
 				if !ok {
 					return
 				}
-				in, ok := decodeInbound(payload.Channel == sync, []byte(payload.Payload))
+				source := sourceSocial
+				switch payload.Channel {
+				case sync:
+					source = sourceSync
+				case stream:
+					source = sourceStream
+				}
+				in, ok := decodeInbound(source, roomID, []byte(payload.Payload))
 				if !ok {
 					continue
 				}
-				if in.RevokedJTI != "" {
-					// Una revocación no se descarta aunque el buffer esté lleno.
+				if in.RevokedJTI != "" || in.RoomClosed || in.Stream != nil {
+					// Una revocación, un cierre de sala o un cambio del stream
+					// no se descartan aunque el buffer esté lleno.
 					select {
 					case out <- in:
 					case <-ctx.Done():
@@ -161,16 +218,31 @@ func (s *RedisStore) Subscribe(ctx context.Context, roomID string) (<-chan Inbou
 }
 
 // decodeInbound traduce un payload de Pub/Sub. Del canal de sync interesan
-// REVOKED y los comandos de reproducción (recap); del social, los chat_message y reaction de otras
+// REVOKED, ROOM_CLOSED y los comandos de reproducción (recap); del de
+// stream, STREAM_STARTED/STREAM_ENDED; del social, los eventos de otras
 // réplicas (se re-serializan por tipo: nunca se reenvía JSON arbitrario).
-func decodeInbound(fromSync bool, raw []byte) (Inbound, bool) {
-	if fromSync {
+// Lo mal formado o de otra sala se descarta (dominio-transmision §6.1).
+func decodeInbound(source int, roomID string, raw []byte) (Inbound, bool) {
+	switch source {
+	case sourceStream:
+		var ev socialevent.StreamEvent
+		if json.Unmarshal(raw, &ev) != nil || !ev.Valid(roomID) {
+			return Inbound{}, false
+		}
+		return Inbound{Stream: &ev}, true
+	case sourceSync:
 		var ev struct {
 			socialevent.SyncEvent
-			JTI string `json:"jti"`
+			JTI    string `json:"jti"`
+			RoomID string `json:"room_id"`
+			Reason string `json:"reason"`
 		}
 		if json.Unmarshal(raw, &ev) != nil {
 			return Inbound{}, false
+		}
+		if ev.Type == socialevent.RoomClosed {
+			closed := socialevent.BusClosed{Type: ev.Type, EventID: ev.EventID, RoomID: ev.RoomID, Reason: ev.Reason}
+			return Inbound{RoomClosed: true}, closed.Valid(roomID)
 		}
 		if ev.Type == "REVOKED" && ev.JTI != "" {
 			return Inbound{RevokedJTI: ev.JTI}, true

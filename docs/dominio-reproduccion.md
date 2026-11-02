@@ -603,11 +603,13 @@ sequenceDiagram
 
 | Paso | Endpoint / evento | Errores |
 | :--- | :--- | :--- |
-| Reservar | `POST /rooms/:id/media/uploads` | 400 (no es `video/*`), 413 (> `MAX_UPLOAD_BYTES`, 2 GiB), 403, 410 |
-| Subir | `PUT uploadUrl` a MinIO (Content-Type firmado, 15 min) | CORS según `MINIO_CORS_ALLOW_ORIGIN` |
+| Reservar | `POST /rooms/:id/media/uploads` | 400 (no es `video/*`), 413 (> `MAX_UPLOAD_BYTES`, 2 GiB; el cuerpo lleva `maxUploadBytes` para que la web muestre el límite), 403, 410. Antes de reservar borra las subidas `pending` abandonadas de la sala (más viejas que el TTL de la URL + 1 h) y su objeto de `incoming/` |
+| Subir | `PUT uploadUrl` a MinIO (Content-Type firmado, 15 min) | CORS según `MINIO_CORS_ALLOW_ORIGIN`. Un PUT cortado no deja objeto parcial (no hay *multipart*) |
+| Cancelar | `DELETE /rooms/:id/media/uploads/:videoId` | La web lo llama si la subida falla o se cancela, para que el reintento empiece limpio: borra la fila `pending` y el objeto de `incoming/`. Idempotente (204 si ya no existe), 409 si ya se confirmó, 404 si el id no es uuid, 403, 410 |
+| Límite | `GET /uploads/limits` | `{ maxUploadBytes }`: la web lo muestra junto al selector y rechaza antes de subir un archivo mayor; el servidor sigue decidiendo |
 | Confirmar | `POST /rooms/:id/media/uploads/:videoId/complete` | 409 `Upload missing`, 413 si el objeto real supera el `sizeBytes` declarado o `MAX_UPLOAD_BYTES` (se borra del bucket y el vídeo sigue en `pending`), 503 si Redis falla (el vídeo vuelve a `pending` y se puede reintentar), 404. **Idempotente:** solo la transición `pending → processing` encola y asigna; si el vídeo ya no está en `pending` responde 200 con el estado actual sin re-encolar. |
-| Procesar | `media:uploads` → media-worker (`python -m media_worker`, servicio de docker compose) | Si es válido lo normaliza (nunca publica el original: remux `-c copy` con `+faststart` si ya es MP4 H.264 + AAC de ≤ 12 Mbps, si no re-codificación H.264 con keyframe cada 2 s y tope VBV), publica `{videoId}/source.mp4` + `ambilight.json` (`Content-Type: video/mp4`, `Cache-Control: public, max-age=86400`) y actualiza `storage_key`; después genera las calidades `{videoId}/720p.mp4` y `{videoId}/360p.mp4` menores que el original y escribe las publicadas en `videos.renditions` (una calidad que falle se omite sin marcar `failed`). Si ffprobe o el Ambilight fallan queda `failed` y **no se publica nada**. Un fallo de SQL/S3 no confirma el evento: se reintenta cada 5 s |
-| Reproducir | `GET /rooms/:id/playback` firma `videos.storage_key` (el original mientras se procesa, la versión publicada al quedar `ready`) y devuelve `qualities`: `Original` (= `url`) y, si está `ready`, `720p`/`360p` según `videos.renditions` (`{id}/{h}p.mp4`) | 401 si el token fue revocado, 410 si la sala se borró. Un vídeo `failed` responde `url: null` y `qualities: []` |
+| Procesar | `media:uploads` → media-worker (`python -m media_worker`, servicio de docker compose) | Si es válido lo normaliza (nunca publica el original: remux `-c copy` con `+faststart` si ya es MP4 H.264 + AAC de ≤ 12 Mbps, si no re-codificación H.264 con keyframe cada 2 s y tope VBV), publica `{videoId}/source.mp4` + `ambilight.json` (`Content-Type: video/mp4`, `Cache-Control: public, max-age=86400`) y actualiza `storage_key`; después genera las calidades `{videoId}/720p.mp4` y `{videoId}/360p.mp4` menores que el original y escribe las publicadas en `videos.renditions` (una calidad que falle se omite sin marcar `failed`). Si ffprobe o el Ambilight fallan queda `failed` y **no se publica nada**. Un fallo de SQL/S3/FFmpeg reencola el evento con `attempt + 1` y lo reintenta tras 5 s; al tercer intento queda `failed` (`processing_failed`). Los eventos que un worker caído dejó sin confirmar los reclama otro (`XAUTOCLAIM`, 15 min) |
+| Reproducir | `GET /rooms/:id/playback` firma `videos.storage_key` (el original mientras se procesa, la versión publicada al quedar `ready`) y devuelve `qualities`: `Original` (= `url`) y, si está `ready`, `720p`/`360p` según `videos.renditions` (`{id}/{h}p.mp4`) | 401 si el token fue revocado, 410 si la sala se borró. Un vídeo `failed` responde `url: null`, `qualities: []` y `failureReason` (el motivo guardado por el worker: `unsupported_format`, `unreadable`, `invalid_duration`, `missing_file` o `processing_failed`; `null` si no hay) |
 
 **Refresco de la URL en la web:** ~1 min antes de `expiresAt` la web pide `GET /playback` otra vez, pero si es el mismo vídeo **no** cambia el `src` del `<video>` (eso lo recargaba y dejaba un fotograma negro cada hora): guarda las URLs nuevas aparte —también las que aparecen al quedar `ready`— y las adopta solo si el `<video>` falla (`MEDIA_ERR_NETWORK`/`MEDIA_ERR_SRC_NOT_SUPPORTED`, p. ej. URL caducada o staging ya borrado; si no tiene URLs guardadas pide unas nuevas, como mucho cada 30 s) o cuando el `src` cambia igualmente (otra calidad u otro vídeo). Al cargar el `src` nuevo re-aplica la posición y el play/pausa del estado maestro.
 
@@ -850,11 +852,13 @@ flowchart LR
 | :--- | :--- | :--- |
 | `POST /rooms/:id/sync-ticket` | Host dueño (Firebase) | `{ token, expiresAt }` (HS256, `role: host`, 10 min) |
 | `POST /rooms/:id/media/uploads` | Host dueño | `{ videoId, uploadUrl, storageKey, expiresAt, headers }`: reserva el vídeo y firma el PUT a MinIO |
+| `DELETE /rooms/:id/media/uploads/:videoId` | Host dueño | `204`: cancela una subida `pending` (fila y objeto de `incoming/`); idempotente; 409 si ya se confirmó |
+| `GET /uploads/limits` | Host | `{ maxUploadBytes }` |
 | `POST /rooms/:id/media/uploads/:videoId/complete` | Host dueño | `{ mediaId, mediaKey, status }`: HEAD del objeto (tamaño real), `pending → processing`, `XADD media:uploads` y asignación a la sala. Idempotente |
 | `PUT /rooms/:id/media` | Host dueño | `{ mediaId, mediaKey }`. Con `{ mediaKey }` asigna un objeto que ya está en el bucket (nuevo `mediaId` en cada llamada); con `{ videoId }` reusa un vídeo de su biblioteca (`mediaId = videoId`, `mediaKey = storage_key`; 404 si no es suyo o no está `processing`/`ready`) |
 | `GET /videos` | Host (Firebase) | `{ videos: [{ id, title, durationMs, status, createdAt, previewUrl }] }`: sus vídeos confirmados (`processing`/`ready`), recientes primero |
 | `PATCH /videos/:id` | Host que lo subió | `{ title }` (1–255) → `{ video }` (misma forma); 404 si no es suyo |
-| `GET /rooms/:id/playback` | Host dueño **o** guest token de la sala no revocado | `{ mediaId, url, expiresAt, status, ambilightUrl, qualities }` (`null`s y `qualities: []` si no hay vídeo) |
+| `GET /rooms/:id/playback` | Host dueño **o** guest token de la sala no revocado | `{ mediaId, url, expiresAt, status, failureReason, ambilightUrl, qualities }` (`null`s y `qualities: []` si no hay vídeo) |
 | `GET /rooms/:id/guests` | Host dueño | `{ guests: [{ jti, nick, joinedAt, expiresAt, revoked }] }` (sin `sub`) |
 | `POST /rooms/:id/guests/:jti/revoke` | Host dueño | `{ success: true }`, idempotente; 404 si el `jti` no es de la sala |
 | `POST /rooms/:id/bans` | Host dueño | `{ jti }` o `{ sub }` → `{ ban: { id, nick, createdAt } }`; bloquea el dispositivo y revoca todas las sesiones del invitado. Idempotente; 404 si no tiene sesiones en la sala; 503 si Redis falla |
@@ -943,9 +947,7 @@ flowchart TD
 
 ```bash
 cp .env.example .env                     # JWT_SECRET compartido por identity-api y sync-core
-docker compose up -d                     # postgres, redis, minio (+ bucket), social-core :8082 y sync-core :8083
-cd services/identity-api && npm ci && npx drizzle-kit migrate && npm run dev   # :8081, migraciones 0000–0005
-cd apps/web && cp .env.example .env && npm run dev  # :5173
+docker compose up -d --build              # todo el sistema; aplica migraciones y sirve la web
 ```
 
 Para probar el vídeo:

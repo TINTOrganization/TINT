@@ -1,10 +1,21 @@
 import { useCallback, useEffect, useId, useRef, useState, type ChangeEvent, type FormEvent, type KeyboardEvent } from 'react';
-import { completeUpload, requestUpload, uploadErrorMessage, uploadToBlob, UploadError } from '../../lib/upload';
+import {
+  cancelUpload,
+  completeUpload,
+  fetchUploadLimit,
+  fileTooLargeMessage,
+  formatSize,
+  requestUpload,
+  uploadErrorMessage,
+  uploadToBlob,
+  UploadError,
+} from '../../lib/upload';
 import {
   assignVideo,
   assignVideoErrorMessage,
   formatDuration,
   listVideos,
+  mergeLibrary,
   videoStatusLabel,
   videoTitle,
   type LibraryVideo,
@@ -18,7 +29,12 @@ export interface ChangeVideoPanelProps {
   onMediaAssigned: (mediaId: string) => boolean;
   /** Cada incremento abre el panel en "Mis vídeos" (p. ej. "Elegir otra película" del recap). */
   openRequest?: number;
+  /** Cada cuánto se refresca la biblioteca mientras algún vídeo se procesa (ms; 5 s por defecto). */
+  libraryPollMs?: number;
 }
+
+/** Espera entre consultas de la biblioteca mientras hay vídeos sin terminar de procesar. */
+export const LIBRARY_POLL_MS = 5_000;
 
 type Tab = 'library' | 'upload';
 
@@ -37,12 +53,6 @@ const NOTIFY_FAILED =
   'El vídeo quedó elegido, pero no pudimos avisar a la sala porque se perdió la conexión. ' +
   'Pulsa «Avisar a la sala» cuando vuelva.';
 
-function formatSize(bytes: number): string {
-  if (bytes >= 1024 ** 3) return `${(bytes / 1024 ** 3).toFixed(1)} GB`;
-  if (bytes >= 1024 ** 2) return `${(bytes / 1024 ** 2).toFixed(1)} MB`;
-  return `${Math.max(1, Math.round(bytes / 1024))} KB`;
-}
-
 const inputClass =
   'rounded-xl border border-white/10 bg-tint-bg px-3 py-2 text-sm text-white focus:border-tint-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-tint-accent/60';
 
@@ -57,7 +67,12 @@ const TABS: { id: Tab; label: string }[] = [
  *   `PUT /rooms/:id/media {videoId}` → LOAD{media_id}.
  * - "Subir nuevo": URL pre-firmada → `PUT` directo con progreso → `POST …/complete` → LOAD.
  */
-export function ChangeVideoPanel({ roomId, onMediaAssigned, openRequest = 0 }: ChangeVideoPanelProps) {
+export function ChangeVideoPanel({
+  roomId,
+  onMediaAssigned,
+  openRequest = 0,
+  libraryPollMs = LIBRARY_POLL_MS,
+}: ChangeVideoPanelProps) {
   const [open, setOpen] = useState(false);
   const [tab, setTab] = useState<Tab>('library');
   const [file, setFile] = useState<File | null>(null);
@@ -72,6 +87,8 @@ export function ChangeVideoPanel({ roomId, onMediaAssigned, openRequest = 0 }: C
   const toggleRef = useRef<HTMLButtonElement>(null);
   const tabRefs = useRef(new Map<Tab, HTMLButtonElement>());
   const abortRef = useRef<AbortController | null>(null);
+  /** Tamaño máximo de subida según identity-api (null = desconocido: decide el servidor). */
+  const [maxBytes, setMaxBytes] = useState<number | null>(null);
   const panelId = useId();
   const baseId = useId();
   const fileId = useId();
@@ -90,11 +107,38 @@ export function ChangeVideoPanel({ roomId, onMediaAssigned, openRequest = 0 }: C
   useEffect(() => {
     if (open) {
       loadLibrary();
+      fetchUploadLimit().then(setMaxBytes);
       tabRefs.current.get('library')?.focus();
     }
     // Solo al abrir: cambiar de pestaña no recarga ni roba el foco.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
+
+  // Mientras el panel está abierto y algún vídeo no está listo, la biblioteca se refresca sola:
+  // si no, la tarjeta se quedaría en "Preparando…" aunque el vídeo ya esté `ready` (la lista solo
+  // se descargaba al abrir el panel). Se detiene al quedar todos listos o al cerrar el panel; un
+  // fallo de red no muestra error (hay una lista a la vista) y se reintenta.
+  const hasUnfinished = videos?.some((v) => v.status !== 'ready') ?? false;
+  useEffect(() => {
+    if (!open || !hasUnfinished) return;
+    let cancelled = false;
+    let timer: number | undefined;
+    const poll = () => {
+      listVideos()
+        .then((next) => {
+          if (!cancelled) setVideos((prev) => mergeLibrary(prev, next));
+        })
+        .catch(() => undefined)
+        .finally(() => {
+          if (!cancelled) timer = window.setTimeout(poll, libraryPollMs);
+        });
+    };
+    timer = window.setTimeout(poll, libraryPollMs);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [open, hasUnfinished, libraryPollMs]);
 
   useEffect(() => {
     if (openRequest > 0) {
@@ -155,6 +199,11 @@ export function ChangeVideoPanel({ roomId, onMediaAssigned, openRequest = 0 }: C
       setError('El archivo elegido no es un vídeo. Elige un archivo de vídeo (MP4, WebM…).');
       return;
     }
+    if (next && maxBytes !== null && next.size > maxBytes) {
+      setFile(null);
+      setError(fileTooLargeMessage(next.size, maxBytes));
+      return;
+    }
     setError('');
     setFile(next);
   };
@@ -168,17 +217,22 @@ export function ChangeVideoPanel({ roomId, onMediaAssigned, openRequest = 0 }: C
     setPendingMediaId(null);
     setProgress(0);
     setPhase('uploading');
+    // Reserva pendiente de confirmar: si la subida se corta, se cancela para que el reintento empiece limpio.
+    let reservedId: string | null = null;
     try {
       const ticket = await requestUpload(roomId, file);
+      reservedId = ticket.videoId;
       await uploadToBlob(ticket.uploadUrl, file, ticket.headers, setProgress, ctrl.signal);
       setPhase('confirming');
       const done = await completeUpload(roomId, ticket.videoId);
+      reservedId = null;
       loadLibrary();
       if (notifyRoom(done.mediaId)) {
         setFile(null);
         setFileInputKey((k) => k + 1);
       }
     } catch (err) {
+      if (reservedId) void cancelUpload(roomId, reservedId);
       if (ctrl.signal.aborted) {
         // Desmontado o cancelado por el usuario: no hay nada más que hacer.
         if (err instanceof UploadError && err.kind === 'abort') setPhase('cancelled');
@@ -385,6 +439,7 @@ export function ChangeVideoPanel({ roomId, onMediaAssigned, openRequest = 0 }: C
                 {file
                   ? `${file.name} · ${formatSize(file.size)}`
                   : 'Al terminar, todos verán el nuevo vídeo desde el inicio, en pausa.'}
+                {maxBytes !== null && ` Tamaño máximo: ${formatSize(maxBytes)}.`}
               </p>
 
               {(phase === 'uploading' || phase === 'confirming') && (

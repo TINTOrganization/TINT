@@ -22,6 +22,7 @@ vi.mock('../src/modules/rooms/rooms.repo.js', () => ({
   updateTitle: vi.fn(),
 }));
 
+vi.mock('../src/modules/rooms/rooms.create.js', () => ({ createRoomWithInvitation: vi.fn() }));
 vi.mock('../src/modules/invitations/invitations.repo.js', () => ({
   create: vi.fn(),
   findByCode: vi.fn(),
@@ -57,7 +58,8 @@ import app from '../src/app.js';
 import { env } from '../src/config/env.js';
 import { create as createGuestSession, listActiveByRoom, setRevokedMany } from '../src/modules/guests/guestSessions.repo.js';
 import { setRedisClient } from '../src/modules/tokens/revocation.js';
-import { create as createRoom, listByHost, findById, isOwner, softRemoveById, updateTitle } from '../src/modules/rooms/rooms.repo.js';
+import { createRoomWithInvitation } from '../src/modules/rooms/rooms.create.js';
+import { listByHost, findById, isOwner, softRemoveById, updateTitle } from '../src/modules/rooms/rooms.repo.js';
 import { create as createInvitation, findByCode, setRevoked, listByRoom, listLatestActiveByRooms } from '../src/modules/invitations/invitations.repo.js';
 import { defaultEventStartDeps } from '../src/modules/eventStart/eventStart.clients.js';
 import { EventStartError, startEvent } from '../src/modules/eventStart/eventStart.service.js';
@@ -106,7 +108,7 @@ describe('rutas v1', () => {
     expect(res.status).toBe(200);
     expect(res.body.sessions.sync.sessionId).toBe('sync-1');
     expect(startEvent).toHaveBeenCalledWith(
-      { title: 'Noche de cine', user: expect.objectContaining({ id: 'host-1' }) },
+      { title: 'Noche de cine', kind: 'watch', user: expect.objectContaining({ id: 'host-1' }) },
       {},
     );
   });
@@ -143,12 +145,12 @@ describe('rutas v1', () => {
   it('POST /rooms 400 si el título supera 150 caracteres (varchar(150) en la BD)', async () => {
     const res = await request(app).post('/api/v1/rooms').send({ title: 'a'.repeat(151) });
     expect(res.status).toBe(400);
-    expect(createRoom).not.toHaveBeenCalled();
+    expect(createRoomWithInvitation).not.toHaveBeenCalled();
   });
 
   it('POST /rooms 500 genérico si la BD falla (no filtra el error de Postgres)', async () => {
     const log = vi.spyOn(console, 'error').mockImplementation(() => {});
-    vi.mocked(createRoom).mockRejectedValueOnce(new Error('value too long for type character varying(150)'));
+    vi.mocked(createRoomWithInvitation).mockRejectedValueOnce(new Error('value too long for type character varying(150)'));
     const res = await request(app).post('/api/v1/rooms').send({ title: 'Sala' });
     expect(res.status).toBe(500);
     expect(res.body).toEqual({ error: 'Internal error' });
@@ -156,13 +158,16 @@ describe('rutas v1', () => {
   });
 
   it('POST /rooms crea sala + invitación inicial con link relativo', async () => {
-    vi.mocked(createRoom).mockResolvedValueOnce(room as any);
-    vi.mocked(createInvitation).mockResolvedValueOnce(invitation as any);
+    vi.mocked(createRoomWithInvitation).mockResolvedValueOnce({ room, invitation } as any);
     const res = await request(app).post('/api/v1/rooms').send({ title: 'Noche de cine' });
     expect(res.status).toBe(200);
     expect(res.body.room).toMatchObject({ id: 'room-1', title: 'Noche de cine' });
     expect(res.body.invitation.code).toBe('abc123def456');
     expect(res.body.invitation.link).toBe('/invite/abc123def456');
+    expect(createRoomWithInvitation).toHaveBeenCalledWith(
+      { title: 'Noche de cine', hostId: 'host-1' },
+      expect.objectContaining({ createdBy: 'host-1', revoked: false, expiresAt: expect.any(Date) }),
+    );
   });
 
   it('GET /rooms lista las salas del host', async () => {
@@ -567,6 +572,17 @@ describe('rutas v1', () => {
     const res = await request(app).post('/api/v1/invitations/claim').send({ code: 'abc', nick: 'Ana' });
     expect(res.status).toBe(200);
     expect(res.body.roomTitle).toBe('Noche de cine');
+  });
+
+  it.each([
+    ['watch', { ...room, kind: 'watch' }],
+    ['live', { ...room, kind: 'live' }],
+  ])('POST /invitations/claim devuelve roomKind=%s para elegir /watch o /live (ADR 0019)', async (kind, r) => {
+    vi.mocked(findByCode).mockResolvedValueOnce({ ...invitation } as any);
+    vi.mocked(findById).mockResolvedValueOnce(r as any);
+    const res = await request(app).post('/api/v1/invitations/claim').send({ code: 'abc', nick: 'Ana' });
+    expect(res.status).toBe(200);
+    expect(res.body.roomKind).toBe(kind);
   });
 
   it('POST /invitations/claim 400 si el nick supera 64 caracteres', async () => {

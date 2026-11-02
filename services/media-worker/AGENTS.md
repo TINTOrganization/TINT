@@ -35,10 +35,10 @@ Cómo funciona el servicio por dentro (consumo de `media:uploads`, pipeline, Amb
 
 | Entidad | Almacén | Campos clave |
 | :--- | :--- | :--- |
-| `videos` | PostgreSQL | `id`, `storage_key` (lo escribe el worker al publicar), `duration_ms`, `status` (`processing` → `ready` \| `failed`), `renditions` (jsonb, alturas publicadas en orden descendente, p. ej. `[720,360]`; `[]` si no hay), `updated_at` |
+| `videos` | PostgreSQL | `id`, `storage_key` (lo escribe el worker al publicar), `duration_ms`, `status` (`processing` → `ready` \| `failed`), `failure_reason` (código del motivo si `failed`: `unsupported_format`, `unreadable`, `invalid_duration`, `missing_file`, `processing_failed`; se borra al reintentar o al quedar `ready`), `renditions` (jsonb, alturas publicadas en orden descendente, p. ej. `[720,360]`; `[]` si no hay), `updated_at` |
 | `incoming/{video_id}/original.*` | MinIO (`tint-media`) | Original subido por el navegador (staging; lo lee el worker, caduca a los 2 días) |
 | `{video_id}/source.mp4` | MinIO (`tint-media`) | Vídeo normalizado (MP4 H.264 + AAC, `+faststart`): re-codificado o, si el original ya cumple, remuxado. Nunca el original sin preprocesar |
-| `media:uploads` | Redis Stream (grupo `media-workers`) | Evento `{video_id}` que publica identity-api al confirmar la subida |
+| `media:uploads` | Redis Stream (grupo `media-workers`) | Evento `{video_id}` que publica identity-api al confirmar la subida. El worker lo reencola con `attempt` (entero ≥ 1, ausente = 1) al reintentar; no hay que enviarlo |
 | `{video_id}/ambilight.json` | MinIO (`tint-media`) | `[{ "t_ms", "top", "bottom", "left", "right" }]` colores hex a 1 FPS |
 | `{video_id}/{720,360}p.mp4` | MinIO (`tint-media`) | Calidades reducidas (MP4 H.264 + AAC, `scale=-2:H`), solo las de altura estrictamente menor que la del original |
 | `users` | PostgreSQL (solo lectura) | `provider_sub` de `videos.uploaded_by` (`LEFT JOIN` en `GET_VIDEO_SQL`), para el `user_id` de analítica |
@@ -46,7 +46,7 @@ Cómo funciona el servicio por dentro (consumo de `media:uploads`, pipeline, Amb
 
 ## Reglas de Dominio
 
-1. **Inspección de Archivos:** Usa `ffprobe` para obtener la duración exacta en ms. Si el archivo está corrupto, actualiza el estado en SQL a `failed`.
+1. **Inspección de Archivos:** Usa `ffprobe` para obtener la duración exacta en ms. Si el archivo está corrupto, actualiza el estado en SQL a `failed` y guarda el motivo (`FailureReason` en `probe.py`: contrato con identity-api y la web).
 2. **Extracción Ambilight:** Analiza una franja del 10% en cada uno de los 4 bordes del fotograma a 1 FPS. Genera el archivo `ambilight.json` y súbelo al Blob Storage.
 3. **Normalización (`normalize.py`):** el original nunca se publica tal cual.
    - **Re-codificación** (caso general): `libx264 -preset veryfast -crf 23 -pix_fmt yuv420p`, keyframe cada 2 s (`-force_key_frames expr:gte(t,n_forced*2) -sc_threshold 0`), tope VBV `-maxrate 8000k -bufsize 16000k`, `-profile:v high` sin nivel fijo (conserva la resolución original, que puede ser 4K o 60 fps); audio `aac 128k -ac 2 -ar 48000`; `-movflags +faststart`.
@@ -55,8 +55,9 @@ Cómo funciona el servicio por dentro (consumo de `media:uploads`, pipeline, Amb
 5. **Cabeceras al publicar (`storage.py`):** los MP4 se suben con `ContentType: video/mp4`; MP4 y `ambilight.json` con `CacheControl: public, max-age=86400`. Sin `immutable`: reprocesar sobrescribe las mismas claves.
 6. **Persistencia:** Al finalizar con éxito, marca el vídeo como `ready` y escribe en `renditions` las calidades publicadas.
 7. **Idempotencia:** Reprocesar el mismo vídeo debe producir el mismo resultado sin duplicar artefactos.
-8. **Analítica best-effort:** `media_processed` se publica en cada resultado terminal (`ready`/`failed`, incluido el original ausente y la extensión no admitida) desde el adaptador (`jobs.handle_upload`, `publish` inyectado). Un fallo al publicar solo se registra: nunca cambia el resultado ni impide el `XACK`. No se publica para duplicados, eventos descartados ni fallos de infraestructura que dejan el mensaje pendiente.
-9. **TDD:** Escribe primero pruebas unitarias con `pytest` mockeando ejecuciones de FFmpeg. Cobertura obligatoria **≥ 85 %**.
+8. **Analítica best-effort:** `media_processed` se publica en cada resultado terminal (`ready`/`failed`, incluido el original ausente y la extensión no admitida) desde el adaptador (`jobs.handle_upload`, `publish` inyectado). Un fallo al publicar solo se registra: nunca cambia el resultado ni impide el `XACK`. No se publica para duplicados, eventos descartados ni intentos fallidos que se reencolan; sí al agotar los reintentos (`failed`).
+9. **Reintentos y huérfanos (`consumer.py`):** un fallo del handler reencola el evento con `attempt + 1` y lo confirma; a los `MAX_ATTEMPTS` (3) `jobs.mark_exhausted` deja el vídeo en `failed` (`processing_failed`, sin ampliar el contrato de `failure_reason`) y publica `media_processed`. Nunca marca `failed` un vídeo ya publicado. Los eventos de un worker muerto se reclaman con `XAUTOCLAIM` pasados `CLAIM_IDLE_MS` (15 min). El log de cada fallo lleva el id del vídeo, el intento y el motivo.
+10. **TDD:** Escribe primero pruebas unitarias con `pytest` mockeando ejecuciones de FFmpeg. Cobertura obligatoria **≥ 85 %**.
 
 ## Comandos
 

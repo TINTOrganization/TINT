@@ -18,7 +18,10 @@ export const rooms = pgTable('rooms', {
   id: uuid('id').primaryKey().defaultRandom(),
   hostId: uuid('host_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
   title: varchar('title', { length: 150 }).notNull(),
+  // active → deleted (borrado lógico) | disabled (sala live terminada, ADR 0019; terminal).
   status: varchar('status', { length: 20 }).notNull().default('active'),
+  // watch: vídeo sincronizado (sync-core) · live: transmisión del host (stream-core). ADR 0019.
+  kind: varchar('kind', { length: 10, enum: ['watch', 'live'] }).notNull().default('watch'),
   // Vídeo asignado (F3): id estable que viaja en LOAD/STATE y key del objeto en MINIO_BUCKET.
   mediaId: uuid('media_id'),
   mediaKey: text('media_key'),
@@ -80,6 +83,9 @@ export const videos = pgTable('videos', {
   sizeBytes: bigint('size_bytes', { mode: 'number' }).notNull(),
   durationMs: integer('duration_ms'),
   status: varchar('status', { length: 20 }).notNull().default('pending'),
+  // Por qué quedó en `failed` (código de FAILURE_REASONS que escribe media-worker); NULL en el resto de
+  // estados y en fallos anteriores a esta columna. Migración 0008.
+  failureReason: varchar('failure_reason', { length: 40 }),
   // Nombre visible en la biblioteca: el filename sin extensión al reservar (migración 0007).
   title: varchar('title', { length: 255 }),
   // Alturas de las calidades publicadas por media-worker (`{id}/{h}p.mp4`), p. ej. [720, 360].

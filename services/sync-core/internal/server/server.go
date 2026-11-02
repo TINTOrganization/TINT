@@ -109,7 +109,7 @@ func NewRouterWithDeps(sync, metrics http.Handler, st *store.Store) http.Handler
 		mux.HandleFunc("POST /internal/events/start/{roomID}", startEvent(st))
 		mux.HandleFunc("DELETE /internal/events/start/{roomID}", stopEvent(st))
 	}
-	return mux
+	return withCorrelation(mux)
 }
 
 func startEvent(st *store.Store) http.HandlerFunc {

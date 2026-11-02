@@ -9,9 +9,16 @@
 .env.*
 !.env.example
 
+# Python
+__pycache__/
+*.pyc
+
 # Logs
 *.log
 
 # Local agent tooling (no commitear)
 .agents/
 skills-lock.json
+
+# Python (pruebas del gateway y scripts)
+__pycache__/

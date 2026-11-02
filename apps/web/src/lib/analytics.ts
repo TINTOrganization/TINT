@@ -8,7 +8,7 @@
  */
 import { apiFetch } from './api';
 
-export const DEFAULT_ANALYTICS_API_URL = 'http://localhost:8084/api/v1';
+export const DEFAULT_ANALYTICS_API_URL = '/api/v1';
 
 export interface AnalyticsTicket {
   token: string;
@@ -107,7 +107,7 @@ export interface AnalyticsClient {
 }
 
 export interface AnalyticsClientOptions {
-  /** Base de la API; por defecto VITE_ANALYTICS_API_URL o el puerto 8084 local. */
+  /** Base de la API; por defecto VITE_ANALYTICS_API_URL o la ruta pública del gateway. */
   baseUrl?: string;
 }
 

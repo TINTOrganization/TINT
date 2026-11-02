@@ -27,11 +27,12 @@ Documentación de referencia: [README del servicio (cómo funciona por dentro)](
 - Listar y retirar invitados: BD + `token:revoked:{jti}` + `PUBLISH REVOKED`.
 - Bloquear invitados por dispositivo (`room_bans`, `deviceId` del claim) y desbloquearlos. Es una barrera contra la reentrada casual, no un control de seguridad: borrar los datos del navegador la evade ([usuarios-e-identidad §6.6](../../docs/usuarios-e-identidad.md#66-bloquear-a-un-invitado-por-dispositivo)).
 - Biblioteca de vídeos del host (`GET /videos`, `PATCH /videos/:id`) y reuso de un vídeo propio en una sala (`PUT /rooms/:id/media { videoId }`).
+- Salas `live` y su cierre ([ADR 0019](../../docs/adr/0019-salas-live-y-cierre-room-closed.md), [dominio-transmision §6.1](../../docs/dominio-transmision.md#61-formatos-estándar)): `POST /events/start` con `kind=live` registra stream-core en lugar de sync-core; identity-api es el **único escritor** del estado terminal `disabled` (`POST /rooms/:id/end` y `POST /internal/rooms/:id/disable`) y publica `ROOM_CLOSED`.
 
 ## Límites de Dominio
 - ❌ No gestiones el estado de reproducción: el Reloj Maestro es de sync-core. Aquí solo se asigna el vídeo; el `LOAD` lo envía el cliente por el Canal Sync.
 - ❌ No proceses vídeo: transcodificar, `ffprobe` y Ambilight son de `services/media-worker`.
-- ❌ No escribas otras claves de Redis de sync-core que no sean `token:revoked:{jti}` y el `PUBLISH` de `REVOKED` (contrato v2 §5).
+- ❌ No escribas otras claves de Redis que no sean `token:revoked:{jti}`, el `PUBLISH` de `REVOKED` (contrato v2 §5) y, para las salas live (ADR 0019), `room:{id}:closed`, el `PUBLISH` de `ROOM_CLOSED` y `room:{id}:kind`.
 - ❌ No pongas datos personales en logs ni en eventos de analítica.
 - ❌ No cambies los claims de los tokens sin actualizar también `services/sync-core/internal/auth` y [usuarios-e-identidad.md](../../docs/usuarios-e-identidad.md#4-esquemas-de-tokens).
 
@@ -39,15 +40,17 @@ Documentación de referencia: [README del servicio (cómo funciona por dentro)](
 | Tabla / clave | Tipo | Descripción |
 | :--- | :--- | :--- |
 | `users` | PostgreSQL | `id`, `provider` (`firebase`), `provider_sub`, `email`, `display_name`, `avatar_url`, timestamps. Único `(provider, provider_sub)` (migración `0005`) |
-| `rooms` | PostgreSQL | `id`, `host_id` → `users`, `title` (≤150), `status` (`active`/`deleted`, borrado lógico), `media_id`, `media_key`, timestamps |
+| `rooms` | PostgreSQL | `id`, `host_id` → `users`, `title` (≤150), `status` (`active` · `deleted`, borrado lógico · `disabled`, sala live terminada, terminal; sin CHECK), `kind` (`watch`/`live`, varchar(10), por defecto `watch`, migración `0009`), `media_id`, `media_key`, timestamps |
 | `invitations` | PostgreSQL | `id`, `code` (único, 12), `room_id`, `created_by`, `expires_at`, `revoked` |
 | `room_bans` | PostgreSQL | `id`, `room_id`, `device_id` (nullable), `sub`, `nick`, `created_at`, `created_by`. Único `(room_id, device_id)` (migración `0007`). Nunca se exponen `device_id` ni `sub` |
 | `guest_sessions` | PostgreSQL | `jti` (PK), `room_id`, `sub` (`guest:<uuid>`), `nick` (≤64), `joined_at`, `expires_at`, `revoked`, `device_id` (uuid nullable, migración `0007`) |
-| `videos` | PostgreSQL | `id` (= `video_id`), `room_id`, `uploaded_by`, `storage_key` (`incoming/{id}/original.*` al reservar; el worker la cambia a `{id}/source.*` al publicar), `content_type`, `size_bytes`, `duration_ms`, `status` (`pending` → `processing` al confirmar, en identity-api → `ready`/`failed`, en media-worker), `renditions` (jsonb, `[]` por defecto: alturas publicadas por media-worker en `{id}/{h}p.mp4`, migración `0006`), `title` (≤255, nullable: `filename` sin extensión al reservar, migración `0007`) |
+| `videos` | PostgreSQL | `id` (= `video_id`), `room_id`, `uploaded_by`, `storage_key` (`incoming/{id}/original.*` al reservar; el worker la cambia a `{id}/source.*` al publicar), `content_type`, `size_bytes`, `duration_ms`, `status` (`pending` → `processing` al confirmar, en identity-api → `ready`/`failed`, en media-worker), `renditions` (jsonb, `[]` por defecto: alturas publicadas por media-worker en `{id}/{h}p.mp4`, migración `0006`), `failure_reason` (varchar(40), nullable: código del motivo cuando `status = failed`, lo escribe media-worker; `unsupported_format` · `unreadable` · `invalid_duration` · `missing_file` · `processing_failed`; migración `0008`), `title` (≤255, nullable: `filename` sin extensión al reservar, migración `0007`) |
 | `token:revoked:{jti}` | Redis String | Marca de revocación con `EXAT` = `exp` del token (la lee sync-core) |
-| `media:uploads` | Redis Stream | `XADD * video_id <id>` al confirmar una subida (lo consume media-worker, grupo `media-workers`) |
+| `media:uploads` | Redis Stream | `XADD MAXLEN ~ 10000 * video_id <id>` al confirmar una subida (lo consume media-worker, grupo `media-workers`). El tope evita que los eventos ya confirmados (`XACK`) se acumulen para siempre |
 | `analytics:events` | Redis Stream | `XADD MAXLEN ~ 100000 *` de `user_login`, `room_created`, `room_closed` e `invitation_claimed` (lo consume analytics). Ver [Eventos de analítica](#eventos-de-analítica) |
-| `room:{id}:sync` | Redis Pub/Sub | Solo se publica `REVOKED{jti}` |
+| `room:{id}:sync` | Redis Pub/Sub | Se publica `REVOKED{jti}` y `ROOM_CLOSED` (`{"type":"ROOM_CLOSED","event_id","room_id","reason","occurred_at"}`, `reason` `host_ended`/`grace_expired`) |
+| `room:{id}:closed` | Redis String | `1` sin TTL al deshabilitar la sala; sync/social/voice/stream la consultan en cada handshake (cierre `4010`) |
+| `room:{id}:kind` | Redis String | `live` con `EX 86400` (como `room:{id}:stream:enabled`), al iniciar una sala live; voice-core la usa para el modo escenario |
 
 ER completo y ciclos de vida en [usuarios-e-identidad.md](../../docs/usuarios-e-identidad.md#3-esquema-de-datos-postgresql).
 
@@ -59,30 +62,35 @@ Prefijo `/api/v1`. Los errores siempre tienen la forma `{ "error": "<texto>" }`;
 | `GET /healthz` | — | Estado del servicio |
 | `GET /internal/auth/check` | Gateway | Verifica Firebase RS256 o tokens propios HS256, comprueba revocación y devuelve 204 con headers `X-User-*`; responde 401 si el token no es válido |
 | `POST /auth/verify` | Firebase | Verifica el token y crea o recupera el usuario |
-| `POST /rooms` | Firebase | Crea sala (`title` 1–150) + invitación inicial |
-| `POST /events/start` | Firebase | Orquesta en orden la creación de identidad, la inicialización de sync/social/analytics y devuelve room, invitación y sesiones; los fallos de dependencias responden 503 y compensan lo ya iniciado |
-| `GET /rooms` | Firebase | Salas activas del usuario, con su invitación vigente |
-| `GET /rooms/:id` · `PATCH /rooms/:id` · `DELETE /rooms/:id` | Firebase + dueño | Detalle, renombrar (`{ title }` ≤ 150) y borrado lógico. El borrado revoca las sesiones de invitado activas (`token:revoked:{jti}` + `REVOKED`); si Redis falla responde 503 y repetir el `DELETE` sobre la sala ya borrada re-publica las pendientes (410 cuando termina) |
-| `GET /rooms/:id/invitations` | Firebase + dueño | Invitaciones de la sala con `link` |
-| `POST /rooms/:id/invitations` | Firebase + dueño | Nueva invitación (`ttlHours` opcional, entero 1–720) |
+| `POST /rooms` | Firebase | Crea sala (`title` 1–150) + invitación inicial **en una transacción** (`rooms.create.ts`): si la invitación falla no queda la sala |
+| `POST /events/start` | Firebase | `{ title, kind? }` (`kind` `watch` por defecto o `live`; otro valor → 400). Orquesta en orden la creación de identidad y la inicialización de sync/social/analytics (`watch`) o **stream**/social/analytics (`live`, sin sync-core) y devuelve room (con `kind`), invitación y `sessions` (`{ sync, social, analytics }` en `watch`; `{ stream, social, analytics }` en `live`, **sin `sync`**). En `live`, al final escribe `room:{id}:kind=live` (TTL 24 h). Los fallos de dependencias (o de esa escritura) responden 503 y compensan lo ya iniciado (`DELETE …/internal/events/start/{id}` en orden inverso y borrado de la sala) |
+| `GET /rooms` | Firebase | Salas no borradas del usuario (`active` y `disabled`, con `kind`), con su invitación vigente |
+| `POST /rooms/:id/end` | Firebase + dueño | Termina una sala `live` → `200 { room_id, status: "disabled", reason: "host_ended", closed_at }`. En orden: `SET room:{id}:closed 1` → `PUBLISH ROOM_CLOSED` → `UPDATE status='disabled'` → `XADD room_closed` (mejor esfuerzo). Si falla uno de los tres primeros, **503** y la sala sigue `active` (el reintento repite todo). `409 NotLive` (sala `watch`: se borra con `DELETE`), `409 AlreadyDisabled` (la BD ya dice `disabled`), `410 Deleted`, 404, 403 |
+| `POST /internal/rooms/:id/disable` | `X-Internal-Token` | Lo llama stream-core al vencer la gracia del host; sin ID token de Firebase. Cuerpo opcional `{ reason: "grace_expired" }` (otro → 400). Mismo cierre y respuestas que `/end` con `reason: "grace_expired"`. 401 con un token incorrecto (comparación en tiempo constante); **503 `{ error: "Service unavailable" }`** si `INTERNAL_API_SECRET` no está configurado o está vacío (falla cerrado, aunque la cabecera venga). Caddy no expone `/api/v1/internal/*` |
+| `POST /rooms/:id/reactivate` | Firebase + dueño | Siempre `409 { error: "NotReactivable" }`: se crea un evento nuevo |
+| `GET /rooms/:id` · `PATCH /rooms/:id` · `DELETE /rooms/:id` | Firebase + dueño | Detalle, renombrar (`{ title }` ≤ 150) y borrado lógico. El detalle responde 200 también con la sala `disabled`; renombrar responde `410 Disabled` (o `410 Deleted`). El borrado revoca las sesiones de invitado activas (`token:revoked:{jti}` + `REVOKED`); si Redis falla responde 503 y repetir el `DELETE` sobre la sala ya borrada re-publica las pendientes (410 cuando termina) |
+| `GET /rooms/:id/invitations` | Firebase + dueño | Invitaciones de la sala con `link` (200 también con la sala `disabled`) |
+| `POST /rooms/:id/invitations` | Firebase + dueño | Nueva invitación (`ttlHours` opcional, entero 1–720). `410 Deleted` / `410 Disabled` si la sala está borrada o terminada |
 | `POST /invitations/:code/revoke` | Firebase + dueño | Cierra la invitación (no retira a quienes ya entraron). 404 si la invitación o su sala no existen, 403 si no es el dueño |
 | `GET /invitations/:code` | — | `{ code, roomId, roomTitle, hostName, scheduledStartTime, expiresAt }`. Consulta pública para vista previa de invitación. 404 si no existe, está revocada, expiró o la sala fue eliminada |
-| `POST /invitations/claim` | — | `{ code, nick, deviceId? }` → `{ token, roomId, nick, roomTitle }`. `deviceId` es un UUID opcional del navegador que se guarda en `guest_sessions.device_id`. Errores: 400, 404, 409 (revocada), 410 (vencida o sala borrada), **403 `{ error: "BANNED" }`** (dispositivo bloqueado en la sala; sin `deviceId` no se comprueba) |
-| `POST /rooms/:id/sync-ticket` | Firebase + dueño | Sync-ticket HS256 para `/ws/sync`. `nick` = `displayName`, si no la parte local del email, si no `Host` (nunca el email completo) |
-| `POST /rooms/:id/analytics-ticket` | Firebase + dueño | `{ token, expiresAt }`: ticket de host HS256 (mismos claims y TTL que el sync-ticket, `generateHostTicket`) para la API de lectura de analytics. **Sin** `requireActiveRoom`: también se entrega para una sala borrada, para ver sus KPIs |
-| `POST /rooms/:id/media/uploads` | Firebase + dueño | `{ filename, contentType: video/*, sizeBytes }` → `{ videoId, uploadUrl, storageKey, expiresAt, headers }` (PUT firmado a MinIO; 413 si supera `MAX_UPLOAD_BYTES`) |
-| `POST /rooms/:id/media/uploads/:videoId/complete` | Firebase + dueño | HEAD del objeto (409 `Upload missing`; 413 y se borra si el tamaño real supera `sizeBytes` o `MAX_UPLOAD_BYTES`), `pending → processing` condicional, `XADD media:uploads` (503 si Redis falla, vuelve a `pending`) y asigna el vídeo → `{ mediaId, mediaKey, status }`. Idempotente: si ya no está en `pending` devuelve el estado actual sin re-encolar |
+| `POST /invitations/claim` | — | `{ code, nick, deviceId? }` → `{ token, roomId, nick, roomTitle, roomKind }` (`roomKind` `watch`/`live`: la web abre `/watch/:id` o `/live/:id`). `deviceId` es un UUID opcional del navegador que se guarda en `guest_sessions.device_id`. Errores: 400, 404, 409 (revocada), 410 (vencida, sala borrada `Deleted` o deshabilitada `Disabled`), **403 `{ error: "BANNED" }`** (dispositivo bloqueado en la sala; sin `deviceId` no se comprueba) |
+| `POST /rooms/:id/sync-ticket` | Firebase + dueño | Sync-ticket HS256 para `/ws/sync`. Con `requireReadableRoom`: también se emite con la sala `disabled` (no `deleted` → 410) para que el host lea el historial de chat en social-core (`GET /api/v1/social/rooms/{id}/chat`, HU-LIVE-09 AC3); los WS igual cierran con `4010`. `nick` = `displayName`, si no la parte local del email, si no `Host` (nunca el email completo) |
+| `POST /rooms/:id/analytics-ticket` | Firebase + dueño | `{ token, expiresAt }`: ticket de host HS256 (mismos claims y TTL que el sync-ticket, `generateHostTicket`) para la API de lectura de analytics. **Sin** `requireActiveRoom`: también se entrega para una sala borrada o deshabilitada, para ver sus KPIs |
+| `POST /rooms/:id/media/uploads` | Firebase + dueño | `{ filename, contentType: video/*, sizeBytes }` → `{ videoId, uploadUrl, storageKey, expiresAt, headers }` (PUT firmado a MinIO; 413 si supera `MAX_UPLOAD_BYTES`, con cuerpo `{ error, maxUploadBytes }`). Antes de reservar borra las subidas `pending` de la sala abandonadas (creadas hace más de `UPLOAD_URL_TTL_SECONDS` + 1 h) y su objeto de `incoming/`; un fallo al limpiar no impide reservar |
+| `DELETE /rooms/:id/media/uploads/:videoId` | Firebase + dueño | Cancela una subida interrumpida o abandonada: borra la fila `pending` (borrado condicional) y su objeto de `incoming/`. Idempotente: `204` también si la fila ya no existe o es de otra sala; `409 Upload already confirmed` si ya está `processing`/`ready`; `404` si el id no es uuid; 403, 410. Un fallo al borrar el objeto se registra y se responde `204` (lo recoge la limpieza al reservar) |
+| `GET /uploads/limits` | Firebase | `{ maxUploadBytes }` (`MAX_UPLOAD_BYTES`): fuente de verdad del tamaño máximo; la web lo muestra y pre-valida el archivo, pero la decisión es del servidor |
+| `POST /rooms/:id/media/uploads/:videoId/complete` | Firebase + dueño | HEAD del objeto (409 `Upload missing`; 413 con `{ error, maxUploadBytes }` y se borra si el tamaño real supera `sizeBytes` o `MAX_UPLOAD_BYTES`), `pending → processing` condicional, `XADD media:uploads` (503 si Redis falla, vuelve a `pending`) y asigna el vídeo → `{ mediaId, mediaKey, status }`. Idempotente: si ya no está en `pending` devuelve el estado actual sin re-encolar |
 | `PUT /rooms/:id/media` | Firebase + dueño | `{ mediaKey }` (objeto que ya está en el bucket, `mediaId` nuevo) **o** `{ videoId }` (vídeo de su biblioteca: `mediaId = videoId`, `mediaKey = storage_key`; 404 si no lo subió él, no existe o no está `processing`/`ready`) → `{ mediaId, mediaKey }`. Enviar ambos es 400 |
 | `GET /videos` | Firebase | Biblioteca: `{ videos: [{ id, title, durationMs, status, createdAt, previewUrl }] }`, los vídeos con `uploaded_by` = el host y `status` en `processing`/`ready` (subida confirmada), recientes primero. `previewUrl` firma `{id}/360p.mp4` si está `ready` con `360` en `renditions`; si no, `storage_key` |
 | `PATCH /videos/:id` | Firebase + quien lo subió | `{ title }` (1–255) → `{ video }` con la forma de la biblioteca. 404 si no es suyo |
-| `GET /rooms/:id/playback` | dueño **o** guest token de la sala | `{ mediaId, url, expiresAt, status, ambilightUrl, qualities }` (o `null`s y `qualities: []`). `qualities: [{ id, label, url }]`: primero `{ id: 'source', label: 'Original' }` con la misma URL que `url`; si el vídeo está `ready`, después `720p` y `360p` (de mayor a menor, solo las de `videos.renditions`) firmadas sobre `{id}/{h}p.mp4` con el mismo TTL. Un vídeo `failed` → `qualities: []` |
+| `GET /rooms/:id/playback` | dueño **o** guest token de la sala | `{ mediaId, url, expiresAt, status, failureReason, ambilightUrl, qualities }` (`failureReason` solo con `status: 'failed'`: uno de los códigos de `videos.failure_reason`, o `null` si el worker no lo guardó o el código no se reconoce; o `null`s y `qualities: []`). `qualities: [{ id, label, url }]`: primero `{ id: 'source', label: 'Original' }` con la misma URL que `url`; si el vídeo está `ready`, después `720p` y `360p` (de mayor a menor, solo las de `videos.renditions`) firmadas sobre `{id}/{h}p.mp4` con el mismo TTL. Un vídeo `failed` → `qualities: []` |
 | `GET /rooms/:id/guests` | Firebase + dueño | Invitados de la sala (sin `sub`) |
 | `POST /rooms/:id/guests/:jti/revoke` | Firebase + dueño | Retira al invitado (idempotente) |
 | `POST /rooms/:id/bans` | Firebase + dueño | `{ jti }` (panel) **o** `{ sub }` (chat) → `{ ban: { id, nick, createdAt } }`. Inserta un ban por cada `device_id` de las sesiones del invitado (o uno por `sub` si ninguna lo tiene, cliente viejo) y revoca todas sus sesiones vigentes (`token:revoked:{jti}` + `REVOKED`). Idempotente; 404 si el invitado no tiene sesiones en la sala; **503** si Redis falla (el ban ya quedó guardado, reintentar) |
 | `GET /rooms/:id/bans` | Firebase + dueño | `{ bans: [{ id, nick, createdAt }] }`, recientes primero |
 | `DELETE /rooms/:id/bans/:banId` | Firebase + dueño | Desbloquea → `{ success: true }`; 404 si no existe en la sala |
 
-Middlewares: `requireAuthHost`, `requireRoomOwner` (no filtra por estado de la sala), `requireRoomGuest`, `requireRoomHostOrGuest` (decide según el `alg` del JWT), `requireActiveRoom` (404/410 y `req.room`) y `validate(schema)`. Las rutas del Canal Sync y de medios responden **410** si la sala tiene borrado lógico.
+Middlewares: `requireAuthHost`, `requireRoomOwner` (no filtra por estado de la sala), `requireRoomGuest`, `requireRoomHostOrGuest` (decide según el `alg` del JWT), `requireActiveRoom` (404, `410 Deleted`/`410 Disabled` y `req.room`; falla cerrado ante cualquier `status` distinto de `active`), `requireReadableRoom` (como `requireActiveRoom` pero deja pasar `disabled`; solo el sync-ticket), `requireInternalToken` (`X-Internal-Token`) y `validate(schema)`. Las rutas del Canal Sync y de medios y `GET /rooms/:id/playback` responden **410** si la sala tiene borrado lógico (`Deleted`) o está deshabilitada (`Disabled`).
 
 ### Eventos de analítica
 `src/modules/analytics/analytics.events.ts` → `publishAnalyticsEvent(type, fields)`. Contrato en [contrato-eventos-analitica.md](../../docs/contrato-eventos-analitica.md).
@@ -92,6 +100,7 @@ Middlewares: `requireAuthHost`, `requireRoomOwner` (no filtra por estado de la s
 | `POST /auth/verify` | `user_login` | `method=google`, `user_id` (sin `room_id`) |
 | `POST /rooms` | `room_created` | `room_id`, `user_id` |
 | `DELETE /rooms/:id` | `room_closed` | `room_id`, `user_id`, `reason=deleted`. Solo el primer borrado exitoso: ni el reintento (sala ya borrada) ni el 503 emiten |
+| `POST /rooms/:id/end` · `POST /internal/rooms/:id/disable` | `room_closed` | `room_id`, `reason=host_ended` (con `user_id`) o `reason=grace_expired` (**sin `user_id`**: lo pide stream-core, no un usuario; el campo se omite). Solo tras el `UPDATE` exitoso |
 | `POST /invitations/claim` | `invitation_claimed` | `room_id`, `user_id` = `guest:<uuid>` del token emitido |
 
 - Siempre se añaden `event_id` (UUID v4), `source=identity-api`, `occurred_at` y `received_at` (ISO UTC con ms); se omiten los campos `undefined`/`null`.
@@ -124,6 +133,8 @@ Middlewares: `requireAuthHost`, `requireRoomOwner` (no filtra por estado de la s
 | `UPLOAD_URL_TTL_SECONDS` | `900` | Vida de la URL PUT de subida |
 | `MAX_UPLOAD_BYTES` | `2147483648` | Tamaño máximo de un vídeo (2 GiB) |
 | `SYNC_CORE_URL` / `SOCIAL_CORE_URL` / `ANALYTICS_URL` | `http://localhost:8083` / `http://localhost:8082` / `http://localhost:8084` | Upstreams internos para `POST /events/start`; cada llamada tiene deadline de 5 s |
+| `STREAM_CORE_URL` | `http://localhost:8086` (compose: `http://stream-core:8086`) | Upstream de `POST /events/start` para salas `live` |
+| `INTERNAL_API_SECRET` | — (compose: `dev-internal-secret-change-in-prod`) | Secreto de `X-Internal-Token` para `/api/v1/internal/rooms/*` (el mismo que usa stream-core). Sin él esas rutas responden 503 |
 
 ## Comandos
 ```bash
@@ -138,3 +149,5 @@ npx drizzle-kit migrate         # aplica migrations/ en DATABASE_URL
 # con WAIT_WORKER=1 espera además a que media-worker deje el vídeo en ready.
 npm run test:integration
 ```
+
+`tests/integration/data-stores.int.test.ts` comprueba los almacenes con la infraestructura real: la sala se guarda con su dueño y su invitación, la transacción revierte, las migraciones se pueden aplicar dos veces (en una base temporal), una marca de Redis caduca, el cliente de Redis se reconecta tras un corte y MinIO deniega el objeto privado sin firma válida.

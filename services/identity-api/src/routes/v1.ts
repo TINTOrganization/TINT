@@ -1,4 +1,4 @@
-import { Router } from 'express';
+import { Router, type Response } from 'express';
 import { z } from 'zod';
 import { env } from '../config/env.js';
 import { validate } from '../middlewares/validate.js';
@@ -7,8 +7,9 @@ import { centralTokenCheck } from '../middlewares/centralAuth.js';
 import { requireRoomOwner } from '../middlewares/requireRoomOwner.js';
 import { upsertByProvider, findById as findUserById } from '../modules/users/users.repo.js';
 import { requireRoomHostOrGuest } from '../middlewares/guestAuth.js';
-import { requireActiveRoom } from '../middlewares/activeRoom.js';
-import { create as createRoom, listByHost, findById, softRemoveById, updateTitle, setMedia } from '../modules/rooms/rooms.repo.js';
+import { requireActiveRoom, requireReadableRoom, inactiveRoomError } from '../middlewares/activeRoom.js';
+import { createRoomWithInvitation } from '../modules/rooms/rooms.create.js';
+import { listByHost, findById, softRemoveById, updateTitle, setMedia } from '../modules/rooms/rooms.repo.js';
 import { create as createInvitation, findByCode, setRevoked, listByRoom, listLatestActiveByRooms } from '../modules/invitations/invitations.repo.js';
 import { issueGuestToken, generateHostTicket } from '../modules/auth/auth.service.js';
 import { publishAnalyticsEvent } from '../modules/analytics/analytics.events.js';
@@ -21,6 +22,8 @@ import {
   transitionStatus as transitionVideoStatus,
   listByUploader as listVideosByUploader,
   updateTitle as updateVideoTitle,
+  removePendingById as removePendingVideo,
+  removeStalePendingByRoom as removeStalePendingVideos,
   type Video,
 } from '../modules/videos/videos.repo.js';
 import {
@@ -45,6 +48,8 @@ import { markTokenRevoked, publishRevoked } from '../modules/tokens/revocation.j
 import { v4 as uuidv4 } from 'uuid';
 import { defaultEventStartDeps } from '../modules/eventStart/eventStart.clients.js';
 import { EventStartError, startEvent } from '../modules/eventStart/eventStart.service.js';
+import { requireInternalToken } from '../middlewares/internalToken.js';
+import { closeLiveRoom, type CloseResult } from '../modules/rooms/rooms.close.js';
 
 const router = Router();
 
@@ -72,11 +77,13 @@ router.post('/auth/verify', requireAuthHost, validate(verifySchema), async (req,
 
 const startEventSchema = z.object({
   title: z.string().trim().min(1).max(150),
+  // watch: vídeo sincronizado (por defecto) · live: transmisión del host por stream-core (ADR 0019).
+  kind: z.enum(['watch', 'live']).default('watch'),
 });
 router.post('/events/start', requireAuthHost, validate(startEventSchema), async (req, res) => {
   try {
     const result = await startEvent(
-      { title: req.body.title, user: req.user! },
+      { title: req.body.title, kind: req.body.kind, user: req.user! },
       defaultEventStartDeps(),
     );
     res.json(result);
@@ -94,15 +101,12 @@ const createRoomSchema = z.object({
 });
 router.post('/rooms', requireAuthHost, validate(createRoomSchema), async (req, res) => {
   const { title } = req.body;
-  const room = await createRoom({ title, hostId: req.user!.id });
   const ttlHours = parseInt(env.INVITATION_DEFAULT_TTL_HOURS, 10);
   const expiresAt = new Date(Date.now() + ttlHours * 60 * 60 * 1000);
-  const invitation = await createInvitation({
-    roomId: room.id,
-    createdBy: req.user!.id,
-    expiresAt,
-    revoked: false,
-  });
+  const { room, invitation } = await createRoomWithInvitation(
+    { title, hostId: req.user!.id },
+    { createdBy: req.user!.id, expiresAt, revoked: false },
+  );
   res.json({
     room,
     invitation: {
@@ -162,8 +166,10 @@ router.patch('/rooms/:id', requireAuthHost, requireRoomOwner, validate(updateRoo
   if (!room) {
     return res.status(404).json({ error: 'Not found' });
   }
-  if (room.status === 'deleted') {
-    return res.status(410).json({ error: 'Deleted' });
+  // Falla cerrado: ni renombrar una sala borrada (Deleted) ni una terminada (Disabled).
+  const inactive = inactiveRoomError(room);
+  if (inactive) {
+    return res.status(410).json(inactive);
   }
   const updated = await updateTitle(roomId, req.body.title);
   res.json({ room: updated });
@@ -216,6 +222,30 @@ router.delete('/rooms/:id', requireAuthHost, requireRoomOwner, async (req, res) 
   void publishAnalyticsEvent('room_closed', { room_id: roomId, user_id: req.user!.providerSub, reason: 'deleted' });
 });
 
+function sendCloseResult(res: Response, result: CloseResult) {
+  if (result.ok) return res.json(result.body);
+  return res.status(result.status).json(result.body);
+}
+
+// Fin de una sala live por el host (HU-LIVE-05, ADR 0019). Una sala watch se borra con DELETE.
+router.post('/rooms/:id/end', requireAuthHost, requireRoomOwner, async (req, res) => {
+  sendCloseResult(res, await closeLiveRoom(getRoomId(req), 'host_ended', req.user!.providerSub));
+});
+
+// Una sala deshabilitada no se reactiva: la UI ofrece crear un evento nuevo (HU-LIVE-09 AC4).
+router.post('/rooms/:id/reactivate', requireAuthHost, requireRoomOwner, (_req, res) => {
+  res.status(409).json({ error: 'NotReactivable' });
+});
+
+// Gracia del host vencida: lo llama stream-core (servicio a servicio, sin ID token de Firebase).
+// Caddy no expone /api/v1/internal/* (salvo auth/check). Único reason aceptado: grace_expired.
+const internalDisableSchema = z
+  .object({ reason: z.literal('grace_expired').default('grace_expired') })
+  .default({ reason: 'grace_expired' });
+router.post('/internal/rooms/:id/disable', requireInternalToken, validate(internalDisableSchema), async (req, res) => {
+  sendCloseResult(res, await closeLiveRoom(getRoomId(req), req.body.reason));
+});
+
 const createInvitationSchema = z.object({
   // Máximo 30 días: sin cota, un número enorme producía una fecha inválida y un 500.
   ttlHours: z.number().int().positive().max(720).optional(),
@@ -227,8 +257,10 @@ router.post('/rooms/:id/invitations', requireAuthHost, requireRoomOwner, validat
   if (!room) {
     return res.status(404).json({ error: 'Not found' });
   }
-  if (room.status === 'deleted') {
-    return res.status(410).json({ error: 'Deleted' });
+  // No tiene sentido invitar a una sala borrada (Deleted) ni a una terminada (Disabled).
+  const inactive = inactiveRoomError(room);
+  if (inactive) {
+    return res.status(410).json(inactive);
   }
   const ttlHours = req.body.ttlHours || parseInt(env.INVITATION_DEFAULT_TTL_HOURS, 10);
   const expiresAt = new Date(Date.now() + ttlHours * 60 * 60 * 1000);
@@ -256,7 +288,10 @@ function hostNick(user: { displayName?: string | null; email?: string | null }) 
   return localPart || 'Host';
 }
 
-router.post('/rooms/:id/sync-ticket', requireAuthHost, requireRoomOwner, requireActiveRoom, async (req, res) => {
+// También con la sala `disabled` (no `deleted`): social-core exige un HS256 de host para leer el
+// historial de chat de una sala terminada (HU-LIVE-09 AC3). No reabre nada en vivo: sync, social,
+// voice y stream cierran con 4010 por room:{id}:closed en cada handshake (ADR 0019).
+router.post('/rooms/:id/sync-ticket', requireAuthHost, requireRoomOwner, requireReadableRoom, async (req, res) => {
   const rawId = req.params.id;
   const roomId = Array.isArray(rawId) ? rawId[0] : rawId;
   const user = req.user!;
@@ -350,13 +385,61 @@ const startUploadSchema = z.object({
   sizeBytes: z.number().int().positive(),
 });
 
+/**
+ * Motivos de fallo que media-worker guarda en `videos.failure_reason` (contrato `videos`). Códigos
+ * estables y sin datos personales: la web los traduce a un mensaje. Cualquier otro valor se ignora.
+ */
+const FAILURE_REASONS = ['unsupported_format', 'unreadable', 'invalid_duration', 'missing_file', 'processing_failed'] as const;
+
+function failureReasonOf(video: { status: string; failureReason?: string | null } | null | undefined) {
+  const reason = video?.status === 'failed' ? video.failureReason : null;
+  return (FAILURE_REASONS as readonly string[]).includes(reason ?? '') ? reason : null;
+}
+
+/** Margen sobre el TTL de la URL PUT antes de dar por abandonada una subida `pending`. */
+const STALE_UPLOAD_GRACE_MS = 60 * 60 * 1000;
+
+const tooLarge = (res: Response) =>
+  res.status(413).json({ error: 'File too large', maxUploadBytes: env.MAX_UPLOAD_BYTES });
+
+/** Borra el objeto de `incoming/` de una subida descartada; un fallo se registra y no se propaga. */
+async function discardUploadObject(storageKey: string) {
+  try {
+    await getMediaStore().remove(storageKey);
+  } catch (err) {
+    console.error('[uploads] no se pudo borrar el objeto de una subida descartada:', (err as Error).message);
+  }
+}
+
+/**
+ * Limpieza perezosa al reservar: las subidas `pending` de la sala cuya URL caducó hace más de
+ * una hora (interrumpidas o abandonadas) se borran junto con su objeto. Sin proceso programado
+ * y idempotente entre réplicas; un fallo no impide reservar la subida nueva.
+ */
+async function cleanupStaleUploads(roomId: string) {
+  try {
+    const cutoff = new Date(Date.now() - (env.UPLOAD_URL_TTL_SECONDS * 1000 + STALE_UPLOAD_GRACE_MS));
+    const stale = await removeStalePendingVideos(roomId, cutoff);
+    await Promise.all(stale.map((v) => discardUploadObject(v.storageKey)));
+  } catch (err) {
+    console.error('[uploads] no se pudieron limpiar las subidas abandonadas:', (err as Error).message);
+  }
+}
+
+// Tamaño máximo de subida: identity-api es la única fuente de verdad (la web lo muestra y
+// pre-valida el archivo, pero la decisión sigue siendo del servidor).
+router.get('/uploads/limits', requireAuthHost, (_req, res) => {
+  res.json({ maxUploadBytes: env.MAX_UPLOAD_BYTES });
+});
+
 // 1) Reserva el vídeo y entrega una URL PUT firmada: el archivo va directo del
 //    navegador a MinIO, sin pasar por identity-api.
 router.post('/rooms/:id/media/uploads', requireAuthHost, requireRoomOwner, validate(startUploadSchema), requireActiveRoom, async (req, res) => {
   const { filename, contentType, sizeBytes } = req.body;
   if (sizeBytes > env.MAX_UPLOAD_BYTES) {
-    return res.status(413).json({ error: 'File too large' });
+    return tooLarge(res);
   }
+  await cleanupStaleUploads(req.room!.id);
   const videoId = uuidv4();
   // Staging: el original va a incoming/ y el media-worker publica {id}/source.<ext>
   // solo si el vídeo es válido (actualiza videos.storage_key al marcarlo ready).
@@ -380,6 +463,31 @@ router.post('/rooms/:id/media/uploads', requireAuthHost, requireRoomOwner, valid
     expiresAt: new Date(Date.now() + ttl * 1000).toISOString(),
     headers: { 'Content-Type': contentType },
   });
+});
+
+// Cancela una subida interrumpida o abandonada por el cliente: borra la fila `pending` y
+// el objeto de incoming/ (si llegó algo), para que el reintento empiece limpio. Idempotente:
+// si la fila ya no existe (o es de otra sala) no hay nada que cancelar → 204. Una subida ya
+// confirmada (processing/ready) no se cancela: 409.
+router.delete('/rooms/:id/media/uploads/:videoId', requireAuthHost, requireRoomOwner, requireActiveRoom, async (req, res) => {
+  const roomId = req.room!.id;
+  const videoId = paramId(req.params.videoId);
+  if (!UUID_RE.test(videoId)) {
+    return res.status(404).json({ error: 'Not found' });
+  }
+  const video = await findVideo(videoId);
+  if (!video || video.roomId !== roomId) {
+    return res.status(204).end();
+  }
+  if (video.status !== 'pending') {
+    return res.status(409).json({ error: 'Upload already confirmed' });
+  }
+  const removed = await removePendingVideo(video.id);
+  if (!removed) {
+    return res.status(409).json({ error: 'Upload already confirmed' });
+  }
+  await discardUploadObject(removed.storageKey);
+  res.status(204).end();
 });
 
 // 2) Confirma la subida: comprueba el objeto, encola el procesamiento
@@ -412,7 +520,7 @@ router.post('/rooms/:id/media/uploads/:videoId/complete', requireAuthHost, requi
     } catch (err) {
       console.error('[uploads] no se pudo borrar un objeto que supera el tamaño:', (err as Error).message);
     }
-    return res.status(413).json({ error: 'File too large' });
+    return tooLarge(res);
   }
   // Transición condicional: de dos confirmaciones concurrentes solo una encola.
   const queued = await transitionVideoStatus(video.id, 'pending', 'processing');
@@ -442,7 +550,7 @@ type PlaybackQuality = { id: 'source' | `${(typeof PLAYBACK_RENDITION_HEIGHTS)[n
 router.get('/rooms/:id/playback', requireRoomHostOrGuest, requireActiveRoom, async (req, res) => {
   const room = req.room!;
   if (!room.mediaId || !room.mediaKey) {
-    return res.json({ mediaId: null, url: null, expiresAt: null, status: null, ambilightUrl: null, qualities: [] });
+    return res.json({ mediaId: null, url: null, expiresAt: null, status: null, failureReason: null, ambilightUrl: null, qualities: [] });
   }
   // Vídeos subidos por la API tienen fila en `videos` (estado del media-worker);
   // los asignados por clave manual no (status null). Mientras se procesa se
@@ -450,7 +558,15 @@ router.get('/rooms/:id/playback', requireRoomHostOrGuest, requireActiveRoom, asy
   // (storage_key la actualiza el worker). Un vídeo failed no se sirve.
   const video = await findVideo(room.mediaId);
   if (video?.status === 'failed') {
-    return res.json({ mediaId: room.mediaId, url: null, expiresAt: null, status: 'failed', ambilightUrl: null, qualities: [] });
+    return res.json({
+      mediaId: room.mediaId,
+      url: null,
+      expiresAt: null,
+      status: 'failed',
+      failureReason: failureReasonOf(video),
+      ambilightUrl: null,
+      qualities: [],
+    });
   }
   const ttl = env.PLAYBACK_URL_TTL_SECONDS;
   const expiresAt = new Date(Date.now() + ttl * 1000);
@@ -471,6 +587,7 @@ router.get('/rooms/:id/playback', requireRoomHostOrGuest, requireActiveRoom, asy
     url,
     expiresAt: expiresAt.toISOString(),
     status: video?.status ?? null,
+    failureReason: null,
     ambilightUrl,
     qualities,
   });
@@ -677,8 +794,9 @@ router.post('/invitations/claim', validate(claimSchema), async (req, res) => {
     return res.status(410).json({ error: 'Expired' });
   }
   const room = await findById(invitation.roomId);
-  if (room && room.status === 'deleted') {
-    return res.status(410).json({ error: 'Deleted' });
+  const inactive = room && inactiveRoomError(room);
+  if (inactive) {
+    return res.status(410).json(inactive);
   }
   if (deviceId && (await findBanByDevice(invitation.roomId, deviceId))) {
     return res.status(403).json({ error: 'BANNED' });
@@ -694,7 +812,8 @@ router.post('/invitations/claim', validate(claimSchema), async (req, res) => {
     expiresAt: new Date(payload.exp * 1000),
     deviceId: deviceId ?? null,
   });
-  res.json({ token, roomId: invitation.roomId, nick, roomTitle: room?.title ?? null });
+  // roomKind: la web decide si abre /watch/:id o /live/:id (ADR 0019).
+  res.json({ token, roomId: invitation.roomId, nick, roomTitle: room?.title ?? null, roomKind: room?.kind ?? 'watch' });
   void publishAnalyticsEvent('invitation_claimed', { room_id: payload.room_id, user_id: payload.sub });
 });
 
