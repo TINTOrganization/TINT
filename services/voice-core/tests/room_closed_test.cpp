@@ -1,17 +1,7 @@
-// ADR 0019: ROOM_CLOSED en room:{id}:sync cierra con 4010 todas las conexiones de la sala.
-//
-// PRUEBAS EN ROJO. Lo que se espera de la implementación:
-//   - src/redis/sync_message.hpp:
-//       struct RevokedMessage { std::string room_id; std::string jti; };
-//       struct RoomClosedMessage { std::string room_id; std::string reason; };
-//       using SyncMessage = std::variant<RevokedMessage, RoomClosedMessage>;
-//       std::optional<SyncMessage> parse_sync_message(std::string_view channel, std::string_view payload);
-//     (RevokedListener entrega ambos mensajes; parse_revoked_message puede quedar como envoltorio).
-//   - hub::Hub::close_room(room_id): cierra con 4010 a todos los peers de la sala y la olvida.
-// Para que el resto de la suite compile mientras tanto, las pruebas detectan si existen y, si
-// no, fallan en tiempo de ejecución con un mensaje claro. Al implementar, quitar la detección
-// (`__has_include` y `try_close_room`) y llamar directamente.
+// ADR 0019: ROOM_CLOSED en room:{id}:sync cierra con 4010 todas las conexiones de la sala, y
+// retirar a alguien del escenario de una sala live lo cierra con 4009.
 
+#include <atomic>
 #include <memory>
 #include <string>
 
@@ -20,12 +10,7 @@
 #include "hub/hub.hpp"
 #include "support/fake_peer.hpp"
 
-#if __has_include("redis/sync_message.hpp")
 #include "redis/sync_message.hpp"
-#define VOICE_HAS_SYNC_MESSAGE 1
-#else
-#define VOICE_HAS_SYNC_MESSAGE 0
-#endif
 
 using namespace voice::hub;
 using nlohmann::json;
@@ -34,18 +19,7 @@ using voice::testing::FakePeer;
 
 namespace {
 
-constexpr std::uint16_t kRoomDisabled = 4010;  // close_code::kRoomClosed (aún no existe)
-
-// true si Hub::close_room existe (y la llamó).
-template <typename H>
-bool try_close_room(H& hub, const std::string& room_id) {
-  if constexpr (requires { hub.close_room(room_id); }) {
-    hub.close_room(room_id);
-    return true;
-  } else {
-    return false;
-  }
-}
+static_assert(close_code::kRoomClosed == 4010 && close_code::kNotOnStage == 4009, "dominio-transmision §6.1");
 
 Claims claims(std::string sub, std::string role = "participant", std::string room = "room-1") {
   return {sub, room, role, "Nick " + sub, "jti-" + sub, 0};
@@ -55,7 +29,7 @@ class RoomClosedHubTest : public ::testing::Test {
  protected:
   RoomClosedHubTest() {
     HubOptions o;
-    o.now_ms = [] { return 5000; };
+    o.now_ms = [this] { return now_.load(); };
     o.new_event_id = [this] { return "evt-" + std::to_string(++ids_); };
     hub_ = std::make_unique<Hub>(o);
   }
@@ -68,6 +42,7 @@ class RoomClosedHubTest : public ::testing::Test {
   }
 
   int ids_ = 0;
+  std::atomic<std::int64_t> now_{5000};
   std::unique_ptr<Hub> hub_;
 };
 
@@ -80,11 +55,11 @@ TEST_F(RoomClosedHubTest, ClosesEveryPeerOfTheRoomWith4010) {
   auto tab2 = join("p-ana-2", claims("ana"));
   auto other = join("p-otro", claims("otro", "participant", "room-2"), "room-2");
 
-  ASSERT_TRUE(try_close_room(*hub_, "room-1")) << "falta hub::Hub::close_room(room_id)";
+  hub_->close_room("room-1");
 
   for (auto& p : {host, ana, tab2}) {
     ASSERT_TRUE(p->closed().has_value()) << p->id();
-    EXPECT_EQ(p->closed()->first, kRoomDisabled) << p->id();
+    EXPECT_EQ(p->closed()->first, close_code::kRoomClosed) << p->id();
   }
   EXPECT_TRUE(hub_->members("room-1").empty()) << "la sala se olvida";
   EXPECT_FALSE(other->closed().has_value()) << "otras salas no se tocan";
@@ -93,14 +68,83 @@ TEST_F(RoomClosedHubTest, ClosesEveryPeerOfTheRoomWith4010) {
 
 TEST_F(RoomClosedHubTest, ClosingAnUnknownRoomIsANoOp) {
   auto other = join("p-otro", claims("otro"));
-  ASSERT_TRUE(try_close_room(*hub_, "room-9")) << "falta hub::Hub::close_room(room_id)";
+  hub_->close_room("room-9");
   EXPECT_FALSE(other->closed().has_value());
-  EXPECT_TRUE(try_close_room(*hub_, "room-9")) << "idempotente";
+  hub_->close_room("room-1");
+  hub_->close_room("room-1");  // un ROOM_CLOSED repetido no hace nada nuevo (§6.1)
+  EXPECT_EQ(other->closed()->first, close_code::kRoomClosed);
+  EXPECT_TRUE(hub_->members("room-1").empty());
+}
+
+TEST_F(RoomClosedHubTest, AfterClosingTheRoomLateDisconnectsAreNoOps) {
+  auto ana = join("p-ana", claims("ana"));
+  hub_->close_room("room-1");
+  hub_->leave("room-1", "p-ana");
+  hub_->handle_message("room-1", "p-ana", R"({"type":"leave","event_id":"e","occurred_at":1})");
+  EXPECT_TRUE(hub_->members("room-1").empty());
+}
+
+// Carrera: el handshake leyó room:{id}:closed justo antes de que identity-api lo escribiera y
+// el join llega después del ROOM_CLOSED. Igual se cierra con 4010.
+TEST_F(RoomClosedHubTest, JoinRightAfterTheCloseIsClosedWith4010) {
+  hub_->close_room("room-1");
+  auto late = join("p-late", claims("late"));
+  ASSERT_TRUE(late->closed().has_value());
+  EXPECT_EQ(late->closed()->first, close_code::kRoomClosed);
+  EXPECT_TRUE(late->of_type("voice_state").empty());
+  EXPECT_TRUE(hub_->members("room-1").empty());
+}
+
+TEST_F(RoomClosedHubTest, TheClosedRoomMemoryExpires) {
+  hub_->close_room("room-1");
+  now_ += kClosedRoomMemoryMs;
+  hub_->close_room("room-2");  // poda los cierres viejos
+  auto ana = join("p-ana", claims("ana"));
+  EXPECT_FALSE(ana->closed().has_value()) << "pasado el margen decide la clave de Redis en el handshake";
+  auto luis = join("p-luis", claims("luis", "participant", "room-2"), "room-2");
+  EXPECT_EQ(luis->closed()->first, close_code::kRoomClosed);
+}
+
+// --- Escenario: DELETE /stage/{user_id} --------------------------------------------------------
+
+TEST_F(RoomClosedHubTest, RemoveFromStageClosesEveryConnectionOfThatUserWith4009) {
+  auto host = join("p-host", claims("host", "host"));
+  auto ana = join("p-ana", claims("ana"));
+  auto tab2 = join("p-ana-2", claims("ana"));
+  auto luis = join("p-luis", claims("luis"));
+  host->clear();
+
+  hub_->remove_from_stage("room-1", "ana");
+
+  for (auto& p : {ana, tab2}) {
+    ASSERT_TRUE(p->closed().has_value()) << p->id();
+    EXPECT_EQ(p->closed()->first, close_code::kNotOnStage);
+  }
+  EXPECT_FALSE(luis->closed().has_value());
+  EXPECT_FALSE(host->closed().has_value());
+  EXPECT_EQ(host->of_type("peer_left").size(), 2u) << "los demás cierran esas RTCPeerConnection";
+  EXPECT_EQ(hub_->members("room-1").size(), 2u);
+}
+
+TEST_F(RoomClosedHubTest, RemoveFromStageNeverKicksHostOrCohost) {
+  auto host = join("p-host", claims("host", "host"));
+  auto co = join("p-co", claims("co", "cohost"));
+  hub_->remove_from_stage("room-1", "host");
+  hub_->remove_from_stage("room-1", "co");
+  hub_->remove_from_stage("room-9", "ana");
+  EXPECT_FALSE(host->closed().has_value());
+  EXPECT_FALSE(co->closed().has_value());
+}
+
+TEST_F(RoomClosedHubTest, RemovingTheLastMemberForgetsTheRoom) {
+  auto ana = join("p-ana", claims("ana"));
+  auto tab2 = join("p-ana-2", claims("ana"));
+  hub_->remove_from_stage("room-1", "ana");
+  EXPECT_TRUE(hub_->members("room-1").empty());
+  EXPECT_EQ(tab2->closed()->first, close_code::kNotOnStage);
 }
 
 // --- Parseo de room:{id}:sync ----------------------------------------------------------------
-
-#if VOICE_HAS_SYNC_MESSAGE
 
 using voice::redis::parse_sync_message;
 using voice::redis::RevokedMessage;
@@ -166,11 +210,3 @@ TEST(ParseSyncMessage, IgnoresEverythingElse) {
   EXPECT_FALSE(parse_sync_message("room:a:sync", "no json"));
   EXPECT_FALSE(parse_sync_message("room:a:sync", R"({"type":"REVOKED","jti":""})"));
 }
-
-#else
-
-TEST(ParseSyncMessage, RecognizesRoomClosed) {
-  FAIL() << "falta src/redis/sync_message.hpp con parse_sync_message (ROOM_CLOSED y REVOKED)";
-}
-
-#endif

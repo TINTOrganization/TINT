@@ -108,8 +108,8 @@ TEST_F(MuteApiTest, WrongMethodOrPath) {
 
 // --- ADR 0019: escenario de las salas live ------------------------------------------------
 //   PUT|DELETE /api/v1/voice/rooms/{room_id}/stage/{user_id} (SET room:{id}:voice:stage)
-// Mismas reglas que los silencios. PRUEBAS EN ROJO: hoy la ruta responde 404. Un resultado
-// que no es Reject es el comando para el servidor (que escribe el SET y responde 204).
+// Mismas reglas que los silencios. Un resultado que no es Reject es el comando para el
+// servidor (que escribe el SET y responde 204).
 
 namespace {
 constexpr const char* kStagePath = "/api/v1/voice/rooms/room-1/stage/guest%3Aana";
@@ -157,4 +157,35 @@ TEST_F(MuteApiTest, StagePathMustBeWellFormed) {
   for (const char* t : {"/api/v1/voice/rooms/room-1/stage/", "/api/v1/voice/rooms//stage/u",
                         "/api/v1/voice/rooms/room-1/stage/u/extra"})
     EXPECT_EQ(status(decide("PUT", t, bearer(host_claims()))), 404u) << t;
+}
+
+TEST_F(MuteApiTest, StageCommandCarriesRoomUserAndAction) {
+  auto put = decide("PUT", kStagePath, bearer(host_claims()));
+  auto* add = std::get_if<StageCommand>(&put);
+  ASSERT_NE(add, nullptr);
+  EXPECT_EQ(add->room_id, "room-1");
+  EXPECT_EQ(add->user_id, "guest:ana");
+  EXPECT_TRUE(add->on_stage);
+  auto del = decide("DELETE", kStagePath, bearer(host_claims()));
+  ASSERT_NE(std::get_if<StageCommand>(&del), nullptr);
+  EXPECT_FALSE(std::get<StageCommand>(del).on_stage);
+  EXPECT_EQ(std::get_if<MuteCommand>(&put), nullptr) << "el escenario no es un silencio";
+}
+
+TEST(ParseStagePath, OnlyMatchesTheStageSegment) {
+  auto p = parse_stage_path("/api/v1/voice/rooms/room-1/stage/guest%3Aana?x=1");
+  ASSERT_TRUE(p);
+  EXPECT_EQ(p->first, "room-1");
+  EXPECT_EQ(p->second, "guest:ana");
+  EXPECT_FALSE(parse_stage_path("/api/v1/voice/rooms/room-1/mutes/u"));
+  EXPECT_FALSE(parse_mute_path("/api/v1/voice/rooms/room-1/stage/u"));
+}
+
+// dominio-transmision §6.1: errores de las rutas nuevas en UPPER_SNAKE.
+TEST(RestErrorCode, MapsStatusToUpperSnake) {
+  EXPECT_EQ(rest_error_code(401), "UNAUTHORIZED");
+  EXPECT_EQ(rest_error_code(403), "FORBIDDEN");
+  EXPECT_EQ(rest_error_code(404), "NOT_FOUND");
+  EXPECT_EQ(rest_error_code(405), "METHOD_NOT_ALLOWED");
+  EXPECT_EQ(rest_error_code(503), "UNAVAILABLE");
 }

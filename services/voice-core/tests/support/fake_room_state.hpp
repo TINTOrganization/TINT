@@ -7,37 +7,33 @@
 #include <string>
 #include <utility>
 
+#include "rooms/room_state.hpp"
+
 namespace voice::testing {
 
-// Estado de sala en Redis que voice-core lee en el handshake (ADR 0019):
-//   room:{id}:closed       → la sala se deshabilitó (ROOM_CLOSED): upgrade y cierre 4010.
-//   room:{id}:kind = live  → modo escenario: solo host/cohost o quien esté en el escenario.
-//   room:{id}:voice:stage  → SET de user_id (sub) invitados al escenario (lo escribe voice-core).
-//
-// PRUEBAS EN ROJO: todavía no existe la interfaz de producción. Al implementar, esta clase
-// debe heredar de ella (p. ej. `rooms::RoomStateStore`) y decide_handshake/el servidor deben
-// recibirla. nullopt / false = Redis no respondió (falla cerrado → 503).
-class FakeRoomState {
+// Estado de sala en memoria (ver rooms::RoomStateStore, ADR 0019). `unavailable` simula
+// Redis caído: nullopt / false (falla cerrado → 503).
+class FakeRoomState : public rooms::RoomStateStore {
  public:
-  std::optional<bool> is_closed(const std::string& room_id) {
+  std::optional<bool> is_closed(const std::string& room_id) override {
     std::lock_guard lock(mu_);
     ++calls;
     if (unavailable) return std::nullopt;
     return closed_.contains(room_id);
   }
-  std::optional<bool> is_live(const std::string& room_id) {
+  std::optional<bool> is_live(const std::string& room_id) override {
     std::lock_guard lock(mu_);
     ++calls;
-    if (unavailable) return std::nullopt;
+    if (unavailable || live_unavailable) return std::nullopt;
     return live_.contains(room_id);
   }
-  std::optional<bool> is_on_stage(const std::string& room_id, const std::string& user_id) {
+  std::optional<bool> is_on_stage(const std::string& room_id, const std::string& user_id) override {
     std::lock_guard lock(mu_);
     ++calls;
-    if (unavailable) return std::nullopt;
+    if (unavailable || stage_unavailable) return std::nullopt;
     return stage_.contains({room_id, user_id});
   }
-  bool set_on_stage(const std::string& room_id, const std::string& user_id, bool on_stage) {
+  bool set_on_stage(const std::string& room_id, const std::string& user_id, bool on_stage) override {
     std::lock_guard lock(mu_);
     ++writes;
     if (unavailable) return false;
@@ -63,6 +59,9 @@ class FakeRoomState {
   }
 
   std::atomic<bool> unavailable{false};
+  // Fallos parciales (Redis que se cae a mitad del handshake o del DELETE).
+  std::atomic<bool> live_unavailable{false};
+  std::atomic<bool> stage_unavailable{false};
   std::atomic<int> calls{0};
   std::atomic<int> writes{0};
 

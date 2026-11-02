@@ -16,7 +16,7 @@ class HandshakeTest : public ::testing::Test {
  protected:
   HandshakeDecision decide(const std::string& target,
                            std::optional<std::string_view> origin = "http://localhost:5173") {
-    return decide_handshake({target, origin}, verifier, revocation, mutes, allowed, kNow);
+    return decide_handshake({target, origin}, verifier, revocation, mutes, rooms, allowed, kNow);
   }
   std::string target(const std::string& token, const std::string& room = "room-1") {
     return "/ws/voice?room_id=" + room + "&token=" + token;
@@ -29,6 +29,7 @@ class HandshakeTest : public ::testing::Test {
   voice::auth::TokenVerifier verifier{kSecret, kIssuer, kAudience};
   FakeRevocation revocation;
   FakeMuteStore mutes;
+  FakeRoomState rooms;
   std::vector<std::string> allowed{"localhost:5173", "127.0.0.1:5173"};
 };
 
@@ -151,9 +152,6 @@ TEST(UrlDecode, DecodesPercentAndPlus) {
 }
 
 // --- ADR 0019: sala deshabilitada (ROOM_CLOSED, 4010) y modo escenario (4009) -------------
-//
-// PRUEBAS EN ROJO: decide_handshake todavía no recibe el estado de sala. Al implementar,
-// `decide()` debe pasarle `rooms` (FakeRoomState heredará de la interfaz nueva).
 
 namespace {
 
@@ -168,8 +166,6 @@ class RoomStateHandshakeTest : public HandshakeTest {
     c["role"] = role;
     return c;
   }
-
-  FakeRoomState rooms;
 };
 
 }  // namespace
@@ -245,6 +241,23 @@ TEST_F(RoomStateHandshakeTest, ClosedWinsOverNotOnStage) {
   rooms.close("room-1");
   EXPECT_EQ(close_code(decide(target(sign_jwt(guest_claims())))), 4010)
       << "'el evento terminó' es más informativo que 'no estás en el escenario'";
+}
+
+TEST_F(RoomStateHandshakeTest, RevokedWinsOverClosed) {
+  rooms.close("room-1");
+  revocation.revoke("jti-ana");
+  EXPECT_EQ(close_code(decide(target(sign_jwt(guest_claims())))), 4001);
+}
+
+TEST_F(RoomStateHandshakeTest, LiveRoomFailsClosedWhenTheStageCannotBeRead) {
+  rooms.make_live("room-1");
+  rooms.stage_unavailable = true;
+  EXPECT_EQ(rejected_status(decide(target(sign_jwt(guest_claims())))), 503u);
+  rooms.stage_unavailable = false;
+  rooms.live_unavailable = true;
+  EXPECT_EQ(rejected_status(decide(target(sign_jwt(guest_claims())))), 503u);
+  EXPECT_TRUE(std::holds_alternative<Accept>(decide(target(sign_jwt(host_claims())))))
+      << "host y cohost no necesitan leer el tipo de sala";
 }
 
 TEST_F(RoomStateHandshakeTest, WatchRoomIgnoresTheStage) {

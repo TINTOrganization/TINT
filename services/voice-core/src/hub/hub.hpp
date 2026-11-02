@@ -23,6 +23,8 @@ inline constexpr std::uint16_t kNormal = 1000;
 inline constexpr std::uint16_t kRevoked = 4001;
 inline constexpr std::uint16_t kExpired = 4003;
 inline constexpr std::uint16_t kFull = 4008;
+inline constexpr std::uint16_t kNotOnStage = 4009;  // sala live sin estar en el escenario (ADR 0019)
+inline constexpr std::uint16_t kRoomClosed = 4010;  // ROOM_DISABLED: la sala se deshabilitó (ADR 0019)
 }  // namespace close_code
 
 // Una conexión WebSocket vista desde el Hub. send y close deben ser asíncronos
@@ -35,6 +37,8 @@ class Peer {
   virtual void send(std::string text) = 0;
   virtual void close(std::uint16_t code, std::string reason) = 0;
 };
+
+inline constexpr std::int64_t kClosedRoomMemoryMs = 60'000;
 
 struct HubOptions {
   std::size_t max_members = 8;
@@ -70,6 +74,16 @@ class Hub {
   // REVOKED de identity-api: cierra con 4001 las conexiones de ese jti en la sala.
   void revoke(const std::string& room_id, const std::string& jti);
 
+  // ROOM_CLOSED de identity-api: cierra con 4010 todas las conexiones de la sala y la olvida
+  // (sin peer_left: se van todos). Idempotente. Durante kClosedRoomMemoryMs recuerda la sala
+  // para cerrar también a quien pasó el handshake justo antes del cierre (carrera entre
+  // EXISTS room:{id}:closed y el join); después basta con la clave de Redis.
+  void close_room(const std::string& room_id);
+
+  // El host retiró al usuario del escenario (ya guardado en Redis): cierra con 4009 sus
+  // conexiones en la sala. Host y cohost no salen (siempre pueden estar en la voz).
+  void remove_from_stage(const std::string& room_id, const std::string& user_id);
+
   // Silencio del host ya guardado (WS host_mute o REST): avisa peer_muted a toda la sala.
   void apply_host_mute(const std::string& room_id, const std::string& user_id, bool muted);
 
@@ -89,6 +103,7 @@ class Hub {
   HubOptions options_;
   mutable std::mutex mu_;
   std::map<std::string, Room> rooms_;
+  std::map<std::string, std::int64_t> closed_rooms_;  // room_id -> instante del cierre (ms)
 };
 
 }  // namespace voice::hub
