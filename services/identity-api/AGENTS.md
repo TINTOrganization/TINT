@@ -66,7 +66,7 @@ Prefijo `/api/v1`. Los errores siempre tienen la forma `{ "error": "<texto>" }`;
 | `GET /rooms/:id/invitations` | Firebase + dueño | Invitaciones de la sala con `link` |
 | `POST /rooms/:id/invitations` | Firebase + dueño | Nueva invitación (`ttlHours` opcional, entero 1–720) |
 | `POST /invitations/:code/revoke` | Firebase + dueño | Cierra la invitación (no retira a quienes ya entraron). 404 si la invitación o su sala no existen, 403 si no es el dueño |
-| `GET /invitations/:code` | — | `{ code, roomId, roomTitle, expiresAt }`. Consulta pública para SSR y scrapers. 404 si no existe, 409 si revocada, 410 si expiró o sala eliminada |
+| `GET /invitations/:code` | — | `{ code, roomId, roomTitle, hostName, scheduledStartTime, expiresAt }`. Consulta pública para vista previa de invitación. 404 si no existe, está revocada, expiró o la sala fue eliminada |
 | `POST /invitations/claim` | — | `{ code, nick, deviceId? }` → `{ token, roomId, nick, roomTitle }`. `deviceId` es un UUID opcional del navegador que se guarda en `guest_sessions.device_id`. Errores: 400, 404, 409 (revocada), 410 (vencida o sala borrada), **403 `{ error: "BANNED" }`** (dispositivo bloqueado en la sala; sin `deviceId` no se comprueba) |
 | `POST /rooms/:id/sync-ticket` | Firebase + dueño | Sync-ticket HS256 para `/ws/sync`. `nick` = `displayName`, si no la parte local del email, si no `Host` (nunca el email completo) |
 | `POST /rooms/:id/analytics-ticket` | Firebase + dueño | `{ token, expiresAt }`: ticket de host HS256 (mismos claims y TTL que el sync-ticket, `generateHostTicket`) para la API de lectura de analytics. **Sin** `requireActiveRoom`: también se entrega para una sala borrada, para ver sus KPIs |

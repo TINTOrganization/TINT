@@ -5,7 +5,7 @@ import { validate } from '../middlewares/validate.js';
 import { requireAuthHost } from '../middlewares/auth.js';
 import { centralTokenCheck } from '../middlewares/centralAuth.js';
 import { requireRoomOwner } from '../middlewares/requireRoomOwner.js';
-import { upsertByProvider } from '../modules/users/users.repo.js';
+import { upsertByProvider, findById as findUserById } from '../modules/users/users.repo.js';
 import { requireRoomHostOrGuest } from '../middlewares/guestAuth.js';
 import { requireActiveRoom } from '../middlewares/activeRoom.js';
 import { create as createRoom, listByHost, findById, softRemoveById, updateTitle, setMedia } from '../modules/rooms/rooms.repo.js';
@@ -615,19 +615,27 @@ router.get('/invitations/:code', async (req, res) => {
     return res.status(404).json({ error: 'Not found' });
   }
   if (invitation.revoked) {
-    return res.status(409).json({ error: 'Revoked' });
+    return res.status(404).json({ error: 'Revoked' });
   }
   if (invitation.expiresAt < new Date()) {
-    return res.status(410).json({ error: 'Expired' });
+    return res.status(404).json({ error: 'Expired' });
   }
   const room = await findById(invitation.roomId);
   if (!room || room.status === 'deleted') {
-    return res.status(410).json({ error: 'Deleted' });
+    return res.status(404).json({ error: 'Deleted' });
   }
+  const host = await findUserById(room.hostId);
+  const hostName = host ? (host.displayName?.trim() || hostNick(host)) : 'Host';
+  const scheduledStartTime = (room as any).scheduledStartTime
+    ? new Date((room as any).scheduledStartTime).toISOString()
+    : room.createdAt ? new Date(room.createdAt).toISOString() : new Date().toISOString();
+
   res.json({
     code: invitation.code,
     roomId: room.id,
     roomTitle: room.title,
+    hostName,
+    scheduledStartTime,
     expiresAt: invitation.expiresAt,
   });
 });
