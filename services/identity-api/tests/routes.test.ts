@@ -103,7 +103,7 @@ describe('rutas v1', () => {
     expect(res.status).toBe(200);
     expect(res.body.sessions.sync.sessionId).toBe('sync-1');
     expect(startEvent).toHaveBeenCalledWith(
-      { title: 'Noche de cine', user: expect.objectContaining({ id: 'host-1' }) },
+      { title: 'Noche de cine', kind: 'watch', user: expect.objectContaining({ id: 'host-1' }) },
       {},
     );
   });

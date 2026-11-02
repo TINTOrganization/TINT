@@ -77,11 +77,13 @@ router.post('/auth/verify', requireAuthHost, validate(verifySchema), async (req,
 
 const startEventSchema = z.object({
   title: z.string().trim().min(1).max(150),
+  // watch: vídeo sincronizado (por defecto) · live: transmisión del host por stream-core (ADR 0019).
+  kind: z.enum(['watch', 'live']).default('watch'),
 });
 router.post('/events/start', requireAuthHost, validate(startEventSchema), async (req, res) => {
   try {
     const result = await startEvent(
-      { title: req.body.title, user: req.user! },
+      { title: req.body.title, kind: req.body.kind, user: req.user! },
       defaultEventStartDeps(),
     );
     res.json(result);
