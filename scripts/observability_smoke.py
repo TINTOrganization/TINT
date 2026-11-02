@@ -248,8 +248,8 @@ def verify_ac2_unhealthy() -> list[str]:
         if override_path.exists():
             override_path.unlink()
         print("==> Restaurando salud normal de 'web'")
-        run_cmd(["docker", "compose", "up", "-d", "web"])
-        if not wait_for_health("tint-web", "healthy", timeout_s=30.0):
+        run_cmd(["docker", "compose", "up", "-d", "--force-recreate", "web"])
+        if not wait_for_health("tint-web", "healthy", timeout_s=45.0):
             errors.append("AC2: tint-web no se recuperó a estado healthy tras retirar el override")
         else:
             print("  [OK] tint-web restaurado y healthy")

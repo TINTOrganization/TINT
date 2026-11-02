@@ -14,7 +14,7 @@ import signal
 import socket
 import sys
 import threading
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
 import boto3
@@ -30,13 +30,15 @@ from media_worker.logging_config import LogLevelError, install_logging
 from media_worker.repository import VideoRepository
 from media_worker.storage import S3BlobStore
 
-logger = logging.getLogger("media_worker")
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
 class TriggerSettings:
-    redis_url: str
-    consumer: str
+    """Configuración exclusiva del consumidor de Redis Streams."""
+
+    redis_url: str = "redis://localhost:6379"
+    consumer: str = ""
 
     @classmethod
     def from_env(cls, env: Mapping[str, str]) -> TriggerSettings:
@@ -52,6 +54,7 @@ def build_consumer(
     redis_factory=redis.Redis.from_url,
     s3_factory=boto3.client,
     connect=psycopg.connect,
+    heartbeat: Callable[[], object] | None = None,
 ) -> StreamConsumer:
     """Conecta Redis, MinIO/S3 y PostgreSQL y devuelve el consumidor listo para `run`."""
     settings = Settings.from_env(env)
@@ -69,7 +72,13 @@ def build_consumer(
         _handle, repo=repo, blobs=S3BlobStore(s3, settings.bucket), publish=publish
     )
     on_exhausted = functools.partial(_exhausted, repo=repo, publish=publish)
-    return StreamConsumer(client, handler, trigger.consumer, on_exhausted=on_exhausted)
+    return StreamConsumer(
+        client,
+        handler,
+        trigger.consumer,
+        on_exhausted=on_exhausted,
+        heartbeat=heartbeat,
+    )
 
 
 def _handle(video_id: str, repo, blobs, publish):
@@ -98,6 +107,8 @@ def main(env: Mapping[str, str] | None = None, health_factory=None) -> int:
         signal.signal(sig, lambda *_: stop.set())
     state = HealthState(max_age_s=health_settings.max_age_s)
     state.touch()
+    if consumer is not None and hasattr(consumer, "heartbeat"):
+        consumer.heartbeat = state.touch
     server = (health_factory or HealthServer)(state, port=health_settings.port)
     server.start()
     logger.info(

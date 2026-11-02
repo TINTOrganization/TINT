@@ -129,6 +129,24 @@ def test_main_starts_the_health_server_with_the_configured_port(monkeypatch):
     assert server.started and server.stopped
 
 
+def test_main_wires_consumer_heartbeat_to_health_state(monkeypatch):
+    server = FakeHealthServer()
+    captured = {}
+    consumer = Mock()
+
+    def factory(state, port):
+        captured.update(state=state)
+        return server
+
+    monkeypatch.setattr(entry, "build_consumer", lambda env: consumer)
+    assert entry.main(ENV, health_factory=factory) == 0
+    assert consumer.heartbeat is not None
+    # Simular que el reloj avanza y el latido del consumidor refresca el estado
+    captured["state"]._last_beat = 0.0
+    consumer.heartbeat()
+    assert captured["state"].is_healthy()
+
+
 def test_main_exits_2_on_invalid_health_settings(monkeypatch):
     monkeypatch.setattr(entry, "build_consumer", Mock())
     assert entry.main({**ENV, "MEDIA_WORKER_PORT": "nope"}) == 2
