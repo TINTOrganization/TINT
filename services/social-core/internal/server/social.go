@@ -109,6 +109,9 @@ type Deps struct {
 	// cierre por pregunta (ver trivia.go).
 	triviaArms    map[string]*triviaArm
 	triviaClosers map[string]func() bool
+	// streamStarts es started_at_ms del stream por sala live (streamEnded
+	// tras STREAM_ENDED); vive mientras la sala tenga relay.
+	streamStarts map[string]int64
 	// syncHook observa cada evento de sync procesado (solo tests).
 	syncHook func(recap.Kind)
 	// pollTimers es el timer de cierre de la encuesta vigente por sala.

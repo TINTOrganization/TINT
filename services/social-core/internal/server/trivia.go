@@ -306,8 +306,91 @@ func (d *Deps) triviaQuestion(roomID string, q trivia.Question, st trivia.State)
 	}
 }
 
+// triviaPosition es la posición (ms) contra la que se disparan las trivias
+// y su velocidad. En una sala live (room:{id}:kind == "live") es el minuto
+// del stream: now − started_at_ms con el reloj del servidor (velocidad 1);
+// sin STREAM_STARTED, o tras STREAM_ENDED, no hay posición y lo programado
+// queda pendiente. En una sala watch es la proyección del ancla del recap
+// y solo existe si el vídeo se reproduce. ok = false si no hay posición (o
+// Redis no responde: no se dispara nada).
+func (d *Deps) triviaPosition(ctx context.Context, roomID string) (pos int64, rate float64, ok bool) {
+	if d.IsLive != nil {
+		live, err := d.IsLive(ctx, roomID)
+		if err != nil {
+			return 0, 0, false
+		}
+		if live {
+			started, ok := d.streamStart(ctx, roomID)
+			if !ok {
+				return 0, 0, false
+			}
+			return d.now().UnixMilli() - started, 1, true
+		}
+	}
+	pb, ok, err := d.Recap.Position(ctx, roomID, d.now())
+	if err != nil || !ok || !pb.Playing {
+		return 0, 0, false
+	}
+	return pb.PositionMS, pb.Rate, true
+}
+
+// streamEnded marca en streamStarts una sala cuyo stream terminó.
+const streamEnded int64 = -1
+
+// streamStart devuelve started_at_ms del stream de la sala: el último
+// STREAM_STARTED visto por el relay o, tras un reinicio, la clave
+// room:{id}:stream:started_at de stream-core (se recuerda mientras haya
+// relay). Tras STREAM_ENDED no hay inicio.
+func (d *Deps) streamStart(ctx context.Context, roomID string) (int64, bool) {
+	d.mu.Lock()
+	cur := d.streamStarts[roomID]
+	d.mu.Unlock()
+	switch {
+	case cur == streamEnded:
+		return 0, false
+	case cur > 0:
+		return cur, true
+	case d.StreamStartedAt == nil:
+		return 0, false
+	}
+	started, ok, err := d.StreamStartedAt(ctx, roomID)
+	if err != nil || !ok {
+		return 0, false
+	}
+	d.mu.Lock()
+	if _, hasRelay := d.relays[roomID]; hasRelay && d.streamStarts[roomID] == 0 {
+		if d.streamStarts == nil {
+			d.streamStarts = make(map[string]int64)
+		}
+		d.streamStarts[roomID] = started
+	}
+	d.mu.Unlock()
+	return started, true
+}
+
+// onStream aplica un STREAM_STARTED/STREAM_ENDED de stream-core. Es
+// idempotente: un STREAM_STARTED con el mismo started_at_ms no reprograma;
+// STREAM_ENDED cancela el disparo pendiente.
+func (d *Deps) onStream(roomID string, ev socialevent.StreamEvent) {
+	next := streamEnded
+	if ev.Type == socialevent.StreamStarted {
+		next = ev.StartedAtMS
+	}
+	d.mu.Lock()
+	if d.streamStarts == nil {
+		d.streamStarts = make(map[string]int64)
+	}
+	if d.streamStarts[roomID] == next {
+		d.mu.Unlock()
+		return
+	}
+	d.streamStarts[roomID] = next
+	d.mu.Unlock()
+	d.armTrivia(roomID)
+}
+
 // armTrivia (re)agenda el timer de disparo de la sala hacia la próxima
-// pregunta pendiente con at_ms ≥ posición, solo si se está reproduciendo.
+// pregunta pendiente con at_ms ≥ posición (ver triviaPosition).
 func (d *Deps) armTrivia(roomID string) {
 	if d.Trivia == nil || d.Recap == nil {
 		return
@@ -331,8 +414,8 @@ func (d *Deps) armTrivia(roomID string) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), triviaOpTimeout)
 	defer cancel()
-	pb, ok, err := d.Recap.Position(ctx, roomID, d.now())
-	if err != nil || !ok || !pb.Playing {
+	pos, rate, ok := d.triviaPosition(ctx, roomID)
+	if !ok {
 		return
 	}
 	list, err := d.Trivia.List(ctx, roomID)
@@ -341,7 +424,7 @@ func (d *Deps) armTrivia(roomID string) {
 	}
 	var next *trivia.Scheduled
 	for i := range list { // ordenada por at_ms
-		if !list[i].State.Launched && list[i].AtMS >= pb.PositionMS {
+		if !list[i].State.Launched && list[i].AtMS >= pos {
 			next = &list[i]
 			break
 		}
@@ -349,7 +432,7 @@ func (d *Deps) armTrivia(roomID string) {
 	if next == nil {
 		return
 	}
-	delay := time.Duration(float64(next.AtMS-pb.PositionMS) / pb.Rate * float64(time.Millisecond))
+	delay := time.Duration(float64(next.AtMS-pos) / rate * float64(time.Millisecond))
 	tid, at := next.ID, next.AtMS
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -373,8 +456,8 @@ func (d *Deps) fireTrivia(roomID, triviaID string, atMS int64, gen uint64) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), triviaOpTimeout)
 	defer cancel()
-	pb, ok, err := d.Recap.Position(ctx, roomID, d.now())
-	if err != nil || !ok || !pb.Playing || pb.PositionMS < atMS-TriviaEarlyToleranceMS {
+	pos, _, ok := d.triviaPosition(ctx, roomID)
+	if !ok || pos < atMS-TriviaEarlyToleranceMS {
 		return
 	}
 	st, won, err := d.Trivia.Launch(ctx, roomID, triviaID, d.now().UnixMilli())
