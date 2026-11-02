@@ -396,6 +396,29 @@ docker compose down -v && docker compose up -d
 
 ---
 
+## 💾 Respaldo y restauración (DAT-06)
+
+Los datos viven en volúmenes con nombre (`postgres-data`, `mongo-data`, `redis-data` con AOF, `minio-data`) y sobreviven a `docker compose down`, a recrear los contenedores y a reconstruir las imágenes. Solo `docker compose down -v` los borra: el siguiente arranque empieza limpio.
+
+```bash
+make backup                                   # crea backups/<fecha-hora>
+make restore BACKUP=backups/20261102-180000   # restaura ese respaldo
+```
+
+Sin `make` (Windows CMD): `python scripts/data_backup.py backup` y `python scripts/data_backup.py restore <carpeta>`.
+
+| Almacén | Qué se guarda | Cómo se restaura |
+| :--- | :--- | :--- |
+| PostgreSQL | `pg_dump` de la base (identity-api y analytics) | `pg_restore --clean` |
+| MongoDB | `mongodump` (metadatos del chat) | `mongorestore --drop`; los usuarios los recrea `mongo-init` |
+| Redis | Instantánea RDB (estado de 12 h y colas pendientes) | Se carga y se reescribe el AOF |
+| MinIO | Copia del bucket (`mc mirror`) | `mc mirror --remove` hacia el bucket |
+
+- **Restaurar reemplaza los datos actuales.** Detiene los servicios que usan los almacenes y los reanuda al terminar.
+- Los respaldos contienen datos personales: `backups/` está en `.gitignore`. Guárdalos fuera de la máquina y cifrados.
+- Al restaurar en MinIO se pierde `Cache-Control` de los objetos; `Content-Type` se deduce de la extensión.
+- `make smoke-persistence` lo comprueba todo en un proyecto aislado, sin tocar tu stack: recrea los contenedores, respalda y restaura, y borra los volúmenes.
+
 ## 🌐 Entrada Única y Puertos Locales
 
 Para depuración y arquitectura de red, la siguiente tabla resume los puertos y rutas directas:

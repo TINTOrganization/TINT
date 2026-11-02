@@ -5,7 +5,7 @@ COVERAGE_MIN := 85
 NODE_SERVICES := services/identity-api
 CPP_SERVICES := services/voice-core
 
-.PHONY: up down env-sync test-all test-go test-python test-web test-node test-cpp test-stream smoke-stream load-stream load-voice e2e-voice observability health logs smoke-observability secrets smoke-secrets prototype-health e2e-stream
+.PHONY: up down env-sync backup restore smoke-persistence test-all test-go test-python test-web test-node test-cpp test-stream smoke-stream load-stream load-voice e2e-voice observability health logs smoke-observability secrets smoke-secrets prototype-health e2e-stream
 
 # Arranque recomendado: completa .env con lo que falte de .env.example y reconstruye
 # (tras un git pull, las imágenes viejas no tienen el código nuevo).
@@ -14,6 +14,19 @@ up: env-sync
 
 env-sync:
 	python3 scripts/env_sync.py
+
+# Respaldo y restauración de PostgreSQL, MongoDB, Redis y MinIO (DAT-06).
+# make backup                       → backups/<fecha-hora>
+# make restore BACKUP=backups/<...>  → detiene los servicios, restaura y los reanuda
+backup:
+	python3 scripts/data_backup.py backup
+
+restore:
+	python3 scripts/data_backup.py restore $(BACKUP)
+
+# Persistencia en un proyecto aislado (no toca tu stack): recrear, respaldar/restaurar y down -v.
+smoke-persistence:
+	python3 scripts/persistence_smoke.py
 
 down:
 	docker compose down
