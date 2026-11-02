@@ -438,10 +438,11 @@ flowchart LR
         CPP["cpp · voice-core<br/>clang-format · ASan+UBSan · TSan · gcovr 85<br/>Redis de servicio"]
         K6["sync-load-smoke · needs go<br/>Redis de servicio · sync-core :8083<br/>k6 50 VUs 20 s"]
         K6V["voice-load-smoke · needs cpp<br/>Redis de servicio · voice-core :8085 (imagen)<br/>k6 50 VUs 20 s"]
+        GTL["gitleaks<br/>auditoría de secretos Git<br/>fetch-depth 0"]
         GATE{"ci-gate<br/>if always"}
         GO --> K6
         CPP --> K6V
-        GO & PY & WEBJ & IDJ & CPP & K6 & K6V --> GATE
+        GO & PY & WEBJ & IDJ & CPP & K6 & K6V & GTL --> GATE
     end
 
     GATE -- "todos success" --> OK["merge permitido"]
@@ -454,6 +455,20 @@ flowchart LR
     CD -- "docker buildx + caché gha" --> GHCR[("GHCR<br/>tint-servicio:sha y latest")]
     GHCR -. "despliegue previsto, no implementado" .-> PROD["infraestructura de producción"]
 ```
+
+
+### 7.4 Gestión de secretos y variables de entorno (OPS-05, ADR 0022)
+
+Ningún secreto del sistema se versiona en Git ni se hornea en capas de las imágenes Docker:
+- **Almacenamiento y paso**: los secretos (`POSTGRES_PASSWORD`, `MINIO_ROOT_PASSWORD`, `MONGO_ROOT_PASSWORD`, `MONGO_URI`, `JWT_SECRET`, `TURN_SECRET`, `INTERNAL_API_SECRET`) se configuran en `.env` (ignorado en `.gitignore` y excluido en `.dockerignore`). Compose los inyecta al crear o arrancar cada contenedor.
+- **Fail-closed en arranque**: el servicio `tint-env-check` comprueba que ninguna variable secreta obligatoria esté vacía. Si falta alguna, el stack no arranca.
+- **Sin fallbacks inseguros**: `docker-compose.yml` interpola secretos como `${VAR}` sin alternativas `:-dev-...`.
+- **Actualización de secretos**: Docker Compose no relee el archivo `.env` del host tras una edición al hacer `docker restart`. La regla operativa para aplicar un secreto actualizado sin reconstruir imágenes es:
+  ```bash
+  docker compose up -d --no-build
+  ```
+- **Variables públicas del cliente**: las variables `VITE_*` (por ejemplo `VITE_FIREBASE_*`) son configuraciones públicas consumidas en el navegador e integradas durante el build de `apps/web/Dockerfile`. No son secretos de servidor.
+- **Auditoría CI con Gitleaks**: el pipeline ejecuta un escaneo completo de historial con `.gitleaks.toml` permitiendo únicamente marcadores didácticos de `.env.example`.
 
 ## 8. Puertos locales
 
