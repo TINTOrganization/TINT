@@ -93,7 +93,8 @@ docker run -d --name "$prefix-core" --network host \
   -e TURN_SECRET="$TURN_SECRET" tint-stream-core:e2e >/dev/null
 started+=("$prefix-core")
 
-docker run -d --name "$prefix-web" -p "$WEB_PORT:80" tint-web:e2e-stream >/dev/null
+# La imagen de la web no trae valor por defecto para el nivel de log de nginx (compose lo define).
+docker run -d --name "$prefix-web" -p "$WEB_PORT:80" -e NGINX_ERROR_LOG_LEVEL=warn tint-web:e2e-stream >/dev/null
 started+=("$prefix-web")
 
 for url in "http://127.0.0.1:$STREAM_PORT/healthz" "http://127.0.0.1:$WEB_PORT/"; do

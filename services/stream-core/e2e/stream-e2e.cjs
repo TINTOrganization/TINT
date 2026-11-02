@@ -259,6 +259,9 @@ const pageStats = (page) =>
           out.outbound[s.rid || '?'] = {
             bytes: s.bytesSent,
             header: s.headerBytesSent, // en Chrome incluye el padding
+            packets: s.packetsSent,
+            rtx: s.retransmittedBytesSent,
+            targetBps: s.targetBitrate,
             frames: s.framesEncoded,
             w: s.frameWidth,
             h: s.frameHeight,
@@ -469,9 +472,16 @@ async function ttffOf(page) {
     const lateHeaderKbps = Object.fromEntries(
       Object.keys(late1.outbound).map((r) => [r, Math.round(((late1.outbound[r].header - (late0.outbound[r]?.header || 0)) * 8) / 2000)]),
     );
-    console.log(`  host en régimen: cabeceras + padding por capa (kbps) ${JSON.stringify(lateHeaderKbps)}`);
+    const rate = (field, scale) =>
+      Object.fromEntries(
+        Object.keys(late1.outbound).map((r) => [r, Math.round((((late1.outbound[r][field] || 0) - (late0.outbound[r]?.[field] || 0)) * scale) / 2000)]),
+      );
+    const latePps = rate('packets', 1000);
+    const lateRtxKbps = rate('rtx', 8);
+    const lateTargetKbps = Object.fromEntries(Object.keys(late1.outbound).map((r) => [r, Math.round((late1.outbound[r].targetBps || 0) / 1000)]));
+    console.log(`  host en régimen: cabeceras + padding por capa (kbps) ${JSON.stringify(lateHeaderKbps)} · paquetes/s ${JSON.stringify(latePps)} · retransmitido (kbps) ${JSON.stringify(lateRtxKbps)} · targetBitrate (kbps) ${JSON.stringify(lateTargetKbps)}`);
     const lateHs = (await events(host, 'host_stats')).pop();
-    results.hostLate = { kbps: lateKbps, headerKbps: lateHeaderKbps, bweOutKbps: Math.round((late1.bweOutBps || 0) / 1000), sfu: lateHs?.layers, limit: late1.outbound.h?.limit };
+    results.hostLate = { kbps: lateKbps, headerKbps: lateHeaderKbps, pps: latePps, rtxKbps: lateRtxKbps, targetKbps: lateTargetKbps, bweOutKbps: Math.round((late1.bweOutBps || 0) / 1000), sfu: lateHs?.layers, limit: late1.outbound.h?.limit };
     console.log(`  host en régimen: Chrome por capa (kbps) ${JSON.stringify(lateKbps)} · BWE de salida ${results.hostLate.bweOutKbps} kbps · limitación ${late1.outbound.h?.limit}`);
     console.log(`  SFU host_stats en régimen: ${(lateHs?.layers || []).map((l) => `${l.rid} ${Math.round(l.bitrate_bps / 1000)}k (${l.viewers} viewers)`).join(' · ')}`);
 
