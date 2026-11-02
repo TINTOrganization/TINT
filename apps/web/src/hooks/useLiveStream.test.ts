@@ -378,7 +378,7 @@ describe('useLiveStream — viewer: WHEP y DataChannel (HU-LIVE-02, §4)', () =>
     await watch(result);
     const dc = FakeStreamPeerConnection.instances[0].eventsChannel!;
     act(() => dc.emit({ type: 'stream_state', state: 'live' }));
-    act(() => dc.emit({ type: 'stream_state', state: 'ended', reason: 'host_closed' }));
+    act(() => dc.emit({ type: 'stream_state', state: 'ended', reason: 'host_ended' }));
     expect(result.current.status).toBe('ended');
   });
 

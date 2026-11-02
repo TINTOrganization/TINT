@@ -1,6 +1,6 @@
 /**
  * Pruebas rojas: canjear una invitación de una sala deshabilitada (HU-LIVE-08 AC3,
- * HU-LIVE-09 AC2; ADR 0018). `POST /invitations/claim` → `410 {error:"Disabled"}` muestra
+ * HU-LIVE-09 AC2; ADR 0019). `POST /invitations/claim` → `410 {error:"Disabled"}` muestra
  * "El evento terminó"; el `410` de una sala eliminada conserva su mensaje.
  */
 import { render, screen } from '@testing-library/react';

@@ -1,5 +1,5 @@
 /**
- * Pruebas rojas del aviso de fin del evento (HU-LIVE-08, HU-LIVE-09 AC1/AC2; ADR 0018).
+ * Pruebas rojas del aviso de fin del evento (HU-LIVE-08, HU-LIVE-09 AC1/AC2; ADR 0019).
  * Cierre 4010 ROOM_DISABLED o `410 {error:"Disabled"}` → "El evento terminó y la sala fue
  * deshabilitada", con un botón al dashboard (host) o al inicio (invitado). El 4001 sigue
  * siendo "retirado" (no se confunden).
