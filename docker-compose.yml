@@ -54,6 +54,7 @@ services:
       SOCIAL_CORE_UPSTREAM: ${SOCIAL_CORE_UPSTREAM:-social-core:8082}
       ANALYTICS_UPSTREAM: ${ANALYTICS_UPSTREAM:-analytics:8084}
       VOICE_CORE_UPSTREAM: ${VOICE_CORE_UPSTREAM:-voice-core:8085}
+      STREAM_CORE_UPSTREAM: ${STREAM_CORE_UPSTREAM:-stream-core:8086}
     volumes:
       - ./gateway/Caddyfile:/etc/caddy/Caddyfile:ro
       - gateway-data:/data
@@ -298,6 +299,8 @@ services:
       SYNC_CORE_URL: http://sync-core:8080
       SOCIAL_CORE_URL: http://social-core:8082
       ANALYTICS_URL: http://analytics:8084
+      STREAM_CORE_URL: http://stream-core:8086
+      INTERNAL_API_SECRET: ${INTERNAL_API_SECRET:-dev-internal-secret-change-in-prod}
       DATABASE_URL: postgresql://${POSTGRES_USER:-tint}:${POSTGRES_PASSWORD:-tint}@postgres:5432/${POSTGRES_DB:-tint}
       REDIS_URL: redis://redis:6379
       JWT_SECRET: ${JWT_SECRET:-dev-secret-change-in-prod}
@@ -364,6 +367,39 @@ services:
       interval: 10s
       timeout: 5s
       retries: 10
+
+  # Transmisión en vivo (C++ SFU, ADR 0018): señalización WHIP/WHEP (/api/v1/stream/*) y medios
+  # WebRTC en un solo puerto UDP (ICE UDP mux). STREAM_PUBLIC_IP es la IP que el navegador
+  # alcanza (127.0.0.1 si navegas en la misma máquina; la IP de la LAN para otros equipos).
+  stream-core:
+    build: ./services/stream-core
+    container_name: tint-stream-core
+    <<: *env-check
+    depends_on:
+      env-check:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    environment:
+      STREAM_CORE_ADDR: "0.0.0.0:8086"
+      STREAM_UDP_PORT: ${STREAM_UDP_PORT:-8087}
+      STREAM_PUBLIC_IP: ${STREAM_PUBLIC_IP:-127.0.0.1}
+      STREAM_MAX_VIEWERS: ${STREAM_MAX_VIEWERS:-50}
+      STREAM_HOST_GRACE_S: ${STREAM_HOST_GRACE_S:-60}
+      REDIS_URL: redis://redis:6379
+      JWT_SECRET: ${JWT_SECRET:-dev-secret-change-in-prod}
+      JWT_ISSUER: ${JWT_ISSUER:-tint-identity}
+      JWT_AUDIENCE: ${JWT_AUDIENCE:-tint:room}
+      ALLOWED_ORIGINS: ${STREAM_ALLOWED_ORIGINS:-localhost:5173,127.0.0.1:5173,localhost}
+      IDENTITY_API_URL: http://identity-api:8081
+      INTERNAL_API_SECRET: ${INTERNAL_API_SECRET:-dev-internal-secret-change-in-prod}
+      STUN_URLS: ${STUN_URLS:-stun:localhost:3478}
+      TURN_URLS: ${TURN_URLS:-turn:localhost:3478?transport=udp,turn:localhost:3478?transport=tcp}
+      TURN_SECRET: ${TURN_SECRET:-dev-turn-secret-change-in-prod}
+      TURN_TTL_SECONDS: ${TURN_TTL_SECONDS:-3600}
+    ports:
+      - "8086:8086"
+      - "${STREAM_UDP_PORT:-8087}:${STREAM_UDP_PORT:-8087}/udp"
 
   # STUN/TURN para la voz. Red del host: el relay debe anunciar direcciones alcanzables
   # desde el navegador (en Linux). Credenciales efímeras firmadas con TURN_SECRET (REST API de TURN).

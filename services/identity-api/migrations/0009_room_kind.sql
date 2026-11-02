@@ -1,0 +1,1 @@
+ALTER TABLE "rooms" ADD COLUMN "kind" varchar(10) DEFAULT 'watch' NOT NULL;

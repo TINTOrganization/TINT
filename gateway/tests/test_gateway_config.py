@@ -45,6 +45,32 @@ class GatewayConfigTests(unittest.TestCase):
         self.assertIn("reverse_proxy @social_api {$SOCIAL_CORE_UPSTREAM:social-core:8082}", caddyfile)
         self.assertLess(caddyfile.index("@social_api path"), caddyfile.index("@identity path /api/*"))
 
+    def test_gateway_routes_stream_signaling_before_identity(self):
+        # WHIP/WHEP por HTTP a stream-core (HU-LIVE-06, R8). Debe ir antes del catch-all /api/*.
+        caddyfile = CONFIG.read_text(encoding="utf-8")
+
+        self.assertIn("@stream_api path /api/v1/stream/*", caddyfile)
+        self.assertIn("reverse_proxy @stream_api {$STREAM_CORE_UPSTREAM:stream-core:8086}", caddyfile)
+        self.assertLess(
+            caddyfile.index("@stream_api path"), caddyfile.index("@identity path /api/*")
+        )
+
+    def test_gateway_hides_internal_identity_routes(self):
+        # /api/v1/internal/rooms/{id}/disable solo para la red interna (ADR 0019).
+        caddyfile = CONFIG.read_text(encoding="utf-8")
+
+        self.assertIn("@internal_api {\n        path /api/v1/internal/*\n        not path /api/v1/internal/auth/check", caddyfile)
+        self.assertIn("respond @internal_api 404", caddyfile)
+        self.assertLess(
+            caddyfile.index("respond @internal_api 404"), caddyfile.index("forward_auth @protected")
+        )
+
+    def test_gateway_lets_cors_preflight_through_without_token(self):
+        # El navegador no manda Authorization en el preflight OPTIONS del WHIP/WHEP.
+        caddyfile = CONFIG.read_text(encoding="utf-8")
+
+        self.assertIn("not method OPTIONS", caddyfile)
+
     def test_gateway_declares_configurable_service_upstreams(self):
         compose = COMPOSE.read_text(encoding="utf-8")
 
@@ -52,6 +78,7 @@ class GatewayConfigTests(unittest.TestCase):
         self.assertIn("SOCIAL_CORE_UPSTREAM:", compose)
         self.assertIn("ANALYTICS_UPSTREAM:", compose)
         self.assertIn("VOICE_CORE_UPSTREAM:", compose)
+        self.assertIn("STREAM_CORE_UPSTREAM:", compose)
 
     def test_gateway_returns_clear_503_for_unavailable_upstreams(self):
         caddyfile = CONFIG.read_text(encoding="utf-8")

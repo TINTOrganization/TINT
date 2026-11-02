@@ -103,7 +103,7 @@ describe('rutas v1', () => {
     expect(res.status).toBe(200);
     expect(res.body.sessions.sync.sessionId).toBe('sync-1');
     expect(startEvent).toHaveBeenCalledWith(
-      { title: 'Noche de cine', user: expect.objectContaining({ id: 'host-1' }) },
+      { title: 'Noche de cine', kind: 'watch', user: expect.objectContaining({ id: 'host-1' }) },
       {},
     );
   });
@@ -527,6 +527,17 @@ describe('rutas v1', () => {
     const res = await request(app).post('/api/v1/invitations/claim').send({ code: 'abc', nick: 'Ana' });
     expect(res.status).toBe(200);
     expect(res.body.roomTitle).toBe('Noche de cine');
+  });
+
+  it.each([
+    ['watch', { ...room, kind: 'watch' }],
+    ['live', { ...room, kind: 'live' }],
+  ])('POST /invitations/claim devuelve roomKind=%s para elegir /watch o /live (ADR 0019)', async (kind, r) => {
+    vi.mocked(findByCode).mockResolvedValueOnce({ ...invitation } as any);
+    vi.mocked(findById).mockResolvedValueOnce(r as any);
+    const res = await request(app).post('/api/v1/invitations/claim').send({ code: 'abc', nick: 'Ana' });
+    expect(res.status).toBe(200);
+    expect(res.body.roomKind).toBe(kind);
   });
 
   it('POST /invitations/claim 400 si el nick supera 64 caracteres', async () => {

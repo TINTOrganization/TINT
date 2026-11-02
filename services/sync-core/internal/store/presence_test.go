@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -160,5 +161,37 @@ func TestBeatRefreshesSyncStateTTL(t *testing.T) {
 	}
 	if mr.Exists(syncevent.StateKey("vacia")) {
 		t.Error("el latido no debe crear sync_state")
+	}
+}
+
+// ADR 0019: room:{id}:closed (sin TTL, lo escribe identity-api) marca una
+// sala deshabilitada.
+func TestIsRoomClosed(t *testing.T) {
+	s, mr, _ := setup(t)
+	ctx := context.Background()
+	if ok, err := s.IsRoomClosed(ctx, room); err != nil || ok {
+		t.Fatalf("IsRoomClosed = %v, %v", ok, err)
+	}
+	_ = mr.Set(syncevent.ClosedKey(room), "1")
+	if ok, err := s.IsRoomClosed(ctx, room); err != nil || !ok {
+		t.Errorf("sala cerrada no detectada: %v, %v", ok, err)
+	}
+	if ok, _ := s.IsRoomClosed(ctx, "otra"); ok {
+		t.Error("la clave de una sala no cierra otra")
+	}
+	mr.Close()
+	if _, err := s.IsRoomClosed(ctx, room); err == nil {
+		t.Error("sin Redis IsRoomClosed debe fallar (el handshake falla cerrado)")
+	}
+}
+
+// Init comprueba room:{id}:closed en la misma transacción: cubre la carrera
+// en la que la sala se cierra entre la comprobación del handshake y la
+// suscripción al bus (el ROOM_CLOSED se publicó antes de suscribirse).
+func TestInitRejectsClosedRoom(t *testing.T) {
+	s, mr, _ := setup(t)
+	_ = mr.Set(syncevent.ClosedKey(room), "1")
+	if _, err := s.Init(context.Background(), room, "h", t0); !errors.Is(err, ErrRoomClosed) {
+		t.Fatalf("Init sala cerrada: err = %v, want ErrRoomClosed", err)
 	}
 }

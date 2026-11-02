@@ -192,6 +192,8 @@ func disconnectReason(cause error) string {
 		return "slow"
 	case errors.Is(cause, ErrRevoked):
 		return "revoked"
+	case errors.Is(cause, ErrRoomClosed):
+		return "room_closed"
 	}
 	return "normal"
 }
@@ -402,6 +404,21 @@ func (h *Hub) revoke(room, jti string) {
 	}
 }
 
+// closeRoom cierra todas las conexiones locales de la sala deshabilitada
+// (host incluido). Es idempotente: cancelar un cliente ya cerrado no cambia
+// su causa, y cada cliente sale de la sala por su propio Disconnect.
+func (h *Hub) closeRoom(room string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	r, ok := h.rooms[room]
+	if !ok {
+		return
+	}
+	for c := range r.clients {
+		c.close(ErrRoomClosed)
+	}
+}
+
 // canControl indica si el cliente puede emitir comandos ahora mismo.
 func (h *Hub) canControl(c *Client) bool {
 	if c.claims.CanControl() {
@@ -516,6 +533,11 @@ func (h *Hub) Deliver(roomID string, payload []byte) {
 			return
 		case syncevent.Revoked:
 			h.revoke(roomID, ev.JTI) // solo entre réplicas: nunca llega a los clientes
+			return
+		case syncevent.RoomClosed:
+			if ev.ValidRoomClosed(roomID) {
+				h.closeRoom(roomID) // tampoco llega a los clientes: se enteran por el 4010
+			}
 			return
 		}
 	}
