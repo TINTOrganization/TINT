@@ -25,7 +25,9 @@ if(STREAM_SANITIZE STREQUAL "address")
   add_compile_options(-fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=all)
   add_link_options(-fsanitize=address,undefined)
 elseif(STREAM_SANITIZE STREQUAL "thread")
-  add_compile_options(-fsanitize=thread -fno-omit-frame-pointer)
+  # -Wno-tsan: GCC 14 avisa de atomic_thread_fence dentro de libstdc++/Boost.Asio, no de nuestro código
+  # (igual que voice-core). Con -Werror, sin esto el build de TSan no compila.
+  add_compile_options(-fsanitize=thread -fno-omit-frame-pointer -Wno-tsan)
   add_link_options(-fsanitize=thread)
 endif()
 
