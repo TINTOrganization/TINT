@@ -2,7 +2,7 @@
 
 | Campo | Valor |
 | :--- | :--- |
-| **Estado** | Propuesta |
+| **Estado** | Aceptada (implementada en los seis dominios, 2026-11-02) |
 | **Fecha** | 2026-11-01 |
 | **Dominios afectados** | `services/identity-api`, `services/stream-core`, `services/sync-core`, `services/social-core`, `services/voice-core`, `apps/web` |
 

@@ -1,23 +1,23 @@
 # 📡 Dominio de Transmisión en vivo (stream-core)
 
 > El host transmite su pantalla (con cámara opcional y audio del PC) a la sala, y el servidor reenvía esa señal a cada espectador (SFU). Es un servicio propio en C++ (`services/stream-core`) sobre libdatachannel, con señalización WHIP/WHEP por el gateway.
-> Decisiones: [ADR 0019](adr/0018-stream-core-sfu-cpp-con-libdatachannel.md) (SFU en C++) · [ADR 0019](adr/0019-salas-live-y-cierre-room-closed.md) (salas `live` y `ROOM_CLOSED`).
-> Estado: **stream-core implementado** (señalización, SFU y ciclo de vida, con pruebas en verde). identity-api, sync, social, voz y web: **pruebas rojas escritas**. Spikes S1, S3 y S5 pendientes en navegador real. Los umbrales no se relajan.
+> Decisiones: [ADR 0018](adr/0018-stream-core-sfu-cpp-con-libdatachannel.md) (SFU en C++) · [ADR 0019](adr/0019-salas-live-y-cierre-room-closed.md) (salas `live` y `ROOM_CLOSED`).
+> Estado: **implementado en todos los dominios** (stream-core, identity-api, sync-core, social-core, voice-core y web), con sus gates en verde y la carga S2 medida (§7.1). Pendientes: spikes S1, S3 y S5 en navegador real y el E2E de punta a punta (§8). Los umbrales no se relajan.
 
 ## 1. Historias de usuario y criterios de aceptación
 
 | HU | Criterios verificables | Estado |
 | :--- | :--- | :--- |
-| **HU-LIVE-01** Iniciar la transmisión (host) | **AC1** `POST /api/v1/stream/rooms/{id}/whip` con un ticket de host y un SDP válido devuelve `201`, `Content-Type: application/sdp`, `Location: /api/v1/stream/sessions/{sid}` y `Link rel="ice-server"`. · **AC2** Con un token `participant`: `403 {error:"FORBIDDEN_ROLE"}`. · **AC3** Si el host niega o cancela la **pantalla**, ve un error claro y no se hace POST. La **cámara es opcional**: por defecto se transmite solo la pantalla y la cámara se activa o desactiva en vivo. Si se niega la cámara o el micrófono, aparece un aviso que no bloquea y el stream sigue. | ⚪ Especificada |
-| **HU-LIVE-01b** Transmitir el audio del PC | **AC1** Se transmite el audio del sistema o de la pestaña (`getDisplayMedia({audio:true, systemAudio:'include'})`). · **AC2** Mezclador con ganancia, silencio y vúmetro **por fuente** (PC, micrófono, escenario). · **AC3** El audio del PC va sin AEC, NS ni AGC, en Opus **estéreo a 128 kbps**. · **AC4** Si el navegador o el sistema no entrega pista de audio, aparece un aviso claro y el stream sigue con el micrófono. · **AC5** Sin eco ni audio duplicado (`suppressLocalAudioPlayback`/`restrictOwnAudio`; si no existen, se sugieren auriculares). | ⚪ Especificada |
-| **HU-LIVE-02** Ver con muy poca latencia | **AC1** El primer frame decodificado llega en p95 < **2 s** (el máximo es 5 s). · **AC2** Lo que sube el host varía como mucho ±10 % entre 1 y 50 viewers. · **AC3** Si un viewer pierde ancho de banda, en < 3 s baja a `m`/`l` sin congelarse más de 1 s, y los demás siguen en `h`. | ⚪ |
-| **HU-LIVE-03** Redes restrictivas | **AC1** Con `iceTransportPolicy:'relay'` el par elegido es `relay` y el vídeo llega. · **AC2** Con coturn detenido, la ruta directa funciona. · **AC3** Cada WHIP/WHEP o `GET …/ice-servers` entrega credenciales TURN nuevas. | ⚪ |
-| **HU-LIVE-04** Un solo upload (operador) | **AC1** Con 10 viewers, el host tiene 1 PeerConnection de vídeo con 3 SSRC salientes. · **AC2** Un `DELETE` o la caída de un viewer libera su sesión y su lugar en el cupo. · **AC3** El viewer 51 recibe `409 {error:"ROOM_FULL"}`. | ⚪ |
-| **HU-LIVE-05** Terminar y deshabilitar | **AC1** `POST /rooms/{id}/end` devuelve `200`, la sala queda en `disabled` y se publica `ROOM_CLOSED`. · **AC2** Si el host no vuelve en **60 s**, la sala se deshabilita sola. · **AC3** Si vuelve antes, los viewers conservan su sesión y la sala sigue `active`. · **AC4** Sobre una sala deshabilitada, WHIP/WHEP responde `410 ROOM_DISABLED` y reactivar responde `409`. | ⚪ |
-| **HU-LIVE-06** Señalización HTTP por el gateway | **AC1** Una oferta que pasa por Caddy recibe su respuesta. · **AC2** Sin token: `401`. · **AC3** Si el SDP no es válido: `400 {error:"INVALID_SDP", message}`. Si el `Content-Type` es incorrecto: `415`. | ⚪ |
-| **HU-LIVE-07** C++ sobre una librería WebRTC | **AC1** `docker build` compila. · **AC2** `GET /healthz` devuelve `200 {"status":"ok","service":"stream-core"}`. · **AC3** Con el README se corren las pruebas. | ⚪ |
-| **HU-LIVE-08** Aviso de fin al participante | **AC1** Con `stream_state:ended` o el cierre `4010`, aparece el aviso "El evento terminó y la sala fue deshabilitada". · **AC2** El botón lleva a `/dashboard` (host) o al inicio (invitado). · **AC3** Al reconectarse después del fin, ve el mismo aviso. | ⚪ |
-| **HU-LIVE-09** Deshabilitar en todos los servicios | **AC1** sync, social (chat y trivia), voz y stream cierran con `4010`. · **AC2** Unirse por enlace o código devuelve `410 {error:"Disabled"}`. · **AC3** El resumen de analítica y el historial del chat siguen siendo legibles (el chat, mientras dure Redis: 12 h). · **AC4** No se puede reactivar (`409`). | ⚪ |
+| **HU-LIVE-01** Iniciar la transmisión (host) | **AC1** `POST /api/v1/stream/rooms/{id}/whip` con un ticket de host y un SDP válido devuelve `201`, `Content-Type: application/sdp`, `Location: /api/v1/stream/sessions/{sid}` y `Link rel="ice-server"`. · **AC2** Con un token `participant`: `403 {error:"FORBIDDEN_ROLE"}`. · **AC3** Si el host niega o cancela la **pantalla**, ve un error claro y no se hace POST. La **cámara es opcional**: por defecto se transmite solo la pantalla y la cámara se activa o desactiva en vivo. Si se niega la cámara o el micrófono, aparece un aviso que no bloquea y el stream sigue. | ✅ Implementada |
+| **HU-LIVE-01b** Transmitir el audio del PC | **AC1** Se transmite el audio del sistema o de la pestaña (`getDisplayMedia({audio:true, systemAudio:'include'})`). · **AC2** Mezclador con ganancia, silencio y vúmetro **por fuente** (PC, micrófono, escenario). · **AC3** El audio del PC va sin AEC, NS ni AGC, en Opus **estéreo a 128 kbps**. · **AC4** Si el navegador o el sistema no entrega pista de audio, aparece un aviso claro y el stream sigue con el micrófono. · **AC5** Sin eco ni audio duplicado (`suppressLocalAudioPlayback`/`restrictOwnAudio`; si no existen, se sugieren auriculares). | 🟡 Implementada; falta verificar en navegador (S5) |
+| **HU-LIVE-02** Ver con muy poca latencia | **AC1** El primer frame decodificado llega en p95 < **2 s** (el máximo es 5 s). · **AC2** Lo que sube el host varía como mucho ±10 % entre 1 y 50 viewers. · **AC3** Si un viewer pierde ancho de banda, en < 3 s baja a `m`/`l` sin congelarse más de 1 s, y los demás siguen en `h`. | 🟡 Implementada; falta verificar en navegador (E2E glass-to-glass; S2 medido) |
+| **HU-LIVE-03** Redes restrictivas | **AC1** Con `iceTransportPolicy:'relay'` el par elegido es `relay` y el vídeo llega. · **AC2** Con coturn detenido, la ruta directa funciona. · **AC3** Cada WHIP/WHEP o `GET …/ice-servers` entrega credenciales TURN nuevas. | 🟡 Implementada; falta verificar en navegador (E2E `relay` y S3) |
+| **HU-LIVE-04** Un solo upload (operador) | **AC1** Con 10 viewers, el host tiene 1 PeerConnection de vídeo con 3 SSRC salientes. · **AC2** Un `DELETE` o la caída de un viewer libera su sesión y su lugar en el cupo. · **AC3** El viewer 51 recibe `409 {error:"ROOM_FULL"}`. | ✅ Implementada |
+| **HU-LIVE-05** Terminar y deshabilitar | **AC1** `POST /rooms/{id}/end` devuelve `200`, la sala queda en `disabled` y se publica `ROOM_CLOSED`. · **AC2** Si el host no vuelve en **60 s**, la sala se deshabilita sola. · **AC3** Si vuelve antes, los viewers conservan su sesión y la sala sigue `active`. · **AC4** Sobre una sala deshabilitada, WHIP/WHEP responde `410 ROOM_DISABLED` y reactivar responde `409`. | ✅ Implementada |
+| **HU-LIVE-06** Señalización HTTP por el gateway | **AC1** Una oferta que pasa por Caddy recibe su respuesta. · **AC2** Sin token: `401`. · **AC3** Si el SDP no es válido: `400 {error:"INVALID_SDP", message}`. Si el `Content-Type` es incorrecto: `415`. | ✅ Implementada |
+| **HU-LIVE-07** C++ sobre una librería WebRTC | **AC1** `docker build` compila. · **AC2** `GET /healthz` devuelve `200 {"status":"ok","service":"stream-core"}`. · **AC3** Con el README se corren las pruebas. | ✅ Implementada |
+| **HU-LIVE-08** Aviso de fin al participante | **AC1** Con `stream_state:ended` o el cierre `4010`, aparece el aviso "El evento terminó y la sala fue deshabilitada". · **AC2** El botón lleva a `/dashboard` (host) o al inicio (invitado). · **AC3** Al reconectarse después del fin, ve el mismo aviso. | ✅ Implementada |
+| **HU-LIVE-09** Deshabilitar en todos los servicios | **AC1** sync, social (chat y trivia), voz y stream cierran con `4010`. · **AC2** Unirse por enlace o código devuelve `410 {error:"Disabled"}`. · **AC3** El resumen de analítica y el historial del chat siguen siendo legibles (el chat, mientras dure Redis: 12 h). · **AC4** No se puede reactivar (`409`). | ✅ Implementada |
 
 **Extras de la v1:**
 - escena "Empezamos pronto" / "Ya volvemos";
@@ -104,7 +104,7 @@ stateDiagram-v2
     HostGrace --> Ended: vence la gracia (POST /internal/rooms/{id}/disable)
     Live --> Ended: ROOM_CLOSED (POST /rooms/{id}/end)
     Waiting --> Ended: ROOM_CLOSED
-    Ended --> [*]: cierra todas las sesiones, room:{id}:closed
+    Ended --> [*]: cierra todas las sesiones (sala cerrada)
 ```
 
 ## 6. Contratos con otros dominios
@@ -133,7 +133,7 @@ Todos los mensajes nuevos de esta feature siguen las mismas reglas. Un mensaje q
 | `reason` de cierre | `host_ended` (el host terminó con `POST /rooms/{id}/end`) o `grace_expired` (el host no volvió a tiempo). Es el mismo valor en `ROOM_CLOSED`, `STREAM_ENDED`, `stream_state` y en el evento `room_closed` de analítica |
 | Errores HTTP de identity-api | `{error:"PascalCase"}`, como los existentes (`Deleted`, `Forbidden`): `Disabled`, `AlreadyDisabled`, `NotLive`, `NotReactivable` |
 | Errores HTTP de las rutas nuevas de stream-core, social-core y voice-core | `{error:"UPPER_SNAKE", message?}` (`ROOM_DISABLED`, `ROOM_FULL`, `FORBIDDEN_ROLE`, `NOT_ON_STAGE`) |
-| Errores por WebSocket | `{type:"error", code:"UPPER_SNAKE", message?, ref_event_id?}`, igual que el Canal Social |
+| Errores por WebSocket | `{type:"error", code:"UPPER_SNAKE", message?, event_id_ref?}`, igual que el Canal Social |
 
 **Códigos de cierre de WebSocket** (todos tras el upgrade, [ADR 0014](adr/0014-upgrade-y-cierre-4xxx-para-estados-terminales.md)):
 
@@ -155,16 +155,21 @@ Todos los mensajes nuevos de esta feature siguen las mismas reglas. Un mensaje q
 {"type":"STREAM_ENDED","event_id":"<uuid>","room_id":"r1","reason":"grace_expired","occurred_at":"2026-11-01T18:00:00.000Z"}
 ```
 
-Los consumidores son **idempotentes**: un `ROOM_CLOSED` repetido no hace nada nuevo, y un `STREAM_STARTED` repetido con el mismo `started_at_ms` no reprograma trivias. Al terminar la sala, stream-core borra `room:{id}:stream:started_at` antes de publicar `STREAM_ENDED`: un social-core que arranque después del fin no encuentra la clave y no rearma trivias.
+Los consumidores son **idempotentes**: un `ROOM_CLOSED` repetido no hace nada nuevo, y un `STREAM_STARTED` repetido con el mismo `started_at_ms` no reprograma trivias. Un mensaje del bus con `room_id` distinto del canal o con un `reason` desconocido se descarta. Para no perder un `ROOM_CLOSED` publicado entre el handshake y la suscripción, cada consumidor vuelve a leer `room:{id}:closed` después de suscribirse (sync-core en `Init`; voice-core recuerda las salas cerradas 60 s). Al terminar, stream-core borra `room:{id}:stream:started_at` antes de publicar `STREAM_ENDED`. Al terminar la sala, stream-core borra `room:{id}:stream:started_at` antes de publicar `STREAM_ENDED`: un social-core que arranque después del fin no encuentra la clave y no rearma trivias.
 
 **identity-api** (`/api/v1`, Firebase ID token del dueño salvo la ruta interna)
 
 | Ruta | Éxito | Errores |
 | :--- | :--- | :--- |
 | `POST /rooms/{id}/end` | `200 {"room_id","status":"disabled","reason":"host_ended","closed_at"}` | `403 Forbidden` (no es el dueño) · `404` · `409 NotLive` (sala `watch`: se borra con `DELETE`) · `409 AlreadyDisabled` · `410 Deleted` · `503` (Redis o BD: se puede reintentar) |
-| `POST /internal/rooms/{id}/disable` (`X-Internal-Token`, cuerpo opcional `{"reason":"grace_expired"}`) | `200` (mismo cuerpo, `reason:"grace_expired"`) | `401` · `400` (otro `reason`) · `404` · `409 NotLive` · `409 AlreadyDisabled` · `410 Deleted` · `503` |
+| `POST /internal/rooms/{id}/disable` (`X-Internal-Token`, cuerpo opcional `{"reason":"grace_expired"}`) | `200` (mismo cuerpo, `reason:"grace_expired"`) | `401` (token ausente o incorrecto) · `400` (otro `reason`) · `404` · `409 NotLive` · `409 AlreadyDisabled` · `410 Deleted` · `503` (Redis o BD, o `INTERNAL_API_SECRET` sin configurar: falla cerrado) |
 | `POST /rooms/{id}/reactivate` | — | `409 NotReactivable` (siempre; se crea un evento nuevo) |
-| `POST /invitations/claim`, `GET /rooms/{id}/playback` y las rutas con `requireActiveRoom` | — | `410 Disabled` |
+| `POST /invitations/claim`, `GET /rooms/{id}/playback`, `PATCH /rooms/{id}`, `POST /rooms/{id}/invitations` y las rutas con `requireActiveRoom` | — | `410 Disabled` |
+| `POST /invitations/claim` (sala activa) | `200 {token, roomId, nick, roomTitle, roomKind}`; `roomKind ∈ watch, live` decide si la web abre `/watch/:id` o `/live/:id` | — |
+| `POST /events/start {title, kind?}` | `kind:'live'` registra stream-core (no sync-core) y escribe `room:{id}:kind=live` (24 h); `sessions = {stream, social, analytics}` | `503` con compensación |
+| `POST /rooms/{id}/sync-ticket` y `POST /rooms/{id}/analytics-ticket` | Siguen emitiéndose al dueño con la sala `disabled` (para leer el chat y los KPIs); los WebSocket igual cierran con `4010` | `410 Deleted` |
+
+El evento de analítica `room_closed` lleva `user_id` (uid del host) solo con `host_ended`; con `grace_expired` no hay usuario.
 
 **Orden de escritura del cierre** (para no perder el aviso): `SET room:{id}:closed 1` → `PUBLISH ROOM_CLOSED` → `UPDATE rooms SET status='disabled'` → `XADD room_closed`. Si falla cualquiera de los tres primeros pasos, la respuesta es `503` y la sala sigue `active` en la BD, así que el reintento repite los pasos (todos idempotentes) y vuelve a publicar. `409 AlreadyDisabled` solo sale cuando la BD ya dice `disabled`, y eso implica que el aviso ya se publicó. El `XADD` de analítica es de mejor esfuerzo, como el resto de eventos.
 
@@ -180,7 +185,7 @@ Los consumidores son **idempotentes**: un `ROOM_CLOSED` repetido no hace nada nu
 `GET /api/v1/social/rooms/{id}/chat` (sync-ticket de host o cohost de esa sala; también con la sala deshabilitada):
 
 ```jsonc
-200 {"room_id":"r1","messages":[ /* objetos chat_message idénticos a los del WebSocket, del más antiguo al más nuevo, máx. 100 */ ]}
+200 {"room_id":"r1","messages":[ /* objetos chat_message idénticos a los del WebSocket, del más antiguo al más nuevo, máx. 100 (el WebSocket entrega los 50 más recientes) */ ]}
 // 401 UNAUTHORIZED · 403 FORBIDDEN (no es host/cohost o es de otra sala) · 503 UNAVAILABLE (sin Redis)
 ```
 
@@ -190,10 +195,14 @@ En una sala `live`, una trivia programada con `at_ms` se abre en `started_at_ms 
 
 | Ruta | Quién | Éxito | Errores |
 | :--- | :--- | :--- | :--- |
-| `PUT /api/v1/voice/rooms/{id}/stage/{user_id}` | host o cohost | `204` (`SADD room:{id}:voice:stage`) | `401` · `403 FORBIDDEN` · `503 UNAVAILABLE` |
-| `DELETE /api/v1/voice/rooms/{id}/stage/{user_id}` | host o cohost | `204` (`SREM` y cierra con `4009` la conexión de ese usuario) | igual |
+| `PUT /api/v1/voice/rooms/{id}/stage/{user_id}` | host o cohost | `204` (`SADD room:{id}:voice:stage`, TTL 24 h) | `401 UNAUTHORIZED` · `403 FORBIDDEN` · `404 NOT_FOUND` · `405 METHOD_NOT_ALLOWED` · `503 UNAVAILABLE` |
+| `DELETE /api/v1/voice/rooms/{id}/stage/{user_id}` | host o cohost | `204` (`SREM`; en salas `live` cierra con `4009` la conexión de ese usuario, nunca la del host o el cohost) | igual |
+
+Orden del handshake de voz: revocado (`4001`) → sala cerrada (`4010`) → fuera del escenario (`4009`) → silencios.
 
 **DataChannel `stream-events`**: ver §4. `stream_state.reason` usa los mismos valores que `ROOM_CLOSED`.
+
+**Web**: la sala `live` vive en `/live/:roomId` (sin `/ws/sync`). `VITE_STREAM_API_URL` vacía significa mismo origen (el gateway enruta `/api/v1/stream/*`, R8); sin definir, en `npm run dev` apunta a `http://localhost:8086`.
 
 ## 7. Análisis de performance
 
