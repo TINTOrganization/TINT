@@ -5,10 +5,15 @@ COVERAGE_MIN := 85
 NODE_SERVICES := services/identity-api
 CPP_SERVICES := services/voice-core
 
-.PHONY: up down test-all test-go test-python test-web test-node test-cpp test-stream smoke-stream load-stream load-voice e2e-voice observability health logs smoke-observability secrets smoke-secrets prototype-health e2e-stream
+.PHONY: up down env-sync test-all test-go test-python test-web test-node test-cpp test-stream smoke-stream load-stream load-voice e2e-voice observability health logs smoke-observability secrets smoke-secrets prototype-health e2e-stream
 
-up:
-	docker compose up -d
+# Arranque recomendado: completa .env con lo que falte de .env.example y reconstruye
+# (tras un git pull, las imágenes viejas no tienen el código nuevo).
+up: env-sync
+	docker compose up -d --build
+
+env-sync:
+	python3 scripts/env_sync.py
 
 down:
 	docker compose down
