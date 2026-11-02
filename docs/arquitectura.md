@@ -487,6 +487,14 @@ HTTPS, termina TLS con Caddy y mantiene el contrato público de rutas:
 Los clientes usan estas rutas públicas; para añadir un servicio se incorpora su
 matcher y upstream en `gateway/Caddyfile`, y para moverlo se cambia únicamente
 la variable `*_UPSTREAM` del gateway. Las rutas no reconocidas responden 404.
+La SPA se compila para usar `/api/v1` y las rutas `/ws/*` relativas: en una
+página HTTPS construye conexiones `wss://` con el mismo host público, sin
+conocer los puertos internos de los servicios. El Compose base conserva puertos
+directos para diagnóstico local; el despliegue público combina
+`docker-compose.yml` con `docker-compose.production.yml`, que deja web,
+identity-api, analytics, sync-core, social-core y voice-core accesibles solo
+desde la red Compose. Esta entrada única cubre web/API/WebSocket; las URLs S3
+firmadas de MinIO y el relay TURN quedan fuera de ese alcance.
 Cada upstream tiene un timeout de conexión y de cabeceras de 5 s; si un
 servicio está caído o excede ese límite, el gateway responde 503 con el error
 JSON `service_unavailable`, sin conservar un estado de circuito que impida

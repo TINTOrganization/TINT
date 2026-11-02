@@ -27,6 +27,7 @@ Cada ADR de esta carpeta se escribió a partir de evidencia del repositorio (có
 | [0017](0017-despliegue-orientado-a-contenedores.md) | Despliegue orientado a contenedores y aprovisionamiento de MongoDB | Aceptada | 2026-11-01 | Infraestructura, identity-api |
 | [0018](0018-stream-core-sfu-cpp-con-libdatachannel.md) | Transmisión en vivo con un SFU propio en C++ sobre libdatachannel | Propuesta | 2026-11-01 | stream-core, infra, web |
 | [0019](0019-salas-live-y-cierre-room-closed.md) | Salas `live` y cierre de sala `ROOM_CLOSED` en todos los servicios | Propuesta | 2026-11-01 | identity-api, stream-core, sync-core, social-core, voice-core, web |
+| [0020](0020-entrada-unica-https-y-topologia-produccion.md) | Entrada única HTTPS y topología de producción Compose | Aceptada | 2026-11-02 | Infraestructura, web |
 
 ```mermaid
 flowchart LR
@@ -49,6 +50,8 @@ flowchart LR
     A7 --> A19["0019 salas live y ROOM_CLOSED"]
     A14 --> A19
     A18 --> A19
+    A17 --> A20["0020 entrada única HTTPS y topología prod"]
+    A5 --> A20
 ```
 
 ## Formato

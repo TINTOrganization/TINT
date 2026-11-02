@@ -359,11 +359,20 @@ make test-all
 | Redis | `localhost:6379` |
 | MinIO API / Consola | `localhost:9000` / [`localhost:9001`](http://localhost:9001) |
 
-El gateway es la única entrada pública de las APIs y canales: `/api/*` llega a
-identity-api (con las rutas de analytics dirigidas a analytics), `/ws/sync` a
-sync-core y `/ws/social` a social-core. Caddy conserva el certificado local en
-`gateway-data`; para un dominio real, define `GATEWAY_HOST` con el nombre DNS
-público y sustituye los puertos publicados según tu despliegue.
+El gateway es la única entrada pública de la web, APIs y canales: la SPA usa
+`/api/v1`, `/ws/sync`, `/ws/social` y `/ws/voice` en el mismo origen. Caddy
+termina TLS, conserva certificados en `gateway-data` y renueva los certificados
+de dominios públicos automáticamente. Para desplegar, define `GATEWAY_HOST` con
+el nombre DNS público, apunta sus registros A/AAAA al host y permite tráfico
+entrante a 80 y 443. Usa el override de producción para que web, API y canales
+no publiquen puertos fuera de la red Compose:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.production.yml up -d --build
+```
+
+Los puertos directos del Compose base son solo para depuración local. El alcance
+de esta entrada única no incluye las URLs firmadas de MinIO ni el relay TURN.
 
 El gateway limita a 5 s la conexión y espera de cabeceras de cada upstream. Si
 identity-api, analytics, sync-core o social-core no están disponibles, o no
