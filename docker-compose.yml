@@ -33,6 +33,21 @@ services:
           printf 'Missing required variables in .env:%b\n' "$$missing" >&2
           exit 1
         fi
+        LOG_LEVEL=$${LOG_LEVEL:-info}
+        case "$$(printf '%s' "$$LOG_LEVEL" | tr '[:upper:]' '[:lower:]')" in
+          debug|info|warn|error) ;;
+          *) printf 'Invalid LOG_LEVEL: %s\n' "$$LOG_LEVEL" >&2; exit 1 ;;
+        esac
+        GATEWAY_LOG_LEVEL=$${GATEWAY_LOG_LEVEL:-INFO}
+        case "$$(printf '%s' "$$GATEWAY_LOG_LEVEL" | tr '[:upper:]' '[:lower:]')" in
+          debug|info|warn|error) ;;
+          *) printf 'Invalid GATEWAY_LOG_LEVEL: %s\n' "$$GATEWAY_LOG_LEVEL" >&2; exit 1 ;;
+        esac
+        NGINX_ERROR_LOG_LEVEL=$${NGINX_ERROR_LOG_LEVEL:-warn}
+        case "$$(printf '%s' "$$NGINX_ERROR_LOG_LEVEL" | tr '[:upper:]' '[:lower:]')" in
+          debug|info|notice|warn|error|crit) ;;
+          *) printf 'Invalid NGINX_ERROR_LOG_LEVEL: %s\n' "$$NGINX_ERROR_LOG_LEVEL" >&2; exit 1 ;;
+        esac
         echo "Environment validation passed"
 
   # Entrada pública única: redirige HTTP a HTTPS y enruta APIs y WebSockets.
@@ -55,6 +70,7 @@ services:
       ANALYTICS_UPSTREAM: ${ANALYTICS_UPSTREAM:-analytics:8084}
       VOICE_CORE_UPSTREAM: ${VOICE_CORE_UPSTREAM:-voice-core:8085}
       STREAM_CORE_UPSTREAM: ${STREAM_CORE_UPSTREAM:-stream-core:8086}
+      GATEWAY_LOG_LEVEL: ${GATEWAY_LOG_LEVEL:-INFO}
     volumes:
       - ./gateway/Caddyfile:/etc/caddy/Caddyfile:ro
       - gateway-data:/data
@@ -80,10 +96,12 @@ services:
         VITE_FIREBASE_PROJECT_ID: ${VITE_FIREBASE_PROJECT_ID:-test}
     container_name: tint-web
     <<: *env-check
+    environment:
+      NGINX_ERROR_LOG_LEVEL: ${NGINX_ERROR_LOG_LEVEL:-warn}
     ports:
       - "${WEB_PORT:-5173}:80"
     healthcheck:
-      test: ["CMD", "wget", "--spider", "--quiet", "http://127.0.0.1/"]
+      test: ["CMD", "wget", "--spider", "--quiet", "http://127.0.0.1/healthz"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -190,8 +208,11 @@ services:
       S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-tintadmin123}
       MINIO_BUCKET: ${MINIO_BUCKET:-tint-media}
       MEDIA_WORKER_CONSUMER: media-worker-1
+      MEDIA_WORKER_PORT: ${MEDIA_WORKER_PORT:-8088}
+      MEDIA_WORKER_HEARTBEAT_MAX_AGE_S: ${MEDIA_WORKER_HEARTBEAT_MAX_AGE_S:-30}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
     healthcheck:
-      test: ["CMD", "python", "-c", "import os; os.kill(1, 0)"]
+      test: ["CMD", "python", "-c", "import os, urllib.request; urllib.request.urlopen(f\"http://localhost:{os.environ['MEDIA_WORKER_PORT']}/healthz\", timeout=2)"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -226,6 +247,7 @@ services:
       ANALYTICS_TIMEZONE: ${ANALYTICS_TIMEZONE:-America/Bogota}
       # Contraseña compartida del panel de negocio (/analitica); vacía = panel deshabilitado.
       ANALYTICS_ADMIN_PASSWORD: ${ANALYTICS_ADMIN_PASSWORD:-}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
     ports:
       - "${ANALYTICS_PORT:-8084}:${ANALYTICS_PORT:-8084}"
     healthcheck:
@@ -253,6 +275,7 @@ services:
       SOCIAL_REACTION_LIMIT: ${SOCIAL_REACTION_LIMIT:-5}
       SOCIAL_REACTION_IP_LIMIT: ${SOCIAL_REACTION_IP_LIMIT:-5}
       SOCIAL_REACTION_WINDOW_MS: ${SOCIAL_REACTION_WINDOW_MS:-1000}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
     depends_on:
       env-check:
         condition: service_completed_successfully
@@ -281,6 +304,7 @@ services:
       JWT_ISSUER: ${JWT_ISSUER:-tint-identity}
       JWT_AUDIENCE: ${JWT_AUDIENCE:-tint:room}
       ALLOWED_ORIGINS: ${SYNC_ALLOWED_ORIGINS:-localhost:5173,127.0.0.1:5173}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
     ports:
       - "8083:8080"
     healthcheck:
@@ -323,6 +347,7 @@ services:
       MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-tintadmin}
       MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-tintadmin123}
       MINIO_BUCKET: ${MINIO_BUCKET:-tint-media}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
     ports:
       - "8081:8081"
     healthcheck:
@@ -354,8 +379,15 @@ services:
       TURN_URLS: ${TURN_URLS:-turn:localhost:3478?transport=udp,turn:localhost:3478?transport=tcp}
       TURN_SECRET: ${TURN_SECRET:-dev-turn-secret-change-in-prod}
       TURN_TTL_SECONDS: ${TURN_TTL_SECONDS:-3600}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
     ports:
       - "8085:8085"
+    healthcheck:
+      test: ["CMD", "curl", "-fs", "http://localhost:8085/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
 
   # Base de datos documental: historial de chat (SOC-02, SOC-07, DAT-02).
   # social-core escribe aquí; la colección y los índices se crean en el primer
@@ -408,9 +440,16 @@ services:
       TURN_URLS: ${TURN_URLS:-turn:localhost:3478?transport=udp,turn:localhost:3478?transport=tcp}
       TURN_SECRET: ${TURN_SECRET:-dev-turn-secret-change-in-prod}
       TURN_TTL_SECONDS: ${TURN_TTL_SECONDS:-3600}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
     ports:
       - "8086:8086"
       - "${STREAM_UDP_PORT:-8087}:${STREAM_UDP_PORT:-8087}/udp"
+    healthcheck:
+      test: ["CMD", "curl", "-fs", "http://localhost:8086/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
 
   # STUN/TURN para la voz. Red del host: el relay debe anunciar direcciones alcanzables
   # desde el navegador (en Linux). Credenciales efímeras firmadas con TURN_SECRET (REST API de TURN).
@@ -431,6 +470,12 @@ services:
       - "--no-tls"
       - "--no-dtls"
       - "--log-file=stdout"
+    healthcheck:
+      test: ["CMD", "turnutils_stunclient", "-p", "3478", "127.0.0.1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
 volumes:
   gateway-data:
