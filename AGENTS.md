@@ -12,6 +12,7 @@ Este repositorio es un monorepo multi-lenguaje (Go, TypeScript, Python y C++). *
 | Media Worker | `services/media-worker` | Python 3.11, FFmpeg, MinIO | [services/media-worker/AGENTS.md](services/media-worker/AGENTS.md) |
 | Analítica | `services/analytics` | Python 3.11, Redis Streams, PostgreSQL, API HTTP de solo lectura | [services/analytics/AGENTS.md](services/analytics/AGENTS.md) |
 | Voz | `services/voice-core` | C++23, Boost.Beast, hiredis, WebRTC P2P (solo señalización) | [services/voice-core/AGENTS.md](services/voice-core/AGENTS.md) |
+| Transmisión en vivo *(especificación)* | `services/stream-core` | C++23, libdatachannel (SFU), Boost.Beast, hiredis | [docs/dominio-transmision.md](docs/dominio-transmision.md) |
 | Infra / CI | raíz, `.github/`, `scripts/` | Docker Compose, GitHub Actions | este archivo |
 
 ## Documentación
@@ -21,6 +22,7 @@ La documentación de features vive en [`docs/`](docs/README.md), con diagramas M
 - [Usuarios, identidad y permisos](docs/usuarios-e-identidad.md): tipos de usuario, permisos, esquema de BD y tokens.
 - [Dominio de Reproducción](docs/dominio-reproduccion.md): Canal Sync v2.
 - [Dominio de Voz](docs/dominio-voz.md): canal de voz (voice-core).
+- [Dominio de Transmisión en vivo](docs/dominio-transmision.md): transmisión del host por SFU (stream-core, en especificación).
 - [Contrato de eventos de analítica](docs/contrato-eventos-analitica.md): `analytics:events` y la API de KPIs.
 
 **Actualiza el documento en el mismo PR** en el que cambie un flujo, un contrato, una tabla o una variable de entorno.
@@ -48,8 +50,10 @@ Cambiar uno exige actualizar **ambos lados**, sus pruebas y [docs/arquitectura.m
 | Revocación `token:revoked:{jti}` + `REVOKED` (cierre `4001`; token caducado `4003`) | identity-api → sync-core, social-core, analytics, voice-core, web | [dominio-reproduccion §6.6](docs/dominio-reproduccion.md#66-retirar-a-un-invitado-f5) |
 | Stream `media:uploads` + tabla `videos` (`id`, `storage_key`, `duration_ms`, `status`, `renditions`, `failure_reason`) + staging `incoming/{id}/original.*` (el worker publica `{id}/source.*` y reescribe `storage_key`; también `{id}/720p.mp4`/`{id}/360p.mp4` y sus alturas en `renditions`) | identity-api → media-worker | [dominio-reproduccion §6.7](docs/dominio-reproduccion.md#67-subida-y-cambio-de-vídeo) |
 | Protocolo del Canal de Voz (`/ws/voice`: `voice_state`, `peer_joined`/`peer_left`, `signal`, `self_mute`/`host_mute` → `peer_muted`, `leave`, `error`; cierre `4008` con la voz llena) y REST `PUT/DELETE /api/v1/voice/rooms/{id}/mutes/{user_id}` (403 sin rol host/cohost) | voice-core ↔ web | [voice-core/AGENTS.md](services/voice-core/AGENTS.md#protocolo-del-canal-de-voz) |
-| `TURN_SECRET` (credenciales TURN efímeras) | voice-core ↔ coturn | `.env.example` raíz |
-| Puertos locales: social-core 8082, sync-core 8083, analytics 8084, voice-core 8085, coturn 3478 | infra ↔ web | `docker-compose.yml`, `.env.example` de la web |
+| Cierre de sala `ROOM_CLOSED` en `room:{id}:sync` + clave `room:{id}:closed` + cierre `4010` + `410 {error:"Disabled"}` *(previsto)* | identity-api → sync-core, social-core, voice-core, stream-core, web | [ADR 0019](docs/adr/0019-salas-live-y-cierre-room-closed.md) |
+| API WHIP/WHEP `/api/v1/stream/*` + DataChannel `stream-events`; internos `/internal/events/start/{id}` y `/api/v1/internal/rooms/{id}/disable` *(previsto)* | stream-core ↔ web, identity-api | [dominio-transmision §3–6](docs/dominio-transmision.md#3-api-whipwhep-apiv1stream) |
+| `TURN_SECRET` (credenciales TURN efímeras) | voice-core, stream-core ↔ coturn | `.env.example` raíz |
+| Puertos locales: social-core 8082, sync-core 8083, analytics 8084, voice-core 8085, stream-core 8086 (previsto), coturn 3478 | infra ↔ web | `docker-compose.yml`, `.env.example` de la web |
 | API REST `/api/v1` (incl. bloqueo por dispositivo `room_bans` + `deviceId` en el claim, y biblioteca `GET /videos`) | identity-api → web | [identity-api/AGENTS.md](services/identity-api/AGENTS.md#api) |
 | Stream `analytics:events` (sin PII) | identity-api, social-core, sync-core, media-worker → analytics | [docs/contrato-eventos-analitica.md](docs/contrato-eventos-analitica.md) |
 | API de lectura de analytics (`/api/v1/rooms/{id}/kpis`, `/reactions/heatmap`, `/timeline`) + `analytics-ticket` (`POST /api/v1/rooms/:id/analytics-ticket`) | identity-api → web → analytics | [analytics/AGENTS.md](services/analytics/AGENTS.md#api-solo-lectura-puerto-analytics_port-por-defecto-8084) |

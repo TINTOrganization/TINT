@@ -25,6 +25,8 @@ Cada ADR de esta carpeta se escribió a partir de evidencia del repositorio (có
 | [0015](0015-voice-core-en-cpp-con-webrtc-p2p.md) | Canal de Voz en un servicio C++ con WebRTC P2P | Aceptada | 2026-10-30 | voice-core, infra, web |
 | [0016](0016-ranking-de-trivia-persistente-y-desempate.md) | Ranking de trivia persistente y desempate por tiempo acumulado | Aceptada | 2026-10-31 | social-core, web |
 | [0017](0017-despliegue-orientado-a-contenedores.md) | Despliegue orientado a contenedores y aprovisionamiento de MongoDB | Aceptada | 2026-11-01 | Infraestructura, identity-api |
+| [0018](0018-stream-core-sfu-cpp-con-libdatachannel.md) | Transmisión en vivo con un SFU propio en C++ sobre libdatachannel | Propuesta | 2026-11-01 | stream-core, infra, web |
+| [0019](0019-salas-live-y-cierre-room-closed.md) | Salas `live` y cierre de sala `ROOM_CLOSED` en todos los servicios | Propuesta | 2026-11-01 | identity-api, stream-core, sync-core, social-core, voice-core, web |
 
 ```mermaid
 flowchart LR
@@ -43,6 +45,10 @@ flowchart LR
     A3 --> A12["0012 trivia y reloj del servidor"]
     A12 --> A16["0016 ranking persistente y desempate"]
     A1 --> A17["0017 despliegue contenerizado y MongoDB"]
+    A15 --> A18["0018 SFU C++ libdatachannel"]
+    A7 --> A19["0019 salas live y ROOM_CLOSED"]
+    A14 --> A19
+    A18 --> A19
 ```
 
 ## Formato
