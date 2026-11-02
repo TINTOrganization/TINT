@@ -98,6 +98,9 @@ func DefaultDeps(getenv func(string) string) *Deps {
 			return st.Subscribe(ctx, roomID)
 		}
 		d.IsRevoked = st.IsRevoked
+		d.IsRoomClosed = st.IsRoomClosed
+		d.IsLive = st.IsLive
+		d.StreamStartedAt = st.StreamStartedAt
 		d.PublishReaction = st.PublishReaction
 		d.PublishRaw = st.PublishRaw
 		d.Polls = polls.NewStore(st.Client(), chat.HistoryTTL)

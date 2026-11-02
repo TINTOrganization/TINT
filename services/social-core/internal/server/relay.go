@@ -92,6 +92,10 @@ func (d *Deps) acquireRelay(roomID string) (release func()) {
 				d.revokeLocal(roomID, in.RevokedJTI) // nunca llega a los clientes
 				continue
 			}
+			if in.RoomClosed {
+				d.closeRoomLocal(roomID) // ADR 0019: 4010 a todos
+				continue
+			}
 			if in.Sync != nil {
 				// Métricas del recap y rearme del disparo de trivias (la
 				// posición proyectada cambió).
