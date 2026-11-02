@@ -24,6 +24,7 @@ Cada ADR de esta carpeta se escribió a partir de evidencia del repositorio (có
 | [0014](0014-upgrade-y-cierre-4xxx-para-estados-terminales.md) | Upgrade y cierre `4xxx` para estados terminales en el Canal Sync | Aceptada | 2026-10-11 | sync-core, web (social-core pendiente) |
 | [0015](0015-voice-core-en-cpp-con-webrtc-p2p.md) | Canal de Voz en un servicio C++ con WebRTC P2P | Aceptada | 2026-10-30 | voice-core, infra, web |
 | [0016](0016-ranking-de-trivia-persistente-y-desempate.md) | Ranking de trivia persistente y desempate por tiempo acumulado | Aceptada | 2026-10-31 | social-core, web |
+| [0017](0017-despliegue-orientado-a-contenedores.md) | Despliegue orientado a contenedores y aprovisionamiento de MongoDB | Aceptada | 2026-11-01 | Infraestructura, identity-api |
 
 ```mermaid
 flowchart LR
@@ -41,6 +42,7 @@ flowchart LR
     A9 --> A10["0010 analítica sin PII"]
     A3 --> A12["0012 trivia y reloj del servidor"]
     A12 --> A16["0016 ranking persistente y desempate"]
+    A1 --> A17["0017 despliegue contenerizado y MongoDB"]
 ```
 
 ## Formato
