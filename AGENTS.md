@@ -12,7 +12,7 @@ Este repositorio es un monorepo multi-lenguaje (Go, TypeScript, Python y C++). *
 | Media Worker | `services/media-worker` | Python 3.11, FFmpeg, MinIO | [services/media-worker/AGENTS.md](services/media-worker/AGENTS.md) |
 | Analítica | `services/analytics` | Python 3.11, Redis Streams, PostgreSQL, API HTTP de solo lectura | [services/analytics/AGENTS.md](services/analytics/AGENTS.md) |
 | Voz | `services/voice-core` | C++23, Boost.Beast, hiredis, WebRTC P2P (solo señalización) | [services/voice-core/AGENTS.md](services/voice-core/AGENTS.md) |
-| Transmisión en vivo *(especificación)* | `services/stream-core` | C++23, libdatachannel (SFU), Boost.Beast, hiredis | [docs/dominio-transmision.md](docs/dominio-transmision.md) |
+| Transmisión en vivo | `services/stream-core` | C++23, libdatachannel v0.24.6 (SFU, WHIP/WHEP), Boost.Beast, hiredis | [services/stream-core/AGENTS.md](services/stream-core/AGENTS.md) |
 | Infra / CI | raíz, `.github/`, `scripts/` | Docker Compose, GitHub Actions | este archivo |
 
 ## Documentación
@@ -32,7 +32,7 @@ La documentación de features vive en [`docs/`](docs/README.md), con diagramas M
 2. **TDD obligatorio:** Red → Green → Refactor. Cobertura mínima **85 %** por servicio; el CI (`.github/workflows/ci-pipeline.yml`) bloquea el merge si no se cumple.
 3. **Conventional Commits en español:** `tipo(alcance): descripción`, con el dominio como alcance: `feat(sync-core): …`, `fix(identity-api): …`, `docs(web): …`, `perf(sync-core): …`, `ci: …`, `chore: …`. El cuerpo explica el *porqué* y, si hay mediciones, las incluye.
 4. **Ramas:** `main` (producción) y `develop` (integración) están protegidas. Trabaja en `feat/*`, `fix/*` o `chore/*` y abre el PR hacia `develop`.
-5. **Infraestructura local:** `docker compose up -d` (PostgreSQL, Redis, MinIO, media-worker, analytics, social-core, sync-core, voice-core y coturn). **Nunca subas `.env`** ni credenciales; documenta las variables nuevas en el `.env.example` correspondiente.
+5. **Infraestructura local:** `docker compose up -d` (PostgreSQL, Redis, MinIO, media-worker, analytics, social-core, sync-core, voice-core, stream-core y coturn). **Nunca subas `.env`** ni credenciales; documenta las variables nuevas en el `.env.example` correspondiente.
 6. **Verificación:** `make test-all` antes de abrir un PR, más los comandos propios del dominio.
 7. **Archivos ajenos:** los `.docx` de planeación en la raíz no se versionan. No los agregues a commits.
 8. **Dependencias:** no agregues dependencias sin justificarlas en el commit y en el Stack Técnico del `AGENTS.md` del dominio. Fija versiones exactas en Go y prefiere versiones exactas en npm.
@@ -76,6 +76,7 @@ Cambiar uno exige actualizar **ambos lados**, sus pruebas y [docs/arquitectura.m
 | Python (`media-worker`, `analytics`) | `ruff check . && ruff format --check .` · `pytest --cov=src --cov-fail-under=85` |
 | C++ (`voice-core`) | `clang-format --dry-run --Werror` · `ctest` con `-DVOICE_SANITIZE=address` y `=thread` · `gcovr --fail-under-line 85` (`make test-cpp`; ver su AGENTS.md para correrlo en Docker) |
 | Carga del Canal Sync | `k6 run -e VUS=50 -e DURATION=20s services/sync-core/loadtest/sync.js` (CI); 500 VUs desde otra máquina |
+| C++ (`stream-core`) | `make test-stream`: en la imagen dev (libdatachannel no está empaquetada) corre `clang-format`, ctest y `gcovr ≥ 85`. CI añade ASan+UBSan (con loopback de libdatachannel), TSan (`-DSTREAM_BUILD_RTC=OFF`), la imagen de runtime, `/healthz` y `scripts/smoke.py` (job `cpp-stream`) |
 | Carga y E2E del Canal de Voz | `k6 run … services/voice-core/loadtest/voice.js` (CI, `voice-load-smoke`; local con `make load-voice`) · `make e2e-voice`: dos Chromium reales contra la web y `docker compose` (local) |
 
 ## Lecciones aprendidas (no repetir)

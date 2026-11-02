@@ -24,9 +24,19 @@ https://{$GATEWAY_HOST:localhost} {
         respond @upstream_unavailable `{"error":"service_unavailable","message":"The requested service is temporarily unavailable."}` 503
     }
 
+    # Rutas internas de identity-api (p. ej. /api/v1/internal/rooms/{id}/disable, ADR 0018):
+    # solo se llaman dentro de la red de compose. auth/check lo usa el propio forward_auth.
+    @internal_api {
+        path /api/v1/internal/*
+        not path /api/v1/internal/auth/check
+    }
+    respond @internal_api 404
+
+    # El preflight CORS (OPTIONS) no lleva Authorization: cada servicio lo responde.
     @protected {
         path /api/* /ws/*
         not path /api/v1/healthz /api/v1/invitations/claim
+        not method OPTIONS
     }
 
     forward_auth @protected {$IDENTITY_API_UPSTREAM:identity-api:8081} {
@@ -40,6 +50,12 @@ https://{$GATEWAY_HOST:localhost} {
 
     @analytics path_regexp analytics ^/api/v1/rooms/[^/]+/(kpis|reactions/heatmap|timeline)$
     reverse_proxy @analytics {$ANALYTICS_UPSTREAM:analytics:8084} {
+        import service_timeout
+    }
+
+    # Transmisión en vivo: señalización WHIP/WHEP por HTTP (HU-LIVE-06, ADR 0017).
+    @stream_api path /api/v1/stream/*
+    reverse_proxy @stream_api {$STREAM_CORE_UPSTREAM:stream-core:8086} {
         import service_timeout
     }
 

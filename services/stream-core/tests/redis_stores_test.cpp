@@ -68,8 +68,10 @@ class RedisIntegration : public ::testing::Test {
  protected:
   void SetUp() override {
     const char* url = std::getenv("STREAM_TEST_REDIS_URL");
-    if (!url) GTEST_SKIP() << "sin STREAM_TEST_REDIS_URL";
-    endpoint = *parse_redis_url(url);
+    if (!url || !*url) GTEST_SKIP() << "sin STREAM_TEST_REDIS_URL";
+    auto parsed = parse_redis_url(url);
+    ASSERT_TRUE(parsed) << "STREAM_TEST_REDIS_URL inválida: " << url;
+    endpoint = *parsed;
     client = std::make_unique<RedisClient>(endpoint, 1000ms);
     room = "it-" + util::new_uuid();
   }

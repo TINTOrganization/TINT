@@ -5,7 +5,7 @@ COVERAGE_MIN := 85
 NODE_SERVICES := services/identity-api
 CPP_SERVICES := services/voice-core
 
-.PHONY: up down test-all test-go test-python test-web test-node test-cpp load-voice e2e-voice
+.PHONY: up down test-all test-go test-python test-web test-node test-cpp test-stream smoke-stream load-voice e2e-voice
 
 up:
 	docker compose up -d
@@ -13,7 +13,7 @@ up:
 down:
 	docker compose down
 
-test-all: test-go test-python test-web test-node test-cpp
+test-all: test-go test-python test-web test-node test-cpp test-stream
 
 test-go:
 	@for svc in $(GO_SERVICES); do \
@@ -47,6 +47,21 @@ test-cpp:
 		 cmake --build build-cov && ctest --test-dir build-cov --output-on-failure && \
 		 gcovr --root . --filter src/ --exclude src/main.cpp build-cov --fail-under-line $(COVERAGE_MIN)) || exit 1; \
 	done
+
+# stream-core (C++ SFU): libdatachannel no está empaquetada, así que todo corre en su imagen dev
+# (como en CI). Para las pruebas de integración con Redis: STREAM_TEST_REDIS_URL=redis://host:6379.
+STREAM_DEV := tint-stream-dev
+test-stream:
+	docker build --target dev -t $(STREAM_DEV) services/stream-core
+	docker run --rm --user $$(id -u):$$(id -g) --network host -e STREAM_TEST_REDIS_URL -v $(PWD)/services/stream-core:/src -w /src $(STREAM_DEV) \
+	  bash -euo pipefail -c 'clang-format --dry-run --Werror $$(find src tests -name "*.cpp" -o -name "*.hpp") && \
+	    cmake -S . -B build-cov -G Ninja -DCMAKE_BUILD_TYPE=Debug -DSTREAM_COVERAGE=ON && cmake --build build-cov && \
+	    ctest --test-dir build-cov --output-on-failure && \
+	    gcovr --root . --filter src/ --exclude src/main.cpp --gcov-ignore-errors=no_working_dir_found build-cov --fail-under-line $(COVERAGE_MIN)'
+
+# Prueba rápida contra stream-core levantado (docker compose up -d stream-core).
+smoke-stream:
+	python3 -I services/stream-core/scripts/smoke.py --url http://localhost:8086 --secret $${JWT_SECRET:-dev-secret-change-in-prod}
 
 # Carga de la señalización de voz (k6 en Docker contra voice-core en :8085).
 load-voice:
