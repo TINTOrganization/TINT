@@ -75,6 +75,7 @@ if(VOICE_BUILD_TESTS)
     tests/mute_store_test.cpp
     tests/redis_url_test.cpp
     tests/revocation_test.cpp
+    tests/room_closed_test.cpp
     tests/server_test.cpp
     tests/uuid_test.cpp
   )

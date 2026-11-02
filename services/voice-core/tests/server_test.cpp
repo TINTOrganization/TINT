@@ -453,3 +453,48 @@ TEST_F(ServerTest, WebSocketHostMute) {
   ASSERT_TRUE(muted);
   EXPECT_EQ((*muted)["host_muted"], true);
 }
+
+// --- ADR 0018: REST del escenario (salas live) ---------------------------------------------
+// PRUEBAS EN ROJO: hoy la ruta /stage/ no existe (404). Al implementar, el servidor recibe el
+// store del escenario y una prueba más comprueba el SET y el 503 si Redis falla.
+
+namespace {
+const std::string kAnaStagePath = "/api/v1/voice/rooms/room-1/stage/guest%3Aana";
+}  // namespace
+
+TEST_F(ServerTest, RestStageHostPutAndDeleteAre204) {
+  auto res = request(http::verb::put, kAnaStagePath, bearer(host_claims()));
+  EXPECT_EQ(res.result(), http::status::no_content);
+  EXPECT_EQ(res[http::field::access_control_allow_origin], "http://localhost:5173");
+  EXPECT_EQ(request(http::verb::delete_, kAnaStagePath, bearer(host_claims())).result(),
+            http::status::no_content);
+  EXPECT_EQ(mutes->writes, 0) << "el escenario no toca los silencios";
+}
+
+TEST_F(ServerTest, RestStageErrors) {
+  EXPECT_EQ(request(http::verb::put, kAnaStagePath).result(), http::status::unauthorized);
+  EXPECT_EQ(
+      request(http::verb::put, kAnaStagePath, bearer(guest_claims("room-1", "guest:luis", "jti-luis", "L")))
+          .result(),
+      http::status::forbidden);
+  EXPECT_EQ(request(http::verb::put, kAnaStagePath, bearer(host_claims("room-2"))).result(),
+            http::status::forbidden);
+  EXPECT_EQ(request(http::verb::get, kAnaStagePath, bearer(host_claims())).result(),
+            http::status::method_not_allowed);
+  EXPECT_EQ(request(http::verb::put, kAnaStagePath, bearer(host_claims()), "https://evil.example").result(),
+            http::status::forbidden);
+  revocation->unavailable = true;
+  EXPECT_EQ(request(http::verb::put, kAnaStagePath, bearer(host_claims())).result(),
+            http::status::service_unavailable);
+}
+
+TEST_F(ServerTest, RestStageCorsPreflight) {
+  auto res = request(http::verb::options, kAnaStagePath, "", "http://localhost:5173", "PUT");
+  EXPECT_EQ(res.result(), http::status::no_content);
+  EXPECT_EQ(res[http::field::access_control_allow_origin], "http://localhost:5173");
+  EXPECT_NE(std::string(res[http::field::access_control_allow_methods]).find("DELETE"), std::string::npos);
+  EXPECT_NE(std::string(res[http::field::access_control_allow_headers]).find("Authorization"),
+            std::string::npos);
+  EXPECT_EQ(request(http::verb::options, kAnaStagePath, "", "https://evil.example", "PUT").result(),
+            http::status::forbidden);
+}

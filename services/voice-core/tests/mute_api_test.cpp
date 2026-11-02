@@ -105,3 +105,56 @@ TEST_F(MuteApiTest, WrongMethodOrPath) {
   EXPECT_EQ(status(decide("POST", kPath, bearer(host_claims()))), 405u);
   EXPECT_EQ(status(decide("PUT", "/api/v1/voice/rooms/room-1", bearer(host_claims()))), 404u);
 }
+
+// --- ADR 0018: escenario de las salas live ------------------------------------------------
+//   PUT|DELETE /api/v1/voice/rooms/{room_id}/stage/{user_id} (SET room:{id}:voice:stage)
+// Mismas reglas que los silencios. PRUEBAS EN ROJO: hoy la ruta responde 404. Un resultado
+// que no es Reject es el comando para el servidor (que escribe el SET y responde 204).
+
+namespace {
+constexpr const char* kStagePath = "/api/v1/voice/rooms/room-1/stage/guest%3Aana";
+}  // namespace
+
+TEST_F(MuteApiTest, HostCanPutAndDeleteOnStage) {
+  EXPECT_EQ(status(decide("PUT", kStagePath, bearer(host_claims()))), 0u) << "host invita al escenario";
+  EXPECT_EQ(status(decide("DELETE", kStagePath, bearer(host_claims()))), 0u) << "host lo retira";
+  EXPECT_EQ(revocation.calls, 2) << "revisa la revocación del host";
+}
+
+TEST_F(MuteApiTest, CohostCanManageTheStage) {
+  auto c = host_claims();
+  c["role"] = "cohost";
+  EXPECT_EQ(status(decide("PUT", kStagePath, bearer(c))), 0u);
+}
+
+TEST_F(MuteApiTest, StageByParticipantOrOtherRoomGets403) {
+  EXPECT_EQ(status(decide("PUT", kStagePath, bearer(guest_claims()))), 403u);
+  EXPECT_EQ(status(decide("DELETE", kStagePath, bearer(guest_claims()))), 403u);
+  EXPECT_EQ(status(decide("PUT", kStagePath, bearer(host_claims("room-2")))), 403u);
+}
+
+TEST_F(MuteApiTest, StageWithoutOrWithBadTokenGets401) {
+  EXPECT_EQ(status(decide("PUT", kStagePath, std::nullopt)), 401u);
+  EXPECT_EQ(status(decide("PUT", kStagePath, "Bearer basura")), 401u);
+  auto expired = host_claims();
+  expired["exp"] = kNow - 1;
+  EXPECT_EQ(status(decide("PUT", kStagePath, bearer(expired))), 401u);
+  revocation.revoke("jti-host");
+  EXPECT_EQ(status(decide("PUT", kStagePath, bearer(host_claims()))), 401u);
+}
+
+TEST_F(MuteApiTest, StageFailsClosedWhenRevocationIsUnavailable) {
+  revocation.unavailable = true;
+  EXPECT_EQ(status(decide("PUT", kStagePath, bearer(host_claims()))), 503u);
+}
+
+TEST_F(MuteApiTest, StageWrongMethodGets405) {
+  EXPECT_EQ(status(decide("GET", kStagePath, bearer(host_claims()))), 405u);
+  EXPECT_EQ(status(decide("POST", kStagePath, bearer(host_claims()))), 405u);
+}
+
+TEST_F(MuteApiTest, StagePathMustBeWellFormed) {
+  for (const char* t : {"/api/v1/voice/rooms/room-1/stage/", "/api/v1/voice/rooms//stage/u",
+                        "/api/v1/voice/rooms/room-1/stage/u/extra"})
+    EXPECT_EQ(status(decide("PUT", t, bearer(host_claims()))), 404u) << t;
+}
