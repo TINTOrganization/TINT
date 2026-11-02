@@ -33,6 +33,13 @@ services:
           printf 'Missing required variables in .env:%b\n' "$$missing" >&2
           exit 1
         fi
+        # Login local con el Firebase Auth Emulator (ADR 0024): solo con un proyecto demo-*.
+        if [ -n "$${FIREBASE_AUTH_EMULATOR_HOST:-}" ]; then
+          case "$$FIREBASE_PROJECT_ID" in
+            demo-*) ;;
+            *) printf 'FIREBASE_AUTH_EMULATOR_HOST requires FIREBASE_PROJECT_ID=demo-* (got %s)\n' "$$FIREBASE_PROJECT_ID" >&2; exit 1 ;;
+          esac
+        fi
         LOG_LEVEL=$${LOG_LEVEL:-info}
         case "$$(printf '%s' "$$LOG_LEVEL" | tr '[:upper:]' '[:lower:]')" in
           debug|info|warn|error) ;;
@@ -94,6 +101,8 @@ services:
         VITE_FIREBASE_API_KEY: ${VITE_FIREBASE_API_KEY:-test}
         VITE_FIREBASE_AUTH_DOMAIN: ${VITE_FIREBASE_AUTH_DOMAIN:-test}
         VITE_FIREBASE_PROJECT_ID: ${VITE_FIREBASE_PROJECT_ID:-test}
+        # Solo desarrollo (ADR 0024): vacío = Firebase real. El override de producción lo vacía.
+        VITE_FIREBASE_AUTH_EMULATOR_URL: ${VITE_FIREBASE_AUTH_EMULATOR_URL:-}
     container_name: tint-web
     <<: *env-check
     environment:
@@ -329,7 +338,9 @@ services:
         condition: service_completed_successfully
     environment:
       IDENTITY_API_PORT: 8081
-      NODE_ENV: production
+      # Desarrollo local: permite el modo Firebase Auth Emulator. El override de producción
+      # fija production, con el que identity-api no arranca si hay emulador (ADR 0024).
+      NODE_ENV: development
       AUTH_PROVIDER: ${AUTH_PROVIDER:-firebase}
       SYNC_CORE_URL: http://sync-core:8080
       SOCIAL_CORE_URL: http://social-core:8082
@@ -342,6 +353,8 @@ services:
       JWT_ISSUER: ${JWT_ISSUER:-tint-identity}
       JWT_AUDIENCE: ${JWT_AUDIENCE:-tint:room}
       FIREBASE_PROJECT_ID: ${FIREBASE_PROJECT_ID:-tint-login}
+      # Solo desarrollo (ADR 0024): acepta los ID tokens sin firma del emulador. Vacío = Firebase real.
+      FIREBASE_AUTH_EMULATOR_HOST: ${FIREBASE_AUTH_EMULATOR_HOST:-}
       MINIO_ENDPOINT: http://minio:9000
       MINIO_PUBLIC_ENDPOINT: ${MINIO_PUBLIC_ENDPOINT:-http://localhost:9000}
       MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-tintadmin}
@@ -450,6 +463,24 @@ services:
       timeout: 5s
       retries: 5
       start_period: 20s
+
+  # Firebase Auth Emulator (solo desarrollo, ADR 0024): login local del host sin un proyecto
+  # real de Firebase. Emite ID tokens SIN firma; el navegador lo usa en http://localhost:9099
+  # (solo loopback). docker-compose.production.yml no lo arranca.
+  firebase-auth-emulator:
+    build: ./firebase-auth-emulator
+    container_name: tint-firebase-auth-emulator
+    <<: *env-check
+    environment:
+      FIREBASE_PROJECT_ID: ${FIREBASE_PROJECT_ID:-demo-tint}
+    ports:
+      - "127.0.0.1:9099:9099"
+    healthcheck:
+      test: ["CMD-SHELL", "wget --quiet --output-document=- http://127.0.0.1:9099/ | grep -Eq '\"ready\": *true'"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
 
   # STUN/TURN para la voz. Red del host: el relay debe anunciar direcciones alcanzables
   # desde el navegador (en Linux). Credenciales efímeras firmadas con TURN_SECRET (REST API de TURN).

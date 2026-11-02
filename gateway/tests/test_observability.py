@@ -33,6 +33,7 @@ LONG_RUNNING = {
     "mongodb",
     "stream-core",
     "coturn",
+    "firebase-auth-emulator",
 }
 
 # Servicios de aplicación que deben escribir logs JSON con nivel configurable.
