@@ -312,6 +312,7 @@ Son los únicos puntos en los que un PR puede necesitar coordinar dos dominios (
 | `TURN_SECRET` | voice-core ↔ coturn | Credenciales TURN efímeras (REST API de TURN), `.env.example` raíz |
 | `MONGO_URI` + colección `chat_messages` (índice `{room_id, occurred_at}`) | social-core ↔ mongodb | Historial de chat durable (SOC-02/SOC-07/DAT-02); `.env.example` raíz |
 | Puertos locales | infra ↔ web | social-core 8082, sync-core 8083, analytics 8084, voice-core 8085, stream-core 8086 (+ UDP `STREAM_UDP_PORT`, previsto), coturn 3478 (`docker-compose.yml`, `apps/web/.env.example`) |
+| Observabilidad y salud (`/healthz` con `status`/`service`; logs JSON a stdout con `LOG_LEVEL` configurable) | Todos los servicios | [ADR 0021](adr/0021-observabilidad-salud-y-logs.md) · [§8.2](#82-observabilidad-salud-y-logs) |
 
 ## 6. Almacenes de datos
 
@@ -518,6 +519,48 @@ La ruta `/` sirve la SPA desde el contenedor `web`; `identity-api` y la web
 forman parte del mismo stack Compose, por lo que el upstream de identidad
 apunta por defecto a `identity-api:8081`.
 
+### 8.2 Observabilidad: salud y logs (OPS-04, ADR 0021)
+
+Cada contenedor expone una sonda de salud liveness (`/healthz`) y emite registros estructurados en una línea JSON por evento a **stdout** con nivel configurable.
+
+#### Matriz de salud (/healthz)
+| Servicio | Endpoint | Respuesta 200 | Sonda en contenedor |
+| :--- | :--- | :--- | :--- |
+| `gateway` | `GET /healthz` | `{"status":"ok","service":"gateway"}` | `wget --spider` |
+| `web` | `GET /healthz` | `{"status":"ok","service":"web"}` | `wget --spider` |
+| `identity-api` | `GET /api/v1/healthz` (alias `GET /healthz`) | `{"status":"ok","service":"identity-api"}` | `node -e fetch` |
+| `sync-core` | `GET /healthz` | `{"status":"ok","service":"sync-core"}` | `wget --spider` |
+| `social-core` | `GET /healthz` | `{"status":"ok","service":"social-core"}` | `wget --spider` |
+| `analytics` | `GET /healthz` | `{"status":"ok","service":"analytics"}` | `python urllib` |
+| `media-worker` | `GET /healthz` en `:8088` | `{"status":"ok","service":"media-worker"}` | `python urllib` |
+| `voice-core` | `GET /healthz` | `{"status":"ok","service":"voice-core"}` | `curl -fs` |
+| `stream-core` | `GET /healthz` | `{"status":"ok","service":"stream-core"}` | `curl -fs` |
+| `coturn` | — (protocolo STUN) | — | `turnutils_stunclient -p 3478 127.0.0.1` |
+
+`/healthz` es una sonda de **liveness** (proceso vivo y receptivo a HTTP/red). No consulta bases de datos ni dependencias externas ([ADR 0021](adr/0021-observabilidad-salud-y-logs.md)).
+
+```mermaid
+flowchart LR
+    DockerDaemon["Docker Daemon / Compose"] -- "Healthcheck periódico" --> Probe["Sonda de contenedor<br/>(wget / curl / python / node)"]
+    Probe -- "GET /healthz" --> Service["Servicio en ejecución"]
+    Service -- "200 ok" --> Status["Estado: healthy"]
+    Service -. "Fallo / timeout" .-> Unhealthy["Estado: unhealthy<br/>(Compose alerta / reinicia)"]
+```
+
+#### Esquema de logs
+Una línea JSON por evento a stdout:
+```json
+{"timestamp":"2026-11-02T14:03:11.123Z","level":"info","service":"sync-core","message":"http_request","correlation_id":"a1b2","method":"GET","path":"/healthz"}
+```
+Campos obligatorios: `timestamp` (ISO UTC con ms), `level` (`debug|info|warn|error`), `service`, `message`. Campos opcionales: `correlation_id`, `method`, `path`, `duration_ms`, `error`.
+
+#### Variables de configuración
+- `LOG_LEVEL`: nivel mínimo para los servicios de aplicación (`debug|info|warn|error`, default `info`).
+- `GATEWAY_LOG_LEVEL`: nivel de log de Caddy (default `INFO`).
+- `NGINX_ERROR_LOG_LEVEL`: nivel de log de errores de Nginx en la web (default `warn`).
+- `MEDIA_WORKER_PORT`: puerto del servidor de salud interno de media-worker (default `8088`).
+- `MEDIA_WORKER_HEARTBEAT_MAX_AGE_S`: antigüedad máxima del latido del consumidor antes de reportar 503 (default `30`).
+
 ## 9. Calidad, CI y CD
 
 - **CI** (`.github/workflows/ci-pipeline.yml`): ver el diagrama de la [§7.3](#73-pipeline-de-ci-y-cd). Cobertura mínima `COVERAGE_MIN = 85` en todos los jobs (en Go con `scripts/check-go-coverage.sh`; en web e identity-api con los umbrales de `vitest.config.ts`). El job `ci-gate` corre siempre y falla si algún job no termina en `success`.
@@ -549,6 +592,7 @@ apunta por defecto a `identity-api:8081`.
 | [0017](adr/0017-despliegue-orientado-a-contenedores.md) | Despliegue orientado a contenedores y MongoDB (OPS-02) |
 | [0018](adr/0018-stream-core-sfu-cpp-con-libdatachannel.md) | Transmisión en vivo con un SFU propio en C++ sobre libdatachannel (propuesta) |
 | [0019](adr/0019-salas-live-y-cierre-room-closed.md) | Salas `live` y cierre de sala `ROOM_CLOSED` en todos los servicios (propuesta) |
+| [0021](adr/0021-observabilidad-salud-y-logs.md) | Observabilidad: salud y logs uniformes en contenedores (OPS-04) |
 
 ## 11. Documentación por servicio
 
