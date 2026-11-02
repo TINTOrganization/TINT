@@ -1,6 +1,7 @@
 package hub
 
 import (
+	"context"
 	"errors"
 	"testing"
 	"time"
@@ -68,5 +69,74 @@ func TestRoomClosedIsNotForwardedToClients(t *testing.T) {
 	case <-g.Done():
 	case <-time.After(recvLimit):
 		t.Fatal("ROOM_CLOSED debe cerrar la conexión")
+	}
+}
+
+// §6.1: los consumidores son idempotentes; un ROOM_CLOSED repetido no hace
+// nada nuevo ni cambia la causa del cierre.
+func TestRoomClosedIsIdempotent(t *testing.T) {
+	e := newEnv(t)
+	h := e.newHub(t)
+	g := connect(t, h, guest)
+	next(t, g)
+
+	h.Deliver(room, []byte(roomClosedPayload))
+	h.Deliver(room, []byte(roomClosedPayload))
+
+	<-g.Done()
+	if !errors.Is(g.Err(), ErrRoomClosed) {
+		t.Errorf("causa = %v, want ErrRoomClosed", g.Err())
+	}
+	h.Deliver(room, []byte(roomClosedPayload)) // sala ya sin clientes: no-op
+}
+
+// §6.1: un mensaje del bus que no cumple el formato se descarta. Un
+// ROOM_CLOSED con otro room_id o un reason desconocido no cierra la sala.
+func TestRoomClosedMalformedIsDiscarded(t *testing.T) {
+	cases := map[string]string{
+		"room_id de otra sala": `{"type":"ROOM_CLOSED","room_id":"room-2","reason":"host_ended"}`,
+		"sin room_id":          `{"type":"ROOM_CLOSED","reason":"host_ended"}`,
+		"reason desconocido":   `{"type":"ROOM_CLOSED","room_id":"room-1","reason":"kicked"}`,
+		"sin reason":           `{"type":"ROOM_CLOSED","room_id":"room-1"}`,
+	}
+	for name, payload := range cases {
+		t.Run(name, func(t *testing.T) {
+			e := newEnv(t)
+			h := e.newHub(t)
+			g := connect(t, h, guest)
+			next(t, g)
+
+			h.Deliver(room, []byte(payload))
+
+			if g.Context().Err() != nil {
+				t.Fatalf("un ROOM_CLOSED inválido no debe cerrar la sala: %v", g.Err())
+			}
+			select {
+			case raw := <-g.Send():
+				t.Fatalf("ROOM_CLOSED nunca llega a los clientes: %s", raw)
+			default:
+			}
+		})
+	}
+}
+
+// Carrera: la sala se cierra después de la comprobación del handshake pero
+// antes de que la réplica se suscriba (el PUBLISH se pierde). Connect relee
+// room:{id}:closed tras suscribirse y rechaza la conexión.
+func TestConnectToClosedRoomFails(t *testing.T) {
+	e := newEnv(t)
+	h := e.newHub(t)
+	_ = e.mr.Set(syncevent.ClosedKey(room), "1")
+
+	if c, err := h.Connect(context.Background(), guest); !errors.Is(err, ErrRoomClosed) {
+		if c != nil {
+			h.Disconnect(c)
+		}
+		t.Fatalf("Connect sala cerrada: err = %v, want ErrRoomClosed", err)
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if len(h.rooms) != 0 {
+		t.Errorf("la conexión rechazada no debe quedar registrada: %d salas", len(h.rooms))
 	}
 }
