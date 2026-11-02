@@ -34,6 +34,9 @@ const (
 	// StatusTokenExpired cierra una conexión cuyo token (bien firmado) ya
 	// expiró: el cliente debe pedir un token nuevo, no reconectar con ese.
 	StatusTokenExpired websocket.StatusCode = 4003
+	// StatusRoomDisabled cierra las conexiones de una sala deshabilitada
+	// (ROOM_DISABLED, ADR 0019): el evento terminó y no hay que reconectar.
+	StatusRoomDisabled websocket.StatusCode = 4010
 	writeTimeout                            = 5 * time.Second
 	checkTimeout                            = 2 * time.Second
 )
@@ -43,9 +46,11 @@ type Verifier interface {
 	Verify(token, roomID string) (auth.Claims, error)
 }
 
-// Revocations consulta los tokens revocados por identity-api.
-type Revocations interface {
+// Gate consulta en Redis los estados terminales que publica identity-api:
+// tokens revocados y salas deshabilitadas.
+type Gate interface {
 	IsRevoked(ctx context.Context, jti string) (bool, error)
+	IsRoomClosed(ctx context.Context, roomID string) (bool, error)
 }
 
 // Hub es la parte del hub que usa la capa de transporte.
@@ -59,19 +64,20 @@ type Hub interface {
 type Handler struct {
 	hub      Hub
 	verifier Verifier
-	revoked  Revocations
+	gate     Gate
 	origins  []string
 }
 
 // NewHandler crea el handler; origins son los patrones de host permitidos.
-func NewHandler(h Hub, v Verifier, r Revocations, origins []string) *Handler {
-	return &Handler{hub: h, verifier: v, revoked: r, origins: origins}
+func NewHandler(h Hub, v Verifier, g Gate, origins []string) *Handler {
+	return &Handler{hub: h, verifier: v, gate: g, origins: origins}
 }
 
 // ServeHTTP valida el token antes del upgrade: un token inválido, ajeno o
 // de otra sala nunca abre el socket. Los casos terminales (token revocado o
-// expirado pero bien firmado) sí hacen upgrade —tras la comprobación de
-// origen— y cierran de inmediato con 4001/4003: un rechazo HTTP llega al
+// expirado pero bien firmado, sala deshabilitada) sí hacen upgrade —tras la
+// comprobación de origen— y cierran de inmediato con 4001/4003/4010
+// (ADR 0014; la revocación se comprueba antes que la sala): un rechazo HTTP llega al
 // navegador como 1006 y el cliente reconectaría para siempre. El token viaja
 // en la query (los navegadores no permiten headers en WebSocket), por lo que
 // nunca se registra la URL completa.
@@ -94,17 +100,25 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "token inválido", http.StatusUnauthorized)
 		return
 	}
-	// Si no se puede comprobar la revocación se rechaza (falla cerrado).
+	// Si no se puede comprobar la revocación o el cierre de la sala se
+	// rechaza (falla cerrado).
 	ctx, cancel := context.WithTimeout(r.Context(), checkTimeout)
-	revoked, err := h.revoked.IsRevoked(ctx, claims.JTI)
+	revoked, err := h.gate.IsRevoked(ctx, claims.JTI)
+	closed := false
+	if err == nil && !revoked {
+		closed, err = h.gate.IsRoomClosed(ctx, roomID)
+	}
 	cancel()
 	switch {
 	case err != nil:
-		log.Printf("ws: revocación sala %s: %v", roomID, err)
+		log.Printf("ws: revocación o cierre sala %s: %v", roomID, err)
 		http.Error(w, "no se pudo validar el token", http.StatusServiceUnavailable)
 		return
 	case revoked:
 		h.rejectAfterUpgrade(w, r, StatusRevoked, "token revocado")
+		return
+	case closed:
+		h.rejectAfterUpgrade(w, r, StatusRoomDisabled, "sala deshabilitada")
 		return
 	}
 
@@ -115,6 +129,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	conn.SetReadLimit(MaxMessageBytes)
 
 	client, err := h.hub.Connect(context.WithoutCancel(r.Context()), claims, hub.WithCodec(codec.ForSubprotocol(conn.Subprotocol())))
+	if errors.Is(err, hub.ErrRoomClosed) {
+		// Se cerró entre la comprobación de arriba y la suscripción al bus.
+		_ = conn.Close(StatusRoomDisabled, "sala deshabilitada")
+		return
+	}
 	if err != nil {
 		log.Printf("ws: connect sala %s: %v", roomID, err)
 		_ = conn.Close(websocket.StatusInternalError, "estado de sala no disponible")
@@ -196,6 +215,8 @@ func closeFor(conn *websocket.Conn, cause error) {
 		_ = conn.Close(websocket.StatusPolicyViolation, "cliente demasiado lento")
 	case errors.Is(cause, hub.ErrRevoked):
 		_ = conn.Close(StatusRevoked, "token revocado")
+	case errors.Is(cause, hub.ErrRoomClosed):
+		_ = conn.Close(StatusRoomDisabled, "sala deshabilitada")
 	default:
 		_ = conn.Close(websocket.StatusNormalClosure, "")
 	}

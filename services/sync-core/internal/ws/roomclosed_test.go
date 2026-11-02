@@ -8,6 +8,7 @@ import (
 
 	"github.com/coder/websocket"
 
+	"github.com/HanamDavid/tint-monorepo/services/sync-core/internal/store"
 	"github.com/HanamDavid/tint-monorepo/services/sync-core/internal/syncevent"
 )
 
@@ -96,5 +97,23 @@ func TestClosedRoomCheckFailsClosed(t *testing.T) {
 	}
 	if err == nil || resp == nil || resp.StatusCode != http.StatusServiceUnavailable {
 		t.Errorf("sin Redis no se puede verificar room:{id}:closed: err=%v resp=%v, want 503", err, resp)
+	}
+}
+
+// staleGate simula la carrera: la comprobación del handshake aún no veía
+// room:{id}:closed, pero cuando el hub se registra la sala ya está cerrada.
+type staleGate struct{ *store.Store }
+
+func (staleGate) IsRoomClosed(context.Context, string) (bool, error) { return false, nil }
+
+// Si Connect descubre que la sala está cerrada, el socket (ya aceptado) se
+// cierra con 4010, no con 1011.
+func TestConnectToClosedRoomClosesWith4010(t *testing.T) {
+	s := newServerWithGate(t, time.Second, func(st *store.Store) Gate { return staleGate{st} })
+	_ = s.mr.Set(closedKey(room), "1")
+
+	c := dial(t, s, "participant")
+	if code := readUntilClose(t, c); code != statusRoomDisabled {
+		t.Errorf("cierre = %d, want %d", code, statusRoomDisabled)
 	}
 }
