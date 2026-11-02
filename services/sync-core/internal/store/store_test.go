@@ -405,3 +405,32 @@ func TestLoadStateWithoutQualityField(t *testing.T) {
 		t.Errorf("estado = %+v (%v)", st, err)
 	}
 }
+
+// DAT-03: tras reiniciar Redis el store vuelve a funcionar con el mismo cliente y conserva el
+// estado de la sala (Redis persiste con AOF; miniredis conserva los datos al reiniciarse).
+func TestStoreRecoversAfterRedisRestart(t *testing.T) {
+	s, mr, _ := setup(t)
+	ctx := context.Background()
+	if _, err := s.Init(ctx, room, "host-1", t0); err != nil {
+		t.Fatal(err)
+	}
+
+	mr.Close()
+	if _, err := s.Load(ctx, room); err == nil {
+		t.Fatal("con Redis caído Load debería fallar")
+	}
+	if err := mr.Restart(); err != nil {
+		t.Fatal(err)
+	}
+
+	st, err := s.Load(ctx, room)
+	if err != nil {
+		t.Fatalf("Load tras el reinicio: %v", err)
+	}
+	if st != master.Initial("host-1", t0) {
+		t.Errorf("estado tras el reinicio = %+v", st)
+	}
+	if _, _, err := s.Apply(ctx, room, "e1", master.Command{Type: syncevent.Seek, PositionMs: 5000}, t0+10, 0, encodeVersion); err != nil {
+		t.Fatalf("Apply tras el reinicio: %v", err)
+	}
+}
