@@ -48,6 +48,8 @@ import { markTokenRevoked, publishRevoked } from '../modules/tokens/revocation.j
 import { v4 as uuidv4 } from 'uuid';
 import { defaultEventStartDeps } from '../modules/eventStart/eventStart.clients.js';
 import { EventStartError, startEvent } from '../modules/eventStart/eventStart.service.js';
+import { requireInternalToken } from '../middlewares/internalToken.js';
+import { closeLiveRoom, type CloseResult } from '../modules/rooms/rooms.close.js';
 
 const router = Router();
 
@@ -214,6 +216,30 @@ router.delete('/rooms/:id', requireAuthHost, requireRoomOwner, async (req, res) 
   res.json({ success: true, room: removed });
   // Solo el primer borrado: el reintento (status === 'deleted') no vuelve a cerrar la sala.
   void publishAnalyticsEvent('room_closed', { room_id: roomId, user_id: req.user!.providerSub, reason: 'deleted' });
+});
+
+function sendCloseResult(res: Response, result: CloseResult) {
+  if (result.ok) return res.json(result.body);
+  return res.status(result.status).json(result.body);
+}
+
+// Fin de una sala live por el host (HU-LIVE-05, ADR 0019). Una sala watch se borra con DELETE.
+router.post('/rooms/:id/end', requireAuthHost, requireRoomOwner, async (req, res) => {
+  sendCloseResult(res, await closeLiveRoom(getRoomId(req), 'host_ended', req.user!.providerSub));
+});
+
+// Una sala deshabilitada no se reactiva: la UI ofrece crear un evento nuevo (HU-LIVE-09 AC4).
+router.post('/rooms/:id/reactivate', requireAuthHost, requireRoomOwner, (_req, res) => {
+  res.status(409).json({ error: 'NotReactivable' });
+});
+
+// Gracia del host vencida: lo llama stream-core (servicio a servicio, sin ID token de Firebase).
+// Caddy no expone /api/v1/internal/* (salvo auth/check). Único reason aceptado: grace_expired.
+const internalDisableSchema = z
+  .object({ reason: z.literal('grace_expired').default('grace_expired') })
+  .default({ reason: 'grace_expired' });
+router.post('/internal/rooms/:id/disable', requireInternalToken, validate(internalDisableSchema), async (req, res) => {
+  sendCloseResult(res, await closeLiveRoom(getRoomId(req), req.body.reason));
 });
 
 const createInvitationSchema = z.object({

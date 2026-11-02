@@ -269,6 +269,37 @@ describe('POST /rooms/:id/end (HU-LIVE-05)', () => {
     expect(state.disableById).toHaveBeenCalledTimes(2);
   });
 
+  it('ADR 0019: si la BD no responde al leer la sala responde 503 sin cerrar nada', async () => {
+    vi.mocked(findById).mockRejectedValueOnce(new Error('db down'));
+
+    const res = await request(app).post('/api/v1/rooms/room-1/end').send({});
+
+    expect(res.status).toBe(503);
+    expect(redis.set).not.toHaveBeenCalled();
+  });
+
+  it('ADR 0019: si otra petición borró la sala antes del UPDATE responde 410 Deleted', async () => {
+    state.disableById.mockResolvedValueOnce(null);
+    vi.mocked(findById)
+      .mockResolvedValueOnce(liveRoom as any) // lectura inicial: activa
+      .mockResolvedValueOnce({ ...liveRoom, status: 'deleted' } as any);
+
+    const res = await request(app).post('/api/v1/rooms/room-1/end').send({});
+
+    expect(res.status).toBe(410);
+    expect(res.body).toEqual({ error: 'Deleted' });
+    expect(redis.xadd).not.toHaveBeenCalled();
+  });
+
+  it('ADR 0019: si el UPDATE no cambia nada y la sala sigue activa responde 503 (reintentable)', async () => {
+    state.disableById.mockResolvedValueOnce(null);
+
+    const res = await request(app).post('/api/v1/rooms/room-1/end').send({});
+
+    expect(res.status).toBe(503);
+    expect(redis.xadd).not.toHaveBeenCalled();
+  });
+
   it('ADR 0019: una sala watch responde 409 NotLive (se borra con DELETE) sin cerrar nada', async () => {
     vi.mocked(findById).mockResolvedValue({ ...liveRoom, kind: 'watch' } as any);
 
@@ -395,6 +426,15 @@ describe('POST /internal/rooms/:id/disable (HU-LIVE-05 AC2, gracia vencida)', ()
 
     expect(res.status).toBe(status);
     expect(res.body).toEqual(body);
+    expect(redis.set).not.toHaveBeenCalled();
+  });
+
+  it('ADR 0019: un id que no es uuid responde 404 (no 500)', async () => {
+    vi.mocked(findById).mockRejectedValueOnce(Object.assign(new Error('invalid input syntax for type uuid'), { code: '22P02' }));
+
+    const res = await request(app).post('/api/v1/internal/rooms/no-es-uuid/disable').set('X-Internal-Token', INTERNAL_SECRET);
+
+    expect(res.status).toBe(404);
     expect(redis.set).not.toHaveBeenCalled();
   });
 
