@@ -20,11 +20,21 @@ std::string escape(std::string_view text) {
   out.reserve(text.size());
   for (const char ch : text) {
     switch (ch) {
-      case '"': out += "\\\""; break;
-      case '\\': out += "\\\\"; break;
-      case '\n': out += "\\n"; break;
-      case '\r': out += "\\r"; break;
-      case '\t': out += "\\t"; break;
+      case '"':
+        out += "\\\"";
+        break;
+      case '\\':
+        out += "\\\\";
+        break;
+      case '\n':
+        out += "\\n";
+        break;
+      case '\r':
+        out += "\\r";
+        break;
+      case '\t':
+        out += "\\t";
+        break;
       default:
         if (static_cast<unsigned char>(ch) < 0x20) {
           constexpr char kHex[] = "0123456789abcdef";
@@ -68,10 +78,14 @@ std::expected<Level, std::string> parse_level(std::string_view raw) {
 
 std::string_view level_name(Level level) {
   switch (level) {
-    case Level::kDebug: return "debug";
-    case Level::kInfo: return "info";
-    case Level::kWarn: return "warn";
-    case Level::kError: return "error";
+    case Level::kDebug:
+      return "debug";
+    case Level::kInfo:
+      return "info";
+    case Level::kWarn:
+      return "warn";
+    case Level::kError:
+      return "error";
   }
   return "info";
 }
@@ -107,8 +121,7 @@ bool enabled(Level level) { return static_cast<int>(level) >= static_cast<int>(g
 
 void write(Level level, std::string_view message) {
   if (!enabled(level)) return;
-  const std::string line =
-      format_entry(g_service, level, message, std::chrono::system_clock::now());
+  const std::string line = format_entry(g_service, level, message, std::chrono::system_clock::now());
   const std::lock_guard<std::mutex> lock(g_write_mutex);
   std::cout << line << std::flush;
 }
