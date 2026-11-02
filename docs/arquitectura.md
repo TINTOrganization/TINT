@@ -305,9 +305,13 @@ Son los únicos puntos en los que un PR puede necesitar coordinar dos dominios (
 | `analytics:events` | identity-api, social-core, sync-core, media-worker → analytics | [contrato-eventos-analitica](contrato-eventos-analitica.md) · obligatorios `event_id`, `type`, `source`, `occurred_at`, `received_at`; `room_id` en todo evento de sala; sin texto libre ni PII |
 | API de lectura de analytics + `analytics-ticket` | identity-api (emite el ticket) → web → analytics | `POST /api/v1/rooms/:id/analytics-ticket` (host dueño, también con la sala cerrada) → `GET /api/v1/rooms/{id}/kpis`, `/reactions/heatmap`, `/timeline` en el puerto 8084 ([analytics/AGENTS.md](../services/analytics/AGENTS.md#api-solo-lectura-puerto-analytics_port-por-defecto-8084)) · mismos `JWT_SECRET`/`JWT_ISSUER`/`JWT_AUDIENCE`; revocación con falla cerrado |
 | Protocolo del Canal de Voz (`/ws/voice`) y REST de silencios (`/api/v1/voice/rooms/{id}/mutes/{user_id}`) | voice-core ↔ web | [voice-core/AGENTS.md](../services/voice-core/AGENTS.md#protocolo-del-canal-de-voz) · ver [dominio-voz](dominio-voz.md) |
+| Cierre de sala `ROOM_CLOSED` + `room:{id}:closed` + cierre `4010` *(previsto)* | identity-api → sync-core, social-core, voice-core, stream-core, web | [ADR 0019](adr/0019-salas-live-y-cierre-room-closed.md) · `rooms.status='disabled'` lo escribe solo identity-api; HTTP `410 {error:"Disabled"}` |
+| API WHIP/WHEP `/api/v1/stream/*` + DataChannel `stream-events` *(previsto)* | stream-core ↔ web | [dominio-transmision §3–4](dominio-transmision.md#3-api-whipwhep-apiv1stream) |
+| `POST/DELETE /internal/events/start/{id}` (salas `live`) y `POST /api/v1/internal/rooms/{id}/disable` (`X-Internal-Token`) *(previsto)* | identity-api ↔ stream-core | [dominio-transmision §6](dominio-transmision.md#6-contratos-con-otros-dominios) |
+| `room:{id}:stream` `STREAM_STARTED`/`STREAM_ENDED` *(previsto)* | stream-core → social-core | Trivia por minuto del stream |
 | `TURN_SECRET` | voice-core ↔ coturn | Credenciales TURN efímeras (REST API de TURN), `.env.example` raíz |
 | `MONGO_URI` + colección `chat_messages` (índice `{room_id, occurred_at}`) | social-core ↔ mongodb | Historial de chat durable (SOC-02/SOC-07/DAT-02); `.env.example` raíz |
-| Puertos locales | infra ↔ web | social-core 8082, sync-core 8083, analytics 8084, voice-core 8085, coturn 3478 (`docker-compose.yml`, `apps/web/.env.example`) |
+| Puertos locales | infra ↔ web | social-core 8082, sync-core 8083, analytics 8084, voice-core 8085, stream-core 8086 (+ UDP `STREAM_UDP_PORT`, previsto), coturn 3478 (`docker-compose.yml`, `apps/web/.env.example`) |
 
 ## 6. Almacenes de datos
 
@@ -460,6 +464,7 @@ flowchart LR
 | sync-core | 8083 → 8080 | `docker compose` (`/ws/sync`, `/healthz`, `/metrics`) |
 | analytics | 8084 | `docker compose` (`/healthz`, `/api/v1/rooms/{id}/kpis`, `/reactions/heatmap`, `/timeline`) |
 | voice-core | 8085 | `docker compose` (`/ws/voice`, `/api/v1/voice/rooms/{id}/mutes/{user_id}`, `/healthz`) |
+| stream-core *(previsto)* | 8086 · UDP `STREAM_UDP_PORT` | `docker compose` (`/api/v1/stream/*` WHIP/WHEP, `/healthz`) |
 | coturn | 3478 · 49160–49200 | `docker compose` (STUN/TURN, red del host) |
 | PostgreSQL | 5432 | |
 | Redis | 6379 | |
@@ -474,6 +479,7 @@ HTTPS, termina TLS con Caddy y mantiene el contrato público de rutas:
 | `/api/*` (excepto analytics y voz) | identity-api | `IDENTITY_API_UPSTREAM` |
 | `/api/v1/rooms/{id}/kpis`, `/reactions/heatmap`, `/timeline` | analytics | `ANALYTICS_UPSTREAM` |
 | `/api/v1/voice/*` | voice-core | `VOICE_CORE_UPSTREAM` |
+| `/api/v1/stream/*` *(previsto)* | stream-core | `STREAM_CORE_UPSTREAM` |
 | `/ws/sync` | sync-core | `SYNC_CORE_UPSTREAM` |
 | `/ws/social` | social-core | `SOCIAL_CORE_UPSTREAM` |
 | `/ws/voice` | voice-core | `VOICE_CORE_UPSTREAM` |
@@ -533,6 +539,8 @@ apunta por defecto a `identity-api:8081`.
 | [0014](adr/0014-upgrade-y-cierre-4xxx-para-estados-terminales.md) | Upgrade y cierre `4xxx` para estados terminales en el Canal Sync |
 | [0015](adr/0015-voice-core-en-cpp-con-webrtc-p2p.md) | Canal de Voz en un servicio C++ con WebRTC P2P |
 | [0017](adr/0017-despliegue-orientado-a-contenedores.md) | Despliegue orientado a contenedores y MongoDB (OPS-02) |
+| [0018](adr/0018-stream-core-sfu-cpp-con-libdatachannel.md) | Transmisión en vivo con un SFU propio en C++ sobre libdatachannel (propuesta) |
+| [0019](adr/0019-salas-live-y-cierre-room-closed.md) | Salas `live` y cierre de sala `ROOM_CLOSED` en todos los servicios (propuesta) |
 
 ## 11. Documentación por servicio
 
