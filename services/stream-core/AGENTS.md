@@ -115,4 +115,4 @@ docker compose up -d redis stream-core && make smoke-stream
 - **No hay ICE restart por `PATCH`** (`405`): el cliente hace un POST nuevo.
 - **Spikes pendientes en navegador real** (S1 simulcast, S3 Docker/LAN, S5 audio del PC): ver [dominio-transmision §9](../../docs/dominio-transmision.md#9-fase-0-spikes). Hasta que pasen, ADR 0017 sigue como *Propuesta*.
 - **Carga de 50 viewers (S2)** y E2E de latencia: *previstos* (bots en C++ en `loadtest/`, Puppeteer en `e2e/`).
-- **La imagen de runtime pesa ~300 MB**, por los símbolos de depuración de libdatachannel (`RelWithDebInfo`). Pendiente: compilarla en `Release` o quitarle los símbolos.
+- **Imagen de runtime: ~148 MB** (Debian slim + libssl/hiredis/libsrtp2 + libdatachannel sin símbolos). La etapa `dev` conserva los símbolos para depurar.

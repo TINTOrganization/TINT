@@ -20,13 +20,16 @@ WORKDIR /src
 FROM dev AS build
 COPY . /src
 RUN cmake -S . -B /build -G Ninja -DCMAKE_BUILD_TYPE=Release -DSTREAM_BUILD_TESTS=OFF \
-    && cmake --build /build --target stream-core
+    && cmake --build /build --target stream-core \
+    && strip --strip-unneeded /build/stream-core \
+    && strip --strip-unneeded -o /build/libdatachannel.so.0.24 /usr/local/lib/libdatachannel.so.0.24.6
 
 FROM debian:trixie-slim
 RUN apt-get update && apt-get install -y --no-install-recommends libssl3t64 libhiredis1.1.0 libsrtp2-1 curl \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --system --no-create-home streamcore
-COPY --from=dev /usr/local/lib/libdatachannel.so* /usr/local/lib/
+# Solo el archivo del SONAME y sin símbolos: un COPY con glob duplicaba la .so (3 × 38 MB con debug).
+COPY --from=build /build/libdatachannel.so.0.24 /usr/local/lib/
 RUN ldconfig
 COPY --from=build /build/stream-core /usr/local/bin/stream-core
 USER streamcore
