@@ -129,7 +129,7 @@ sequenceDiagram
     API-)R: XADD analytics:events user_login (best-effort)
 ```
 
-- Sin cabecera, sin `kid`, firma inválida o sin `sub` → **401**. Si falla la base de datos en el *upsert* → **500** `Internal error`.
+- Sin cabecera, sin `kid`, firma inválida, sin `exp` o sin `sub` → **401**. Un token sin firma (`alg: none`) solo se acepta en modo Firebase Auth Emulator (desarrollo, [ADR 0024](../../docs/adr/0024-login-local-con-firebase-auth-emulator.md)); fuera de él, **401**. La verificación vive en `modules/auth/firebaseToken.ts`. Si falla la base de datos en el *upsert* → **500** `Internal error`.
 - `requireAuthHost` hace este mismo trabajo en **cada** ruta de Host, no solo en `/auth/verify`: email, nombre y avatar se refrescan en cada petición autenticada.
 - El evento `user_login` lleva `user_id = users.provider_sub` (uid de Firebase), nunca `users.id` ni el email.
 
@@ -546,6 +546,7 @@ identity-api corre en `docker compose` como `identity-api` (puerto `8081`), apli
 | HTTP | `IDENTITY_API_PORT` (8081) | |
 | Datos | `DATABASE_URL`, `REDIS_URL` | Los mismos PostgreSQL y Redis de `docker compose` |
 | Firebase | `FIREBASE_PROJECT_ID` | **Obligatoria**: sin ella el proceso no arranca (zod) |
+| Firebase Auth Emulator | `FIREBASE_AUTH_EMULATOR_HOST` | **Solo desarrollo** ([ADR 0024](../../docs/adr/0024-login-local-con-firebase-auth-emulator.md)): con valor acepta los ID tokens sin firma (`alg: none`) del emulador. El proceso no arranca si además `NODE_ENV=production` o el proyecto no es `demo-*` |
 | Tokens HS256 | `JWT_SECRET`, `JWT_ISSUER`, `JWT_AUDIENCE` | **Contrato**: deben coincidir con sync-core, social-core y analytics (`.env.example` raíz) |
 | Vida de tokens | `GUEST_TOKEN_TTL_HOURS` (4), `INVITATION_DEFAULT_TTL_HOURS` (24), `SYNC_TICKET_TTL_SECONDS` (600) | El último aplica también al analytics-ticket |
 | MinIO | `MINIO_ENDPOINT`, `MINIO_PUBLIC_ENDPOINT`, `MINIO_ACCESS_KEY`, `MINIO_SECRET_KEY`, `MINIO_BUCKET`, `MINIO_REGION` | Las URLs se firman con el endpoint **público** (el host va dentro de la firma SigV4); `HEAD`/`DELETE` usan el interno |
