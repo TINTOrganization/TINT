@@ -34,14 +34,14 @@ describe('fetchBusinessOverview', () => {
     });
   });
 
-  it('usa VITE_ANALYTICS_API_URL y, si falta, el puerto local', async () => {
+  it('usa VITE_ANALYTICS_API_URL y, si falta, la ruta pública del gateway', async () => {
     fetchMock.mockImplementation(() => Promise.resolve(jsonResponse(200, overview)));
     vi.stubEnv('VITE_ANALYTICS_API_URL', '/api/v1');
     await fetchBusinessOverview('clave');
     expect(fetchMock).toHaveBeenLastCalledWith('/api/v1/analytics/overview', expect.anything());
     vi.stubEnv('VITE_ANALYTICS_API_URL', '');
     await fetchBusinessOverview('clave');
-    expect(fetchMock).toHaveBeenLastCalledWith('http://localhost:8084/api/v1/analytics/overview', expect.anything());
+    expect(fetchMock).toHaveBeenLastCalledWith('/api/v1/analytics/overview', expect.anything());
   });
 
   it('convierte los errores HTTP en AnalyticsError con el mensaje del servicio', async () => {

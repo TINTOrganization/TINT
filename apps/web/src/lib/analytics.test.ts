@@ -66,13 +66,13 @@ describe('getAnalyticsTicket', () => {
 });
 
 describe('createAnalyticsClient', () => {
-  it('usa VITE_ANALYTICS_API_URL o el puerto 8084 por defecto', async () => {
-    expect(DEFAULT_ANALYTICS_API_URL).toBe('http://localhost:8084/api/v1');
+  it('usa VITE_ANALYTICS_API_URL o la ruta pública del gateway por defecto', async () => {
+    expect(DEFAULT_ANALYTICS_API_URL).toBe('/api/v1');
     mockedApi.mockResolvedValue(ticket('t1'));
     fetchMock.mockImplementation(() => Promise.resolve(jsonResponse(200, kpis)));
 
     await createAnalyticsClient('r1').kpis();
-    expect(fetchMock.mock.calls[0][0]).toBe('http://localhost:8084/api/v1/rooms/r1/kpis');
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/v1/rooms/r1/kpis');
 
     vi.stubEnv('VITE_ANALYTICS_API_URL', 'http://env.test/api/v1');
     await createAnalyticsClient('r1').kpis();

@@ -1,0 +1,20 @@
+# Despliegue público: se combina con docker-compose.yml.
+# El gateway conserva 80/443; web, API y canales solo quedan disponibles en la red Compose.
+services:
+  web:
+    ports: !reset []
+
+  identity-api:
+    ports: !reset []
+
+  sync-core:
+    ports: !reset []
+
+  social-core:
+    ports: !reset []
+
+  analytics:
+    ports: !reset []
+
+  voice-core:
+    ports: !reset []

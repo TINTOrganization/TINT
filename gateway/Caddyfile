@@ -15,6 +15,7 @@ https://{$GATEWAY_HOST:localhost} {
     header X-Correlation-ID {http.request.header.X-Correlation-ID}
     log {
         format json
+        level {$GATEWAY_LOG_LEVEL:INFO}
     }
     log_append correlation_id {http.request.header.X-Correlation-ID}
 
@@ -46,7 +47,8 @@ https://{$GATEWAY_HOST:localhost} {
     }
 
     @health path /healthz
-    respond @health 200
+    header @health Content-Type application/json
+    respond @health `{"status":"ok","service":"gateway"}` 200
 
     @analytics path_regexp analytics ^/api/v1/rooms/[^/]+/(kpis|reactions/heatmap|timeline)$
     reverse_proxy @analytics {$ANALYTICS_UPSTREAM:analytics:8084} {

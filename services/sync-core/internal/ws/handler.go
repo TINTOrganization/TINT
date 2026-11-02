@@ -14,7 +14,7 @@ package ws
 import (
 	"context"
 	"errors"
-	"log"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -111,7 +111,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	cancel()
 	switch {
 	case err != nil:
-		log.Printf("ws: revocación o cierre sala %s: %v", roomID, err)
+		slog.Error("ws: revocación o cierre de sala", "room_id", roomID, "error", err)
 		http.Error(w, "no se pudo validar el token", http.StatusServiceUnavailable)
 		return
 	case revoked:
@@ -135,7 +135,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		log.Printf("ws: connect sala %s: %v", roomID, err)
+		slog.Error("ws: connect", "room_id", roomID, "error", err)
 		_ = conn.Close(websocket.StatusInternalError, "estado de sala no disponible")
 		return
 	}

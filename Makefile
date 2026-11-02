@@ -5,7 +5,7 @@ COVERAGE_MIN := 85
 NODE_SERVICES := services/identity-api
 CPP_SERVICES := services/voice-core
 
-.PHONY: up down test-all test-go test-python test-web test-node test-cpp test-stream smoke-stream load-stream load-voice e2e-voice
+.PHONY: up down test-all test-go test-python test-web test-node test-cpp test-stream smoke-stream load-stream load-voice e2e-voice observability health logs smoke-observability secrets smoke-secrets prototype-health
 
 up:
 	docker compose up -d
@@ -77,3 +77,32 @@ load-voice:
 # E2E de la voz con dos Chromium reales (ruta libre y solo TURN). Requiere la web, voice-core y coturn.
 e2e-voice:
 	services/voice-core/e2e/run.sh
+
+# Observabilidad (OPS-04)
+observability:
+	python3 -m pytest gateway/tests/test_observability.py -q
+	docker compose config -q
+	docker compose -f docker-compose.yml -f docker-compose.production.yml config -q
+
+health:
+	docker compose ps
+
+logs:
+	docker compose logs -f --tail=100
+
+smoke-observability:
+	python3 scripts/observability_smoke.py
+
+# Secretos por entorno (OPS-05, ADR 0022)
+secrets:
+	python3 -m unittest discover -s gateway/tests -v
+	docker compose config -q
+	docker compose -f docker-compose.yml -f docker-compose.production.yml config -q
+
+smoke-secrets:
+	python3 scripts/secrets_smoke.py
+
+# Instrucciones de ejecucion del prototipo (OPS-06, ADR 0023)
+prototype-health: health
+	@echo Verificando gateway /healthz...
+	@curl -sk https://localhost/healthz || true

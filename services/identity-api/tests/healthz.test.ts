@@ -9,6 +9,12 @@ describe('healthz', () => {
     expect(res.body).toEqual({ status: 'ok', service: 'identity-api' });
   });
 
+  it('serves the internal /healthz alias used by the container probe', async () => {
+    const res = await request(app).get('/healthz');
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ status: 'ok', service: 'identity-api' });
+  });
+
   it('preserves the correlation ID and includes it in error responses', async () => {
     const correlationId = 'trace-123';
     const ok = await request(app)

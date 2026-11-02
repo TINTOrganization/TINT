@@ -182,12 +182,12 @@ npm run test:coverage   # Vitest + umbral 85%
 ## Variables de Entorno
 | Variable | Por defecto | Descripción |
 | :--- | :--- | :--- |
-| `VITE_IDENTITY_API_URL` | `http://localhost:8081/api/v1` | identity-api (salas, invitaciones, sync-tickets). |
-| `VITE_SYNC_WS_URL` | `ws://localhost:8083/ws/sync` | Canal Sync de sync-core. |
-| `VITE_SOCIAL_WS_URL` | `ws://localhost:8082/ws/social` | Canal social de social-core (chat y su moderación, reacciones, láser, encuestas, trivia y recap). |
+| `VITE_IDENTITY_API_URL` | `/api/v1` | identity-api a través del gateway (salas, invitaciones, sync-tickets). |
+| `VITE_SYNC_WS_URL` | `/ws/sync` | Canal Sync de sync-core a través del gateway; la SPA usa `wss` bajo HTTPS. |
+| `VITE_SOCIAL_WS_URL` | `/ws/social` | Canal social de social-core a través del gateway; la SPA usa `wss` bajo HTTPS. |
+| `VITE_VOICE_WS_URL` | `/ws/voice` | Señalización de voz de voice-core a través del gateway; la SPA usa `wss` bajo HTTPS. |
 | `VITE_SYNC_ENCODING` | `json` | Codificación del Canal Sync: `json` o `msgpack` (pide el subprotocolo `tint.sync.msgpack`; si sync-core no lo acepta, sigue en JSON). |
 | `VITE_DEMO_VIDEO_URL` | vacío | Vídeo de respaldo, solo si la sala no tiene vídeo asignado en identity-api (`mediaId: null`). |
-| `VITE_ANALYTICS_API_URL` | `http://localhost:8084/api/v1` | API de lectura de analytics (página `/rooms/:id/analytics`). |
-| `VITE_VOICE_WS_URL` | `ws://localhost:8085/ws/voice` | Canal de Voz de voice-core. |
+| `VITE_ANALYTICS_API_URL` | `/api/v1` | API de lectura de analytics (página `/rooms/:id/analytics`) a través del gateway. |
 | `VITE_VOICE_API_URL` | origen de `VITE_VOICE_WS_URL` (ws→http) | REST de voice-core (escenario de las salas `live`). |
 | `VITE_STREAM_API_URL` | sin definir → `http://localhost:8086` · vacía → mismo origen | Origen de stream-core o del gateway; la web llama a `/api/v1/stream/*` (WHIP/WHEP, ICE, sesiones). La imagen Docker se construye con la variable **vacía** (la sirve el gateway, que enruta `/api/v1/stream/*`); `npm run dev` usa stream-core directo. |

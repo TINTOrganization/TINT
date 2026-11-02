@@ -22,7 +22,7 @@ La documentación de features vive en [`docs/`](docs/README.md), con diagramas M
 - [Usuarios, identidad y permisos](docs/usuarios-e-identidad.md): tipos de usuario, permisos, esquema de BD y tokens.
 - [Dominio de Reproducción](docs/dominio-reproduccion.md): Canal Sync v2.
 - [Dominio de Voz](docs/dominio-voz.md): canal de voz (voice-core).
-- [Dominio de Transmisión en vivo](docs/dominio-transmision.md): transmisión del host por SFU (stream-core, en especificación).
+- [Dominio de Transmisión en vivo](docs/dominio-transmision.md): transmisión del host por SFU (stream-core), salas `live` y cierre `ROOM_CLOSED`.
 - [Contrato de eventos de analítica](docs/contrato-eventos-analitica.md): `analytics:events` y la API de KPIs.
 
 **Actualiza el documento en el mismo PR** en el que cambie un flujo, un contrato, una tabla o una variable de entorno.
@@ -32,7 +32,7 @@ La documentación de features vive en [`docs/`](docs/README.md), con diagramas M
 2. **TDD obligatorio:** Red → Green → Refactor. Cobertura mínima **85 %** por servicio; el CI (`.github/workflows/ci-pipeline.yml`) bloquea el merge si no se cumple.
 3. **Conventional Commits en español:** `tipo(alcance): descripción`, con el dominio como alcance: `feat(sync-core): …`, `fix(identity-api): …`, `docs(web): …`, `perf(sync-core): …`, `ci: …`, `chore: …`. El cuerpo explica el *porqué* y, si hay mediciones, las incluye.
 4. **Ramas:** `main` (producción) y `develop` (integración) están protegidas. Trabaja en `feat/*`, `fix/*` o `chore/*` y abre el PR hacia `develop`.
-5. **Infraestructura local:** `docker compose up -d` (PostgreSQL, Redis, MinIO, media-worker, analytics, social-core, sync-core, voice-core, stream-core y coturn). **Nunca subas `.env`** ni credenciales; documenta las variables nuevas en el `.env.example` correspondiente.
+5. **Infraestructura local:** `docker compose up -d` (PostgreSQL, Redis, MinIO, media-worker, analytics, social-core, sync-core, voice-core, stream-core y coturn). **Nunca subas `.env`** ni credenciales; documenta las variables nuevas en el `.env.example` correspondiente. Los secretos se inyectan en tiempo de creación desde `.env` sin fallbacks inseguros en Compose (ADR 0022).
 6. **Verificación:** `make test-all` antes de abrir un PR, más los comandos propios del dominio.
 7. **Archivos ajenos:** los `.docx` de planeación en la raíz no se versionan. No los agregues a commits.
 8. **Dependencias:** no agregues dependencias sin justificarlas en el commit y en el Stack Técnico del `AGENTS.md` del dominio. Fija versiones exactas en Go y prefiere versiones exactas en npm.
@@ -54,6 +54,8 @@ Cambiar uno exige actualizar **ambos lados**, sus pruebas y [docs/arquitectura.m
 | API WHIP/WHEP `/api/v1/stream/*` + DataChannel `stream-events`; internos `/internal/events/start/{id}` y `/api/v1/internal/rooms/{id}/disable` | stream-core ↔ web, identity-api | [dominio-transmision §3–6](docs/dominio-transmision.md#3-api-whipwhep-apiv1stream) |
 | `TURN_SECRET` (credenciales TURN efímeras) | voice-core, stream-core ↔ coturn | `.env.example` raíz |
 | Puertos locales: social-core 8082, sync-core 8083, analytics 8084, voice-core 8085, stream-core 8086 (+ UDP 8087), coturn 3478 | infra ↔ web | `docker-compose.yml`, `.env.example` de la web |
+| Observabilidad y salud (`/healthz` con `status`/`service`; logs JSON a stdout con `LOG_LEVEL` configurable) | Todos los servicios (gateway, web, identity, sync, social, media-worker, analytics, voice, stream, coturn) | [ADR 0021](docs/adr/0021-observabilidad-salud-y-logs.md) · [arquitectura §8.2](docs/arquitectura.md#82-observabilidad-salud-y-logs) |
+| Inyección de secretos exclusivamente por entorno (`.env`, `env-check` fail-closed, sin fallbacks en Compose, `docker compose up -d --no-build`) | infra ↔ todos los servicios | [ADR 0022](docs/adr/0022-secretos-por-variables-de-entorno.md) · [arquitectura §7.4](docs/arquitectura.md#74-gestion-de-secretos-y-variables-de-entorno-ops-05-adr-0022) |
 | API REST `/api/v1` (incl. bloqueo por dispositivo `room_bans` + `deviceId` en el claim, y biblioteca `GET /videos`) | identity-api → web | [identity-api/AGENTS.md](services/identity-api/AGENTS.md#api) |
 | Stream `analytics:events` (sin PII) | identity-api, social-core, sync-core, media-worker → analytics | [docs/contrato-eventos-analitica.md](docs/contrato-eventos-analitica.md) |
 | API de lectura de analytics (`/api/v1/rooms/{id}/kpis`, `/reactions/heatmap`, `/timeline`) + `analytics-ticket` (`POST /api/v1/rooms/:id/analytics-ticket`) | identity-api → web → analytics | [analytics/AGENTS.md](services/analytics/AGENTS.md#api-solo-lectura-puerto-analytics_port-por-defecto-8084) |
@@ -76,6 +78,7 @@ Cambiar uno exige actualizar **ambos lados**, sus pruebas y [docs/arquitectura.m
 | Python (`media-worker`, `analytics`) | `ruff check . && ruff format --check .` · `pytest --cov=src --cov-fail-under=85` |
 | C++ (`voice-core`) | `clang-format --dry-run --Werror` · `ctest` con `-DVOICE_SANITIZE=address` y `=thread` · `gcovr --fail-under-line 85` (`make test-cpp`; ver su AGENTS.md para correrlo en Docker) |
 | Carga del Canal Sync | `k6 run -e VUS=50 -e DURATION=20s services/sync-core/loadtest/sync.js` (CI); 500 VUs desde otra máquina |
+| Infra / Secretos | `make secrets` (contrato estático y sintaxis compose) · escaneo Gitleaks en CI |
 | C++ (`stream-core`) | `make test-stream`: en la imagen dev (libdatachannel no está empaquetada) corre `clang-format`, ctest y `gcovr ≥ 85`. CI añade ASan+UBSan (con loopback de libdatachannel), TSan (`-DSTREAM_BUILD_RTC=OFF`), la imagen de runtime, `/healthz` y `scripts/smoke.py` (job `cpp-stream`) |
 | Carga de la Transmisión | `make load-stream`: publicador VP8 simulcast y 50 viewers bot (libdatachannel) contra el contenedor; exige TTFF p95 < 2 s, 0 fallos y `409` al viewer 51. CI: `stream-load-smoke` (20 viewers, 15 s) |
 | Carga y E2E del Canal de Voz | `k6 run … services/voice-core/loadtest/voice.js` (CI, `voice-load-smoke`; local con `make load-voice`) · `make e2e-voice`: dos Chromium reales contra la web y `docker compose` (local) |

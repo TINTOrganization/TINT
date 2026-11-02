@@ -343,7 +343,7 @@ describe('ChangeVideoPanel — Mis vídeos', () => {
     it('la tarjeta pasa de "Preparando…" a "Listo" sin cerrar ni reabrir el panel', async () => {
       let call = 0;
       routeUploads({
-        videos: () => Promise.resolve({ videos: ++call === 1 ? library : library.map(asReady) }),
+        videos: () => Promise.resolve({ videos: ++call <= 2 ? library : library.map(asReady) }),
       });
       const grid = await openLibrary({ libraryPollMs: 20 });
       expect(within(within(grid).getAllByRole('listitem')[1]).getByText('Preparando…')).toBeInTheDocument();

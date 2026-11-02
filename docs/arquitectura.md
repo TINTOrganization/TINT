@@ -313,6 +313,7 @@ Son los únicos puntos en los que un PR puede necesitar coordinar dos dominios (
 | `TURN_SECRET` | voice-core ↔ coturn | Credenciales TURN efímeras (REST API de TURN), `.env.example` raíz |
 | `MONGO_URI` + colección `chat_messages` (índice `{room_id, occurred_at}`) | social-core ↔ mongodb | Historial de chat durable (SOC-02/SOC-07/DAT-02); `.env.example` raíz |
 | Puertos locales | infra ↔ web | social-core 8082, sync-core 8083, analytics 8084, voice-core 8085, stream-core 8086 (+ UDP `STREAM_UDP_PORT`), coturn 3478 (`docker-compose.yml`, `apps/web/.env.example`) |
+| Observabilidad y salud (`/healthz` con `status`/`service`; logs JSON a stdout con `LOG_LEVEL` configurable) | Todos los servicios | [ADR 0021](adr/0021-observabilidad-salud-y-logs.md) · [§8.2](#82-observabilidad-salud-y-logs) |
 
 ## 6. Almacenes de datos
 
@@ -438,10 +439,11 @@ flowchart LR
         CPP["cpp · voice-core<br/>clang-format · ASan+UBSan · TSan · gcovr 85<br/>Redis de servicio"]
         K6["sync-load-smoke · needs go<br/>Redis de servicio · sync-core :8083<br/>k6 50 VUs 20 s"]
         K6V["voice-load-smoke · needs cpp<br/>Redis de servicio · voice-core :8085 (imagen)<br/>k6 50 VUs 20 s"]
+        GTL["gitleaks<br/>auditoría de secretos Git<br/>fetch-depth 0"]
         GATE{"ci-gate<br/>if always"}
         GO --> K6
         CPP --> K6V
-        GO & PY & WEBJ & IDJ & CPP & K6 & K6V --> GATE
+        GO & PY & WEBJ & IDJ & CPP & K6 & K6V & GTL --> GATE
     end
 
     GATE -- "todos success" --> OK["merge permitido"]
@@ -454,6 +456,24 @@ flowchart LR
     CD -- "docker buildx + caché gha" --> GHCR[("GHCR<br/>tint-servicio:sha y latest")]
     GHCR -. "despliegue previsto, no implementado" .-> PROD["infraestructura de producción"]
 ```
+
+
+### 7.4 Gestión de secretos y variables de entorno (OPS-05, ADR 0022)
+
+Ningún secreto del sistema se versiona en Git ni se hornea en capas de las imágenes Docker:
+- **Almacenamiento y paso**: los secretos (`POSTGRES_PASSWORD`, `MINIO_ROOT_PASSWORD`, `MONGO_ROOT_PASSWORD`, `MONGO_URI`, `JWT_SECRET`, `TURN_SECRET`, `INTERNAL_API_SECRET`) se configuran en `.env` (ignorado en `.gitignore` y excluido en `.dockerignore`). Compose los inyecta al crear o arrancar cada contenedor.
+- **Fail-closed en arranque**: el servicio `tint-env-check` comprueba que ninguna variable secreta obligatoria esté vacía. Si falta alguna, el stack no arranca.
+- **Sin fallbacks inseguros**: `docker-compose.yml` interpola secretos como `${VAR}` sin alternativas `:-dev-...`.
+- **Actualización de secretos**: Docker Compose no relee el archivo `.env` del host tras una edición al hacer `docker restart`. La regla operativa para aplicar un secreto actualizado sin reconstruir imágenes es:
+  ```bash
+  docker compose up -d --no-build
+  ```
+- **Variables públicas del cliente**: las variables `VITE_*` (por ejemplo `VITE_FIREBASE_*`) son configuraciones públicas consumidas en el navegador e integradas durante el build de `apps/web/Dockerfile`. No son secretos de servidor.
+- **Auditoría CI con Gitleaks**: el pipeline ejecuta un escaneo completo de historial con `.gitleaks.toml` permitiendo únicamente marcadores didácticos de `.env.example`.
+
+### 7.5 Instrucciones de ejecución del prototipo (OPS-06, ADR 0023)
+
+El requerimiento R10 y la historia OPS-06 (#91) establecen que el despliegue del software debe ser 100 % orientado a contenedores y reproducible por un evaluador en menos de 15 minutos. Las instrucciones concisas de una página, los pasos de verificación y la matriz de solución de problemas (AC1, AC2, AC3) están centralizados en la sección [Instrucciones de Ejecución del Prototipo](../README.md#-instrucciones-de-ejecución-del-prototipo-ops-06) del `README.md` y formalizados en el [ADR 0023](adr/0023-instrucciones-de-ejecucion-del-prototipo.md).
 
 ## 8. Puertos locales
 
@@ -489,6 +509,14 @@ HTTPS, termina TLS con Caddy y mantiene el contrato público de rutas:
 Los clientes usan estas rutas públicas; para añadir un servicio se incorpora su
 matcher y upstream en `gateway/Caddyfile`, y para moverlo se cambia únicamente
 la variable `*_UPSTREAM` del gateway. Las rutas no reconocidas responden 404.
+La SPA se compila para usar `/api/v1` y las rutas `/ws/*` relativas: en una
+página HTTPS construye conexiones `wss://` con el mismo host público, sin
+conocer los puertos internos de los servicios. El Compose base conserva puertos
+directos para diagnóstico local; el despliegue público combina
+`docker-compose.yml` con `docker-compose.production.yml`, que deja web,
+identity-api, analytics, sync-core, social-core y voice-core accesibles solo
+desde la red Compose. Esta entrada única cubre web/API/WebSocket; las URLs S3
+firmadas de MinIO y el relay TURN quedan fuera de ese alcance.
 Cada upstream tiene un timeout de conexión y de cabeceras de 5 s; si un
 servicio está caído o excede ese límite, el gateway responde 503 con el error
 JSON `service_unavailable`, sin conservar un estado de circuito que impida
@@ -511,6 +539,48 @@ al equipo y las búsquedas de logs pueden seguir el request entre conectores.
 La ruta `/` sirve la SPA desde el contenedor `web`; `identity-api` y la web
 forman parte del mismo stack Compose, por lo que el upstream de identidad
 apunta por defecto a `identity-api:8081`.
+
+### 8.2 Observabilidad: salud y logs (OPS-04, ADR 0021)
+
+Cada contenedor expone una sonda de salud liveness (`/healthz`) y emite registros estructurados en una línea JSON por evento a **stdout** con nivel configurable.
+
+#### Matriz de salud (/healthz)
+| Servicio | Endpoint | Respuesta 200 | Sonda en contenedor |
+| :--- | :--- | :--- | :--- |
+| `gateway` | `GET /healthz` | `{"status":"ok","service":"gateway"}` | `wget --spider` |
+| `web` | `GET /healthz` | `{"status":"ok","service":"web"}` | `wget --spider` |
+| `identity-api` | `GET /api/v1/healthz` (alias `GET /healthz`) | `{"status":"ok","service":"identity-api"}` | `node -e fetch` |
+| `sync-core` | `GET /healthz` | `{"status":"ok","service":"sync-core"}` | `wget --spider` |
+| `social-core` | `GET /healthz` | `{"status":"ok","service":"social-core"}` | `wget --spider` |
+| `analytics` | `GET /healthz` | `{"status":"ok","service":"analytics"}` | `python urllib` |
+| `media-worker` | `GET /healthz` en `:8088` | `{"status":"ok","service":"media-worker"}` | `python urllib` |
+| `voice-core` | `GET /healthz` | `{"status":"ok","service":"voice-core"}` | `curl -fs` |
+| `stream-core` | `GET /healthz` | `{"status":"ok","service":"stream-core"}` | `curl -fs` |
+| `coturn` | — (protocolo STUN) | — | `turnutils_stunclient -p 3478 127.0.0.1` |
+
+`/healthz` es una sonda de **liveness** (proceso vivo y receptivo a HTTP/red). No consulta bases de datos ni dependencias externas ([ADR 0021](adr/0021-observabilidad-salud-y-logs.md)).
+
+```mermaid
+flowchart LR
+    DockerDaemon["Docker Daemon / Compose"] -- "Healthcheck periódico" --> Probe["Sonda de contenedor<br/>(wget / curl / python / node)"]
+    Probe -- "GET /healthz" --> Service["Servicio en ejecución"]
+    Service -- "200 ok" --> Status["Estado: healthy"]
+    Service -. "Fallo / timeout" .-> Unhealthy["Estado: unhealthy<br/>(Compose alerta / reinicia)"]
+```
+
+#### Esquema de logs
+Una línea JSON por evento a stdout:
+```json
+{"timestamp":"2026-11-02T14:03:11.123Z","level":"info","service":"sync-core","message":"http_request","correlation_id":"a1b2","method":"GET","path":"/healthz"}
+```
+Campos obligatorios: `timestamp` (ISO UTC con ms), `level` (`debug|info|warn|error`), `service`, `message`. Campos opcionales: `correlation_id`, `method`, `path`, `duration_ms`, `error`.
+
+#### Variables de configuración
+- `LOG_LEVEL`: nivel mínimo para los servicios de aplicación (`debug|info|warn|error`, default `info`).
+- `GATEWAY_LOG_LEVEL`: nivel de log de Caddy (default `INFO`).
+- `NGINX_ERROR_LOG_LEVEL`: nivel de log de errores de Nginx en la web (default `warn`).
+- `MEDIA_WORKER_PORT`: puerto del servidor de salud interno de media-worker (default `8088`).
+- `MEDIA_WORKER_HEARTBEAT_MAX_AGE_S`: antigüedad máxima del latido del consumidor antes de reportar 503 (default `30`).
 
 ## 9. Calidad, CI y CD
 
@@ -543,6 +613,7 @@ apunta por defecto a `identity-api:8081`.
 | [0017](adr/0017-despliegue-orientado-a-contenedores.md) | Despliegue orientado a contenedores y MongoDB (OPS-02) |
 | [0018](adr/0018-stream-core-sfu-cpp-con-libdatachannel.md) | Transmisión en vivo con un SFU propio en C++ sobre libdatachannel (propuesta) |
 | [0019](adr/0019-salas-live-y-cierre-room-closed.md) | Salas `live` y cierre de sala `ROOM_CLOSED` en todos los servicios (propuesta) |
+| [0021](adr/0021-observabilidad-salud-y-logs.md) | Observabilidad: salud y logs uniformes en contenedores (OPS-04) |
 
 ## 11. Documentación por servicio
 

@@ -134,6 +134,7 @@ Middlewares: `requireAuthHost`, `requireRoomOwner` (no filtra por estado de la s
 | `SYNC_CORE_URL` / `SOCIAL_CORE_URL` / `ANALYTICS_URL` | `http://localhost:8083` / `http://localhost:8082` / `http://localhost:8084` | Upstreams internos para `POST /events/start`; cada llamada tiene deadline de 5 s |
 | `STREAM_CORE_URL` | `http://localhost:8086` (compose: `http://stream-core:8086`) | Upstream de `POST /events/start` para salas `live` |
 | `INTERNAL_API_SECRET` | — (compose: `dev-internal-secret-change-in-prod`) | Secreto de `X-Internal-Token` para `/api/v1/internal/rooms/*` (el mismo que usa stream-core). Sin él esas rutas responden 503 |
+| `LOG_LEVEL` | `info` | Nivel mínimo de log (`debug`, `info`, `warn`, `error`). Logs JSON a stdout (ADR 0021). |
 
 ## Comandos
 ```bash
