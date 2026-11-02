@@ -113,6 +113,7 @@ make load-stream                          # VIEWERS=50 DURATION=30 por defecto
 | `ALLOWED_ORIGINS` | `localhost:5173,127.0.0.1:5173` | `host[:puerto]`. En compose viene de `STREAM_ALLOWED_ORIGINS`. |
 | `IDENTITY_API_URL` / `INTERNAL_API_SECRET` | — (obligatorias) | Para `POST /api/v1/internal/rooms/{id}/disable` con `X-Internal-Token`. |
 | `STUN_URLS` / `TURN_URLS` / `TURN_SECRET` / `TURN_TTL_SECONDS` | vacío / vacío / vacío / `3600` | Se entregan al cliente en `Link` y en `/ice-servers` (REST API de TURN, igual que voice-core). |
+| `LOG_LEVEL` | `info` | Nivel mínimo de log (`debug`, `info`, `warn`, `error`). Logs JSON a stdout (ADR 0021). |
 
 ## Limitaciones conocidas
 - **Una réplica.** Salas y sesiones viven en memoria.
