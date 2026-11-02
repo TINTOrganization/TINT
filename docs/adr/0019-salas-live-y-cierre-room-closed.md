@@ -22,14 +22,17 @@ Además, una sala de transmisión no tiene vídeo sincronizado, y la voz *mesh* 
 - **Estado terminal** `rooms.status = 'disabled'`. **identity-api es el único escritor**:
   - `POST /api/v1/rooms/{id}/end`: lo llama el host.
   - `POST /api/v1/internal/rooms/{id}/disable`: lo llama stream-core cuando vence la gracia del host. Exige `X-Internal-Token` (`INTERNAL_API_SECRET`). Caddy responde `404` a `/api/v1/internal/*`, salvo `auth/check`.
-  - Los dos hacen, en este orden: `SET room:{id}:closed 1` (sin TTL), `UPDATE rooms SET status='disabled'`, `PUBLISH room:{id}:sync {"type":"ROOM_CLOSED","room_id","reason","event_id","occurred_at"}` y `XADD analytics:events room_closed reason=host_closed|grace_expired`. Si Redis falla, responden `503` y se puede reintentar. Una segunda llamada responde `409`.
+  - Los dos hacen, en este orden: `SET room:{id}:closed 1` (sin TTL), `PUBLISH room:{id}:sync {"type":"ROOM_CLOSED","event_id","room_id","reason","occurred_at"}`, `UPDATE rooms SET status='disabled'` y `XADD analytics:events room_closed`, con `reason ∈ {host_ended, grace_expired}` en ambos mensajes.
+  - Si falla alguno de los tres primeros pasos, responden `503` y la sala sigue `active` en la BD. El reintento repite todo (los pasos son idempotentes), así que el aviso no se pierde. `409 AlreadyDisabled` solo se responde cuando la BD ya dice `disabled`, es decir, cuando el aviso ya salió.
+  - Solo las salas `live` se terminan así. `/end` sobre una sala `watch` responde `409 NotLive` (se sigue borrando con `DELETE`), y sobre una borrada, `410 Deleted`.
+  - Los formatos exactos están en [dominio-transmision §6.1](../dominio-transmision.md#61-formatos-estándar).
 - **Consumidores**: sync-core, social-core, voice-core y stream-core leen `ROOM_CLOSED` del canal `room:{id}:sync` (el mismo que ya leen para `REVOKED`):
   - cierran todas las conexiones de la sala con el código **`4010` ROOM_DISABLED**;
   - en cada handshake nuevo consultan `EXISTS room:{id}:closed` (con falla cerrado: `503`) y, si existe, hacen upgrade y cierran con `4010` ([ADR 0014](0014-upgrade-y-cierre-4xxx-para-estados-terminales.md));
   - stream-core responde `410 ROOM_DISABLED` a WHIP/WHEP;
   - social-core además hace upgrade y cierra con `4001`/`4003` donde hoy responde `401`.
 - **HTTP**: una sala deshabilitada responde **`410 {error:"Disabled"}`** en `POST /invitations/claim`, `GET /rooms/:id/playback` y en las rutas con `requireActiveRoom`. Siguen abiertos `analytics-ticket`, los KPIs y `GET /api/v1/social/rooms/{id}/chat`; este último es nuevo, solo lo usa el host, y lee mientras duren las claves de Redis (12 h).
-- **No se reactiva**: `POST /rooms/{id}/reactivate` responde `409`, y la UI ofrece crear un evento nuevo.
+- **No se reactiva**: `POST /rooms/{id}/reactivate` responde `409 NotReactivable`, y la UI ofrece crear un evento nuevo.
 - **Gracia del host**: **60 s** (`STREAM_HOST_GRACE_S`, configurable de 10 a 300) antes de que stream-core pida deshabilitar la sala.
 - **Voz en salas `live`: modo escenario.** Solo entran a voice-core el host y los invitados al escenario:
   - el host invita o retira con `PUT/DELETE /api/v1/voice/rooms/{id}/stage/{user_id}`, que escribe el SET de Redis `room:{id}:voice:stage`;
@@ -47,8 +50,8 @@ sequenceDiagram
     actor P as Participante
     H->>ID: POST /rooms/{id}/end
     ID->>R: SET room:{id}:closed
-    ID->>ID: status = 'disabled'
     ID->>R: PUBLISH room:{id}:sync ROOM_CLOSED
+    ID->>ID: status = 'disabled'
     R-->>S: ROOM_CLOSED
     S-->>P: cierre 4010 / stream_state ended
     P->>S: reconexión

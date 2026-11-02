@@ -86,7 +86,7 @@ Se negocia `negotiated:true, id:0`, y el cliente lo crea antes de `createOffer`.
 
 | `type` | Campos | Para |
 | :--- | :--- | :--- |
-| `stream_state` | `state` ∈ `waiting`, `live`, `reconnecting`, `ended`; `reason?`; `grace_deadline_ms?` | todos |
+| `stream_state` | `state` ∈ `waiting`, `live`, `reconnecting`, `ended`; `reason?` ∈ `host_ended`, `grace_expired` (solo con `ended`); `grace_deadline_ms?` (solo con `reconnecting`) | todos |
 | `viewer_count` | `count` (1 Hz, solo si cambia) | todos |
 | `scene` | `name` ∈ `live`, `starting_soon`, `brb` | todos |
 | `host_stats` | por capa: `bitrate_bps` y `active`; `viewers_per_layer`; `nacks`; `plis` (1 Hz) | host |
@@ -114,9 +114,86 @@ stateDiagram-v2
 | `ROOM_CLOSED` en `room:{id}:sync` + `room:{id}:closed` + cierre `4010` | identity-api → sync, social, voice, stream, web | [ADR 0019](adr/0019-salas-live-y-cierre-room-closed.md) |
 | `POST/DELETE /internal/events/start/{roomId}` | identity-api → stream-core | Alta y baja de una sala `live`: `SET`/`DEL room:{id}:stream:enabled`. No pasa por el gateway. |
 | `POST /api/v1/internal/rooms/{id}/disable` + `X-Internal-Token` | stream-core → identity-api | Gracia vencida. Tres reintentos con espera creciente; stream-core termina localmente igual. |
-| `room:{id}:stream` `{"type":"STREAM_STARTED","room_id","started_at"}` / `STREAM_ENDED` | stream-core → social-core | Trivia por minuto del stream (`at_ms` relativo a `started_at`). |
+| `room:{id}:stream` `STREAM_STARTED` / `STREAM_ENDED` (formato en §6.1) | stream-core → social-core | Trivia por minuto del stream (`at_ms` relativo a `started_at_ms`). |
 | `room:{id}:kind=live` · `room:{id}:voice:stage` | identity-api / voice-core | Voz en modo escenario (cierre `4009 NOT_ON_STAGE`). |
-| `analytics:events`: `stream_started`, `stream_ended`, `stream_viewer_joined`, `stream_viewer_left`; `room_closed` `reason=host_closed\|grace_expired` | stream-core, identity-api → analytics | Sin PII ([contrato](contrato-eventos-analitica.md)). |
+| `analytics:events`: `stream_started`, `stream_ended`, `stream_viewer_joined`, `stream_viewer_left`; `room_closed` `reason=host_ended\|grace_expired` | stream-core, identity-api → analytics | Sin PII ([contrato](contrato-eventos-analitica.md)). |
+
+### 6.1 Formatos estándar
+
+Todos los mensajes nuevos de esta feature siguen las mismas reglas. Un mensaje que no las cumpla se descarta (bus) o se responde con `400`/`INVALID_PAYLOAD` (cliente).
+
+| Regla | Valor |
+| :--- | :--- |
+| `type` en el bus de Redis (`room:{id}:sync`, `room:{id}:stream`) | `UPPER_SNAKE` (`ROOM_CLOSED`, `STREAM_STARTED`), igual que `REVOKED` |
+| `type` en WebSocket y DataChannel | `lower_snake` (`trivia_launch_now`, `stream_state`), igual que el Canal Social |
+| Identificador del mensaje | `event_id`: UUID v4. En el bus lo genera quien publica; en C → S, el cliente (deduplicación) |
+| Fechas legibles | `occurred_at`, `started_at`: RFC 3339 en UTC con milisegundos (`2026-11-01T18:00:00.000Z`) |
+| Instantes para cálculo | Sufijo `_ms`, milisegundos desde epoch, entero (`started_at_ms`, `grace_deadline_ms`) |
+| Duraciones | Sufijo `_ms` o `_s` explícito (`retry_after_ms`, `STREAM_HOST_GRACE_S`) |
+| `reason` de cierre | `host_ended` (el host terminó con `POST /rooms/{id}/end`) o `grace_expired` (el host no volvió a tiempo). Es el mismo valor en `ROOM_CLOSED`, `STREAM_ENDED`, `stream_state` y en el evento `room_closed` de analítica |
+| Errores HTTP de identity-api | `{error:"PascalCase"}`, como los existentes (`Deleted`, `Forbidden`): `Disabled`, `AlreadyDisabled`, `NotLive`, `NotReactivable` |
+| Errores HTTP de las rutas nuevas de stream-core, social-core y voice-core | `{error:"UPPER_SNAKE", message?}` (`ROOM_DISABLED`, `ROOM_FULL`, `FORBIDDEN_ROLE`, `NOT_ON_STAGE`) |
+| Errores por WebSocket | `{type:"error", code:"UPPER_SNAKE", message?, ref_event_id?}`, igual que el Canal Social |
+
+**Códigos de cierre de WebSocket** (todos tras el upgrade, [ADR 0014](adr/0014-upgrade-y-cierre-4xxx-para-estados-terminales.md)):
+
+| Código | Nombre | Cuándo | La web muestra |
+| :--- | :--- | :--- | :--- |
+| `4001` | `REVOKED` | El host retiró al invitado | "Fuiste retirado de la sala" |
+| `4003` | `TOKEN_EXPIRED` | El token caducó | Reconecta con un token nuevo |
+| `4008` | `VOICE_FULL` | La voz está llena | Aviso de voz llena |
+| `4009` | `NOT_ON_STAGE` | Voz de una sala `live` sin estar en el escenario | Botón "Pedir subir al escenario" desactivado |
+| `4010` | `ROOM_DISABLED` | La sala fue deshabilitada | "El evento terminó y la sala fue deshabilitada" (HU-LIVE-08) |
+
+**Mensajes del bus**
+
+```jsonc
+// room:{id}:sync — lo publica solo identity-api
+{"type":"ROOM_CLOSED","event_id":"<uuid>","room_id":"r1","reason":"host_ended","occurred_at":"2026-11-01T18:00:00.000Z"}
+// room:{id}:stream — lo publica solo stream-core
+{"type":"STREAM_STARTED","event_id":"<uuid>","room_id":"r1","started_at":"2026-11-01T17:00:00.000Z","started_at_ms":1793552400000,"occurred_at":"2026-11-01T17:00:00.000Z"}
+{"type":"STREAM_ENDED","event_id":"<uuid>","room_id":"r1","reason":"grace_expired","occurred_at":"2026-11-01T18:00:00.000Z"}
+```
+
+Los consumidores son **idempotentes**: un `ROOM_CLOSED` repetido no hace nada nuevo, y un `STREAM_STARTED` repetido con el mismo `started_at_ms` no reprograma trivias.
+
+**identity-api** (`/api/v1`, Firebase ID token del dueño salvo la ruta interna)
+
+| Ruta | Éxito | Errores |
+| :--- | :--- | :--- |
+| `POST /rooms/{id}/end` | `200 {"room_id","status":"disabled","reason":"host_ended","closed_at"}` | `403 Forbidden` (no es el dueño) · `404` · `409 NotLive` (sala `watch`: se borra con `DELETE`) · `409 AlreadyDisabled` · `410 Deleted` · `503` (Redis o BD: se puede reintentar) |
+| `POST /internal/rooms/{id}/disable` (`X-Internal-Token`, cuerpo opcional `{"reason":"grace_expired"}`) | `200` (mismo cuerpo, `reason:"grace_expired"`) | `401` · `400` (otro `reason`) · `404` · `409 NotLive` · `409 AlreadyDisabled` · `410 Deleted` · `503` |
+| `POST /rooms/{id}/reactivate` | — | `409 NotReactivable` (siempre; se crea un evento nuevo) |
+| `POST /invitations/claim`, `GET /rooms/{id}/playback` y las rutas con `requireActiveRoom` | — | `410 Disabled` |
+
+**Orden de escritura del cierre** (para no perder el aviso): `SET room:{id}:closed 1` → `PUBLISH ROOM_CLOSED` → `UPDATE rooms SET status='disabled'` → `XADD room_closed`. Si falla cualquiera de los tres primeros pasos, la respuesta es `503` y la sala sigue `active` en la BD, así que el reintento repite los pasos (todos idempotentes) y vuelve a publicar. `409 AlreadyDisabled` solo sale cuando la BD ya dice `disabled`, y eso implica que el aviso ya se publicó. El `XADD` de analítica es de mejor esfuerzo, como el resto de eventos.
+
+**social-core**
+
+```jsonc
+// C → S, solo host o cohost (sync-ticket). Abre ya una trivia programada que aún no salió.
+{"event_id":"<uuid>","type":"trivia_launch_now","trivia_id":"t1"}
+// S → sala: el trivia_question habitual (opens_at_ms = ahora); al host: trivia_schedule_state actualizado.
+// Errores: FORBIDDEN (no es host/cohost), TRIVIA_NOT_FOUND, TRIVIA_CLOSED (ya salió), UNAVAILABLE (sin Redis).
+```
+
+`GET /api/v1/social/rooms/{id}/chat` (sync-ticket de host o cohost de esa sala; también con la sala deshabilitada):
+
+```jsonc
+200 {"room_id":"r1","messages":[ /* objetos chat_message idénticos a los del WebSocket, del más antiguo al más nuevo, máx. 100 */ ]}
+// 401 UNAUTHORIZED · 403 FORBIDDEN (no es host/cohost o es de otra sala) · 503 UNAVAILABLE (sin Redis)
+```
+
+En una sala `live`, una trivia programada con `at_ms` se abre en `started_at_ms + at_ms` (reloj del servidor). Sin `STREAM_STARTED` todavía, queda pendiente. En `watch` no cambia nada: sigue el reloj del vídeo.
+
+**voice-core**
+
+| Ruta | Quién | Éxito | Errores |
+| :--- | :--- | :--- | :--- |
+| `PUT /api/v1/voice/rooms/{id}/stage/{user_id}` | host o cohost | `204` (`SADD room:{id}:voice:stage`) | `401` · `403 FORBIDDEN` · `503 UNAVAILABLE` |
+| `DELETE /api/v1/voice/rooms/{id}/stage/{user_id}` | host o cohost | `204` (`SREM` y cierra con `4009` la conexión de ese usuario) | igual |
+
+**DataChannel `stream-events`**: ver §4. `stream_state.reason` usa los mismos valores que `ROOM_CLOSED`.
 
 ## 7. Análisis de performance
 
