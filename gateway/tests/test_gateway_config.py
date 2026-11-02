@@ -50,7 +50,7 @@ class GatewayConfigTests(unittest.TestCase):
         )
 
     def test_gateway_hides_internal_identity_routes(self):
-        # /api/v1/internal/rooms/{id}/disable solo para la red interna (ADR 0018).
+        # /api/v1/internal/rooms/{id}/disable solo para la red interna (ADR 0019).
         caddyfile = CONFIG.read_text(encoding="utf-8")
 
         self.assertIn("@internal_api {\n        path /api/v1/internal/*\n        not path /api/v1/internal/auth/check", caddyfile)

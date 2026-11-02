@@ -24,7 +24,7 @@ https://{$GATEWAY_HOST:localhost} {
         respond @upstream_unavailable `{"error":"service_unavailable","message":"The requested service is temporarily unavailable."}` 503
     }
 
-    # Rutas internas de identity-api (p. ej. /api/v1/internal/rooms/{id}/disable, ADR 0018):
+    # Rutas internas de identity-api (p. ej. /api/v1/internal/rooms/{id}/disable, ADR 0019):
     # solo se llaman dentro de la red de compose. auth/check lo usa el propio forward_auth.
     @internal_api {
         path /api/v1/internal/*
@@ -53,7 +53,7 @@ https://{$GATEWAY_HOST:localhost} {
         import service_timeout
     }
 
-    # Transmisión en vivo: señalización WHIP/WHEP por HTTP (HU-LIVE-06, ADR 0017).
+    # Transmisión en vivo: señalización WHIP/WHEP por HTTP (HU-LIVE-06, ADR 0018).
     @stream_api path /api/v1/stream/*
     reverse_proxy @stream_api {$STREAM_CORE_UPSTREAM:stream-core:8086} {
         import service_timeout

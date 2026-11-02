@@ -83,7 +83,7 @@ Problem bad_sdp(std::string message) { return {400, "INVALID_SDP", std::move(mes
 
 bool sends(sdp::Direction d) { return d == sdp::Direction::SendOnly || d == sdp::Direction::SendRecv; }
 
-// Oferta WHIP de vídeo: una sola pista VP8 con simulcast por rid + DataChannel (ADR 0017).
+// Oferta WHIP de vídeo: una sola pista VP8 con simulcast por rid + DataChannel (ADR 0018).
 std::optional<Problem> check_whip_video(const sdp::Offer& offer) {
   const auto* video = offer.first("video");
   if (!video || offer.count("video") != 1 || offer.count("audio") != 0)

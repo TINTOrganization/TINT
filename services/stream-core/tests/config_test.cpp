@@ -63,7 +63,7 @@ TEST(Config, ParsesAddressesAndLists) {
 TEST(Config, ViewerCapacityRange) {
   EXPECT_EQ(load_config(env({{"STREAM_MAX_VIEWERS", "1"}}))->max_viewers, 1);
   EXPECT_FALSE(load_config(env({{"STREAM_MAX_VIEWERS", "0"}})));
-  EXPECT_FALSE(load_config(env({{"STREAM_MAX_VIEWERS", "51"}}))) << "meta medida: 50 por sala (ADR 0017)";
+  EXPECT_FALSE(load_config(env({{"STREAM_MAX_VIEWERS", "51"}}))) << "meta medida: 50 por sala (ADR 0018)";
   EXPECT_FALSE(load_config(env({{"STREAM_MAX_VIEWERS", "muchos"}})));
 }
 

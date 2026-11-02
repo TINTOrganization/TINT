@@ -18,7 +18,7 @@ find_package(nlohmann_json 3.11 REQUIRED)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(HIREDIS REQUIRED IMPORTED_TARGET hiredis)
 
-# Los warnings se aplican por target (ADR 0017): no deben alcanzar a libdatachannel.
+# Los warnings se aplican por target (ADR 0018): no deben alcanzar a libdatachannel.
 set(STREAM_WARNINGS -Wall -Wextra -Wpedantic -Werror)
 
 if(STREAM_SANITIZE STREQUAL "address")
@@ -46,7 +46,7 @@ target_link_libraries(stream_core_lib PUBLIC
   Boost::headers OpenSSL::Crypto nlohmann_json::nlohmann_json PkgConfig::HIREDIS Threads::Threads)
 
 if(STREAM_BUILD_RTC)
-  # Adaptador WebRTC: el único código que enlaza libdatachannel (ADR 0017).
+  # Adaptador WebRTC: el único código que enlaza libdatachannel (ADR 0018).
   find_package(LibDataChannel 0.24 REQUIRED)
   file(GLOB STREAM_RTC_SOURCES CONFIGURE_DEPENDS src/rtc/*.cpp)
   add_library(stream_core_rtc ${STREAM_RTC_SOURCES})

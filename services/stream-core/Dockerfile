@@ -6,7 +6,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       cmake ninja-build g++ libboost-dev libssl-dev libhiredis-dev libsrtp2-dev \
       nlohmann-json3-dev libgtest-dev libgmock-dev pkgconf gcovr clang-format git ca-certificates curl \
     && rm -rf /var/lib/apt/lists/*
-# libdatachannel no está empaquetada en Debian (ADR 0017). Versión fijada con el commit al que apunta el tag.
+# libdatachannel no está empaquetada en Debian (ADR 0018). Versión fijada con el commit al que apunta el tag.
 ARG LIBDATACHANNEL_TAG=v0.24.6
 ARG LIBDATACHANNEL_SHA=6b1e2e620f1e37f0eafeee702eaea0043cb305fd
 RUN git clone --depth 1 --branch "$LIBDATACHANNEL_TAG" https://github.com/paullouisageneau/libdatachannel.git /tmp/ldc \

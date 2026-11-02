@@ -366,7 +366,7 @@ services:
       timeout: 5s
       retries: 10
 
-  # Transmisión en vivo (C++ SFU, ADR 0017): señalización WHIP/WHEP (/api/v1/stream/*) y medios
+  # Transmisión en vivo (C++ SFU, ADR 0018): señalización WHIP/WHEP (/api/v1/stream/*) y medios
   # WebRTC en un solo puerto UDP (ICE UDP mux). STREAM_PUBLIC_IP es la IP que el navegador
   # alcanza (127.0.0.1 si navegas en la misma máquina; la IP de la LAN para otros equipos).
   stream-core:

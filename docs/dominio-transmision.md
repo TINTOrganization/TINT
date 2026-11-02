@@ -1,7 +1,7 @@
 # 📡 Dominio de Transmisión en vivo (stream-core)
 
 > El host transmite su pantalla (con cámara opcional y audio del PC) a la sala, y el servidor reenvía esa señal a cada espectador (SFU). Es un servicio propio en C++ (`services/stream-core`) sobre libdatachannel, con señalización WHIP/WHEP por el gateway.
-> Decisiones: [ADR 0018](adr/0018-stream-core-sfu-cpp-con-libdatachannel.md) (SFU en C++) · [ADR 0019](adr/0019-salas-live-y-cierre-room-closed.md) (salas `live` y `ROOM_CLOSED`).
+> Decisiones: [ADR 0019](adr/0018-stream-core-sfu-cpp-con-libdatachannel.md) (SFU en C++) · [ADR 0019](adr/0019-salas-live-y-cierre-room-closed.md) (salas `live` y `ROOM_CLOSED`).
 > Estado: **stream-core implementado** (señalización, SFU y ciclo de vida, con pruebas en verde). identity-api, sync, social, voz y web: **pruebas rojas escritas**. Spikes S1, S3 y S5 pendientes en navegador real. Los umbrales no se relajan.
 
 ## 1. Historias de usuario y criterios de aceptación

@@ -60,7 +60,7 @@ class PliThrottle {
 
 // Últimos paquetes de una capa para responder NACK. Un escritor (ingesta) y lectores NACK:
 // un mutex por buffer, sin contención en la práctica (los NACK son raros). Excepción documentada
-// a "sin locks en el camino caliente" (ADR 0017).
+// a "sin locks en el camino caliente" (ADR 0018).
 class NackBuffer {
  public:
   explicit NackBuffer(std::size_t capacity = 512, std::size_t max_packet = 1500);

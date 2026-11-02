@@ -1,4 +1,4 @@
-// Cliente hacia identity-api (gracia vencida, ADR 0018) contra un servidor HTTP falso en proceso.
+// Cliente hacia identity-api (gracia vencida, ADR 0019) contra un servidor HTTP falso en proceso.
 #include "identity/identity_client.hpp"
 
 #include <gtest/gtest.h>

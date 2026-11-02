@@ -16,7 +16,7 @@ struct PeerFactoryConfig {
   int start_bitrate_kbps = 2500;  // x-google-start-bitrate para el host (spike S1)
 };
 
-// PeerFactory sobre libdatachannel (ADR 0017). Es el ÚNICO código que incluye <rtc/rtc.hpp>.
+// PeerFactory sobre libdatachannel (ADR 0018). Es el ÚNICO código que incluye <rtc/rtc.hpp>.
 //  - Host (vídeo/audio): recibe la pista remota y entrega el RTP crudo por on_rtp.
 //  - Viewer: pistas sendonly por mid con SSRC propios; su RTCP llega por on_rtcp.
 //  - DataChannel negociado (id=0, "stream-events") en ambos casos.

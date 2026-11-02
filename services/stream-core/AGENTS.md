@@ -8,7 +8,7 @@ Eres el agente de la **Transmisión en vivo** de TINT. El host transmite su pant
 - **Controla el ciclo de vida**: `waiting → live → reconnecting (gracia 60 s) → ended`. Cuando vence la gracia, pide a identity-api que deshabilite la sala.
 - **Avisa por DataChannel** (`stream_state`, `viewer_count`, `scene`, `host_stats`).
 
-Documento de dominio: [docs/dominio-transmision.md](../../docs/dominio-transmision.md). Decisiones: [ADR 0017](../../docs/adr/0017-stream-core-sfu-cpp-con-libdatachannel.md) y [ADR 0018](../../docs/adr/0018-salas-live-y-cierre-room-closed.md).
+Documento de dominio: [docs/dominio-transmision.md](../../docs/dominio-transmision.md). Decisiones: [ADR 0018](../../docs/adr/0018-stream-core-sfu-cpp-con-libdatachannel.md) y [ADR 0019](../../docs/adr/0019-salas-live-y-cierre-room-closed.md).
 
 ## Stack Técnico
 | Pieza | Versión | Por qué |
@@ -23,7 +23,7 @@ Documento de dominio: [docs/dominio-transmision.md](../../docs/dominio-transmisi
 
 ## Límites de Dominio
 - ❌ **No transcodifica ni decodifica.** Recibe VP8 y Opus y los reenvía tal cual.
-- ❌ **No escribe `rooms.status`.** Al vencer la gracia llama a `POST /api/v1/internal/rooms/{id}/disable` de identity-api, que es la dueña del estado (ADR 0018).
+- ❌ **No escribe `rooms.status`.** Al vencer la gracia llama a `POST /api/v1/internal/rooms/{id}/disable` de identity-api, que es la dueña del estado (ADR 0019).
 - ❌ No lee PostgreSQL. Autoriza con el JWT y Redis.
 - ❌ Nunca expone el `jti` ni datos de otros viewers.
 - ✅ Lee `room:{id}:sync` **solo** para `REVOKED` y `ROOM_CLOSED`. Publica en `room:{id}:stream` (`STREAM_STARTED`/`STREAM_ENDED`), que consume social-core.
@@ -111,8 +111,8 @@ docker compose up -d redis stream-core && make smoke-stream
 
 ## Limitaciones conocidas
 - **Una réplica.** Salas y sesiones viven en memoria.
-- **El host necesita dos sesiones WHIP** (vídeo y audio): libdatachannel solo enruta el simulcast por `rid` si la PeerConnection tiene una pista (ADR 0017).
+- **El host necesita dos sesiones WHIP** (vídeo y audio): libdatachannel solo enruta el simulcast por `rid` si la PeerConnection tiene una pista (ADR 0018).
 - **No hay ICE restart por `PATCH`** (`405`): el cliente hace un POST nuevo.
-- **Spikes pendientes en navegador real** (S1 simulcast, S3 Docker/LAN, S5 audio del PC): ver [dominio-transmision §9](../../docs/dominio-transmision.md#9-fase-0-spikes). Hasta que pasen, ADR 0017 sigue como *Propuesta*.
+- **Spikes pendientes en navegador real** (S1 simulcast, S3 Docker/LAN, S5 audio del PC): ver [dominio-transmision §9](../../docs/dominio-transmision.md#9-fase-0-spikes). Hasta que pasen, ADR 0018 sigue como *Propuesta*.
 - **Carga de 50 viewers (S2)** y E2E de latencia: *previstos* (bots en C++ en `loadtest/`, Puppeteer en `e2e/`).
 - **Imagen de runtime: ~148 MB** (Debian slim + libssl/hiredis/libsrtp2 + libdatachannel sin símbolos). La etapa `dev` conserva los símbolos para depurar.

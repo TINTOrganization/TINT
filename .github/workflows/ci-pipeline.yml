@@ -163,7 +163,7 @@ jobs:
           ctest --test-dir build-cov --output-on-failure
           gcovr --root . --filter src/ --exclude src/main.cpp build-cov --fail-under-line "$COVERAGE_MIN"
 
-  # Transmisión en vivo (C++ SFU sobre libdatachannel, ADR 0017). libdatachannel no está en
+  # Transmisión en vivo (C++ SFU sobre libdatachannel, ADR 0018). libdatachannel no está en
   # Ubuntu ni Debian: todo corre dentro de la imagen "dev" (versión fijada por commit), igual que en local.
   # TSan solo sobre la biblioteca pura (libdatachannel no está instrumentada; ver stream-core/AGENTS.md).
   cpp-stream:

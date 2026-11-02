@@ -266,7 +266,7 @@ TEST_F(RequestDecision, WhipOfferWithoutRidSimulcast400) {
 }
 
 TEST_F(RequestDecision, WhipOfferWithExtraTrack400) {
-  // libdatachannel solo enruta simulcast sin a=ssrc si la PeerConnection tiene una pista (ADR 0017).
+  // libdatachannel solo enruta simulcast sin a=ssrc si la PeerConnection tiene una pista (ADR 0018).
   std::string sdp =
       kChromeWhipVideoOffer + "m=audio 9 UDP/TLS/RTP/SAVPF 111\r\na=rtpmap:111 opus/48000/2\r\n";
   EXPECT_EQ(problem(run(whip(host_token, sdp))).code, "INVALID_SDP");

@@ -18,7 +18,7 @@ struct HttpTarget {
 // "http://identity-api:8081" -> {identity-api, 8081, ""}. nullopt si no es http://.
 std::optional<HttpTarget> parse_http_url(const std::string& url);
 
-// POST {base}/api/v1/internal/rooms/{id}/disable con X-Internal-Token (ADR 0018).
+// POST {base}/api/v1/internal/rooms/{id}/disable con X-Internal-Token (ADR 0019).
 // 2xx o 409 (ya deshabilitada) cuentan como éxito; reintenta con espera creciente.
 class HttpIdentityClient : public service::IdentityClient {
  public:

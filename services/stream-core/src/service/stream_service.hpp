@@ -59,7 +59,7 @@ class RoomStore : public http::RoomStatus {
   virtual void publish_ended(const std::string& room_id, const std::string& reason) = 0;
 };
 
-// POST /api/v1/internal/rooms/{id}/disable (gracia vencida, ADR 0018).
+// POST /api/v1/internal/rooms/{id}/disable (gracia vencida, ADR 0019).
 class IdentityClient {
  public:
   virtual ~IdentityClient() = default;
