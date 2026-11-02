@@ -3,13 +3,23 @@ import { EventStartError, type EventStartDeps } from './eventStart.service.js';
 import { create as createInvitation } from '../invitations/invitations.repo.js';
 import { publishAnalyticsEvent } from '../analytics/analytics.events.js';
 import { create as createRoom, softRemoveById } from '../rooms/rooms.repo.js';
+import { getRedisClient } from '../tokens/revocation.js';
 
 const SERVICE_TIMEOUT_MS = 5000;
+/** Mismo TTL que `room:{id}:stream:enabled` (stream-core): 24 h. */
+export const ROOM_KIND_TTL_SECONDS = 24 * 60 * 60;
+
+type UpstreamName = 'sync' | 'social' | 'analytics' | 'stream';
+
+/** `SET room:{id}:kind live EX 86400`: voice-core reconoce así las salas live (modo escenario). */
+export async function markLiveRoom(roomId: string) {
+  await getRedisClient().set(`room:${roomId}:kind`, 'live', 'EX', ROOM_KIND_TTL_SECONDS);
+}
 
 type ServiceResponse = Record<string, unknown>;
 
 async function request(
-  service: 'sync' | 'social' | 'analytics',
+  service: UpstreamName,
   baseUrl: string,
   path: string,
   options: RequestInit,
@@ -34,7 +44,7 @@ async function request(
   }
 }
 
-function client(service: 'sync' | 'social' | 'analytics', baseUrl: string) {
+function client(service: UpstreamName, baseUrl: string) {
   return {
     start: async (roomId: string, hostId: string) =>
       request(service, baseUrl, `/internal/events/start/${encodeURIComponent(roomId)}`, {
@@ -58,7 +68,9 @@ export function defaultEventStartDeps(): EventStartDeps {
       sync: client('sync', env.SYNC_CORE_URL),
       social: client('social', env.SOCIAL_CORE_URL),
       analytics: client('analytics', env.ANALYTICS_URL),
+      stream: client('stream', env.STREAM_CORE_URL),
     },
+    markLiveRoom,
     publishAnalyticsEvent,
     invitationTtlHours: Number.parseInt(env.INVITATION_DEFAULT_TTL_HOURS, 10),
   };

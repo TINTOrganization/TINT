@@ -47,6 +47,7 @@ const roomWithMedia = {
   id: 'room-1',
   hostId: 'host-1',
   title: 'Cine',
+  status: 'active',
   mediaId: '11111111-1111-4111-8111-111111111111',
   mediaKey: 'videos/peli.mp4',
 };

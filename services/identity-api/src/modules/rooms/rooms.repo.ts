@@ -42,6 +42,20 @@ export async function softRemoveById(id: string) {
   return result[0] || null;
 }
 
+/**
+ * Estado terminal de una sala `live` (ADR 0019): `UPDATE rooms SET status='disabled'`.
+ * Condicional a `status='active'` para no pisar un borrado concurrente. Devuelve null
+ * si no había sala activa que deshabilitar.
+ */
+export async function disableById(id: string) {
+  const result = await db
+    .update(rooms)
+    .set({ status: 'disabled', updatedAt: new Date() })
+    .where(and(eq(rooms.id, id), eq(rooms.status, 'active')))
+    .returning();
+  return result[0] || null;
+}
+
 export async function updateTitle(id: string, title: string) {
   const result = await db
     .update(rooms)

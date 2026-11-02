@@ -39,7 +39,11 @@ function deps(overrides: Partial<EventStartDeps> = {}): EventStartDeps {
       sync: service('sync'),
       social: service('social'),
       analytics: service('analytics'),
+      stream: service('stream'),
     },
+    markLiveRoom: vi.fn(async () => {
+      calls.push('redis:kind');
+    }),
     publishAnalyticsEvent: vi.fn(async () => undefined),
     invitationTtlHours: 24,
     ...overrides,
@@ -126,5 +130,67 @@ describe('startEvent', () => {
 
     expect(injected.removeRoom).toHaveBeenCalledWith('room-1');
     expect(injected.services.sync.start).not.toHaveBeenCalled();
+  });
+
+  describe('kind=live (ADR 0019)', () => {
+    const live = { title: 'Directo', kind: 'live' as const, user: { id: 'host-1', providerSub: 'sub-1' } };
+
+    it('registra stream-core en lugar de sync-core y marca room:{id}:kind al final', async () => {
+      const injected = deps();
+      const result = await startEvent(live, injected);
+
+      expect((injected as any).__calls).toEqual([
+        'identity:create',
+        'identity:invitation',
+        'stream:start',
+        'social:start',
+        'analytics:start',
+        'redis:kind',
+      ]);
+      expect(injected.createRoom).toHaveBeenCalledWith({ title: 'Directo', hostId: 'host-1', kind: 'live' });
+      expect(injected.markLiveRoom).toHaveBeenCalledWith('room-1');
+      expect(injected.services.sync.start).not.toHaveBeenCalled();
+      expect(result.sessions).toEqual({
+        stream: { sessionId: 'stream-session' },
+        social: { sessionId: 'social-session' },
+        analytics: { sessionId: 'analytics-session' },
+      });
+    });
+
+    it('si no se puede marcar la sala como live compensa todos los servicios y la sala', async () => {
+      const injected = deps();
+      vi.mocked(injected.markLiveRoom!).mockRejectedValueOnce(new Error('redis down'));
+
+      await expect(startEvent(live, injected)).rejects.toMatchObject({ service: 'redis' });
+
+      expect((injected as any).__calls).toEqual([
+        'identity:create',
+        'identity:invitation',
+        'stream:start',
+        'social:start',
+        'analytics:start',
+        'analytics:stop',
+        'social:stop',
+        'stream:stop',
+        'identity:remove',
+      ]);
+    });
+
+    it('falla cerrado si stream-core no está configurado', async () => {
+      const injected = deps();
+      delete (injected.services as any).stream;
+
+      await expect(startEvent(live, injected)).rejects.toMatchObject({ service: 'stream' });
+      expect(injected.services.social.start).not.toHaveBeenCalled();
+      expect(injected.removeRoom).toHaveBeenCalledWith('room-1');
+    });
+
+    it('una sala watch no escribe room:{id}:kind', async () => {
+      const injected = deps();
+      await startEvent({ title: 'Cine', user: { id: 'host-1', providerSub: 'sub-1' } }, injected);
+
+      expect(injected.markLiveRoom).not.toHaveBeenCalled();
+      expect(injected.createRoom).toHaveBeenCalledWith({ title: 'Cine', hostId: 'host-1', kind: 'watch' });
+    });
   });
 });
