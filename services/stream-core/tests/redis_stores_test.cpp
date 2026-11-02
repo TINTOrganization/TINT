@@ -133,6 +133,16 @@ TEST_F(RedisIntegration, StartedAtSetOnce) {
   EXPECT_EQ(v->str, "1000");
 }
 
+TEST_F(RedisIntegration, EndedClearsStartedAt) {
+  // Sin started_at, un social-core que arranque después del fin no rearma las trivias por minuto.
+  RedisRoomStore store(*client);
+  ASSERT_TRUE(store.publish_started(room, 1000));
+  store.publish_ended(room, "host_ended");
+  auto exists = client->command({"EXISTS", "room:" + room + ":stream:started_at"});
+  ASSERT_TRUE(exists);
+  EXPECT_EQ(exists->integer, 0);
+}
+
 TEST_F(RedisIntegration, ListenerReceivesRoomClosed) {
   std::atomic<int> closed{0};
   SyncListener listener(endpoint, [&](const SyncMessage& m) {

@@ -155,7 +155,7 @@ Todos los mensajes nuevos de esta feature siguen las mismas reglas. Un mensaje q
 {"type":"STREAM_ENDED","event_id":"<uuid>","room_id":"r1","reason":"grace_expired","occurred_at":"2026-11-01T18:00:00.000Z"}
 ```
 
-Los consumidores son **idempotentes**: un `ROOM_CLOSED` repetido no hace nada nuevo, y un `STREAM_STARTED` repetido con el mismo `started_at_ms` no reprograma trivias.
+Los consumidores son **idempotentes**: un `ROOM_CLOSED` repetido no hace nada nuevo, y un `STREAM_STARTED` repetido con el mismo `started_at_ms` no reprograma trivias. Al terminar la sala, stream-core borra `room:{id}:stream:started_at` antes de publicar `STREAM_ENDED`: un social-core que arranque después del fin no encuentra la clave y no rearma trivias.
 
 **identity-api** (`/api/v1`, Firebase ID token del dueño salvo la ruta interna)
 

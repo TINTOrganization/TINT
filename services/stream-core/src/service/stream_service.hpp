@@ -56,6 +56,7 @@ class RoomStore : public http::RoomStatus {
   virtual bool disable(const std::string& room_id) = 0;
   // SET NX started_at + PUBLISH STREAM_STARTED. false si ya estaba (una reconexión no reinicia el reloj).
   virtual bool publish_started(const std::string& room_id, std::int64_t started_at_ms) = 0;
+  // DEL started_at + PUBLISH STREAM_ENDED (al terminar la sala: ROOM_CLOSED o gracia vencida).
   virtual void publish_ended(const std::string& room_id, const std::string& reason) = 0;
 };
 

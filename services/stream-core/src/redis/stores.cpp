@@ -135,6 +135,9 @@ bool RedisRoomStore::publish_started(const std::string& room_id, std::int64_t st
 }
 
 void RedisRoomStore::publish_ended(const std::string& room_id, const std::string& reason) {
+  // Primero el DEL: quien reaccione a STREAM_ENDED (o arranque después) ya no ve started_at y no rearma
+  // las trivias por minuto.
+  client_.command({"DEL", "room:" + room_id + ":stream:started_at"});
   client_.command({"PUBLISH", "room:" + room_id + ":stream", stream_ended_payload(room_id, reason)});
 }
 

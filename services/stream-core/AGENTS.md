@@ -41,7 +41,7 @@ La tabla completa de rutas y respuestas está en [dominio-transmision §3](../..
 | `token:revoked:{jti}` | String | identity-api | `EXISTS` en cada petición (falla cerrado). |
 | `room:{id}:closed` | String | identity-api | Sala deshabilitada: `410 ROOM_DISABLED`. |
 | `room:{id}:stream:enabled` | String (TTL 24 h) | stream-core | Sala `live` dada de alta por `/internal/events/start`. |
-| `room:{id}:stream:started_at` | String ms (`SET NX`, 24 h) | stream-core | Primer keyframe. Una reconexión no lo reinicia. |
+| `room:{id}:stream:started_at` | String ms (`SET NX`, 24 h) | stream-core | Primer keyframe. Una reconexión no lo reinicia. Se borra (`DEL`) al terminar la sala, antes de `STREAM_ENDED`, para que social-core no rearme trivias tras un reinicio. |
 | `room:{id}:sync` | Pub/Sub | identity-api | Lee `REVOKED{jti}` y `ROOM_CLOSED{reason}` (`host_ended`\|`grace_expired`; si falta o es desconocido, `host_ended`). |
 | `room:{id}:stream` | Pub/Sub | stream-core | `STREAM_STARTED{event_id, room_id, started_at, started_at_ms, occurred_at}` y `STREAM_ENDED{event_id, room_id, reason, occurred_at}` ([§6.1](../../docs/dominio-transmision.md#61-formatos-estándar)). |
 | Salas, sesiones y viewers | Memoria | stream-core | Una réplica (ver Limitaciones). |
