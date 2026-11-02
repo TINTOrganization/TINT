@@ -29,6 +29,10 @@ import { toAbsoluteInviteLink, pickLatestActiveInvitation, parseInviteCode } fro
 import { getLocalIdentity, guestTokenGrantsRoom } from '../lib/identity';
 import { useRoomPlayback, type MediaStatus } from '../hooks/useRoomPlayback';
 import { useRecapGate } from '../hooks/useRecapGate';
+import { useHydrated, drainPreHydrationQueue, clearPreHydrationQueue } from '../lib/hydration';
+import { readStored } from '../lib/safeStorage';
+import { isReactionEmoji, type ReactionEmoji } from '../lib/socialSocket';
+import type { AppInitialData } from '../App';
 
 import { useSocialSocket } from '../hooks/useSocialSocket';
 import { useSyncSocket } from '../hooks/useSyncSocket';
@@ -105,17 +109,26 @@ function RoomNotice({
   );
 }
 
-export default function WatchRoom() {
+export interface WatchRoomProps {
+  initialData?: AppInitialData | null;
+}
+
+export default function WatchRoom({ initialData }: WatchRoomProps = {}) {
   const { roomId } = useParams();
   const navigate = useNavigate();
-  const hostToken = localStorage.getItem('tint_token');
+  const isHydrated = useHydrated();
+  const hostToken = readStored('tint_token') || (initialData?.token && (initialData.isHost || initialData.role === 'host') ? initialData.token : null);
   // El guest token solo cuenta si es de esta sala y no caducó: sync-core rechazaría
   // cualquier otro antes del upgrade (cierre 1006 + reconexión infinita).
-  const guestToken = guestTokenGrantsRoom(localStorage.getItem('tint_guest_token'), roomId)
-    ? localStorage.getItem('tint_guest_token')
+  const rawGuestToken = readStored('tint_guest_token') || (initialData?.token && (!initialData.isHost && initialData.role !== 'host') ? initialData.token : null);
+  const guestToken = guestTokenGrantsRoom(rawGuestToken, roomId)
+    ? rawGuestToken
     : null;
   // Sin ningún token válido no hay cómo autenticar el socket: se muestra la puerta.
-  const hasAccess = !!hostToken || !!guestToken;
+  // En SSR o previo a hidratación con initialData provisto, pre-renderiza la estructura de sala
+  const hasAccess = typeof window === 'undefined'
+    ? (!!hostToken || !!guestToken || !!initialData?.roomId)
+    : (!!hostToken || !!guestToken || (!!initialData?.roomId && !isHydrated));
   // Canal Social (/ws/social): el estado maestro del chat vive en social-core.
   const {
     messages,
@@ -142,7 +155,9 @@ export default function WatchRoom() {
     deleteTrivia,
     answerTrivia,
     dismissTrivia,
-  } = useSocialSocket(hasAccess ? roomId : undefined, { role: hostToken ? 'host' : 'guest' });
+  } = useSocialSocket(hasAccess && isHydrated ? roomId : undefined, {
+    role: hostToken ? 'host' : 'guest',
+  });
   // Si hay sesión de host, manda el host aunque queden restos de invitado
   // (p. ej. guest token de una visita anterior al login). Coherente con
   // apiFetch, que prefiere el header de host.
@@ -170,11 +185,51 @@ export default function WatchRoom() {
     if (roomMedia && roomMedia !== loadedMediaRef.current) return null;
     return getPositionMs();
   }, [getPositionMs]);
-  const sync = useSyncSocket({ roomId: roomId ?? '', role, getPositionMs: getHeartbeatPositionMs, enabled: hasAccess });
+  const sync = useSyncSocket({ roomId: roomId ?? '', role, getPositionMs: getHeartbeatPositionMs, enabled: hasAccess && isHydrated });
+  const { sendCommand } = sync;
   const playback = useRoomPlayback(roomId ?? '', sync.state ? sync.state.media_id : undefined, {
     role,
-    enabled: hasAccess && !sync.revoked,
+    enabled: hasAccess && isHydrated && !sync.revoked,
   });
+
+  // AC2: Despachar interacciones capturadas previo a la hidratación
+  useEffect(() => {
+    if (!isHydrated) return;
+    const earlyEvents = drainPreHydrationQueue();
+    for (const ev of earlyEvents) {
+      if (ev.action === 'reaction' && ev.payload?.emoji && isReactionEmoji(ev.payload.emoji as string)) {
+        sendReaction(ev.payload.emoji as ReactionEmoji, Math.round((videoRef.current?.currentTime ?? 0) * 1000));
+      } else if (ev.action === 'play') {
+        sendCommand('PLAY', Math.round((videoRef.current?.currentTime ?? 0) * 1000));
+      } else if (ev.action === 'pause') {
+        sendCommand('PAUSE', Math.round((videoRef.current?.currentTime ?? 0) * 1000));
+      } else if (ev.action === 'chat-submit' && typeof ev.payload?.text === 'string') {
+        send(ev.payload.text as string);
+      }
+    }
+  }, [isHydrated, sendReaction, sendCommand, send]);
+
+  // AC3: Limpieza y pausa del reproductor al desmontar para evitar reproducción zombi
+  const activeVideoRef = useRef<HTMLVideoElement | null>(null);
+  useEffect(() => {
+    if (videoRef.current) {
+      activeVideoRef.current = videoRef.current;
+    }
+  });
+
+  useEffect(() => {
+    return () => {
+      const video = activeVideoRef.current;
+      if (video) {
+        try {
+          video.pause();
+        } catch {
+          // ignore
+        }
+      }
+      clearPreHydrationQueue();
+    };
+  }, []);
   useEffect(() => {
     roomMediaRef.current = sync.state?.media_id ?? '';
     loadedMediaRef.current = playback.mediaId;
@@ -201,7 +256,6 @@ export default function WatchRoom() {
         ? 'Este vídeo no se pudo procesar. El host puede subir otro.'
         : (playback.error ?? 'Sin video configurado');
   const mediaStatusUi = playback.status ? MEDIA_STATUS_UI[playback.status] : null;
-  const { sendCommand } = sync;
   const loadMedia = useCallback(
     (mediaId: string) => sendCommand('LOAD', 0, { media_id: mediaId }) !== null,
     [sendCommand],
@@ -276,18 +330,18 @@ export default function WatchRoom() {
   }, [videoSrc]);
   const [invite, setInvite] = useState('');
   const [inviteHint, setInviteHint] = useState('');
-  const [roomTitle, setRoomTitle] = useState<string | null>(null);
+  const [roomTitle, setRoomTitle] = useState<string | null>(() => initialData?.roomTitle ?? null);
   const [inviteLink, setInviteLink] = useState<string | null>(null);
 
-
+  const initialRoomTitle = initialData?.roomTitle;
 
   // Título y link de invitación: el host los pide al backend; el invitado
   // usa los guardados al canjear (su token no tiene auth de host).
   useEffect(() => {
     if (!roomId || !hasAccess) return;
     if (isGuest) {
-      setRoomTitle(localStorage.getItem('tint_room_title'));
-      setInviteLink(localStorage.getItem('tint_invite_link'));
+      setRoomTitle(readStored('tint_room_title') || initialRoomTitle || null);
+      setInviteLink(readStored('tint_invite_link'));
       return;
     }
     let cancelled = false;
@@ -310,7 +364,7 @@ export default function WatchRoom() {
     return () => {
       cancelled = true;
     };
-  }, [roomId, isGuest, hasAccess]);
+  }, [roomId, isGuest, hasAccess, initialRoomTitle]);
 
   const heading = roomTitle?.trim() ? roomTitle : `Sala ${roomId}`;
 
@@ -415,7 +469,7 @@ export default function WatchRoom() {
           <p className="mt-6 border-t border-white/10 pt-4 text-[13px]">
             ¿Eres el host?{' '}
             <Link
-              to={`/login?returnUrl=${encodeURIComponent(`/watch/${roomId ?? ''}`)}&redirect=${encodeURIComponent(`/watch/${roomId ?? ''}`)}&next=${encodeURIComponent(`/watch/${roomId ?? ''}`)}`}
+              to={`/login?next=${encodeURIComponent(`/watch/${roomId ?? ''}`)}`}
               className="text-tint-accent underline-offset-4 hover:underline"
             >
               Inicia sesión

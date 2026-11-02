@@ -1,10 +1,29 @@
 import { Navigate, useLocation } from 'react-router-dom';
 import { loginRedirectPath } from '../lib/api';
+import type { AppInitialData } from '../App';
 
-export default function ProtectedRoute({ children }: { children: React.ReactNode }) {
+export default function ProtectedRoute({
+  children,
+  initialData,
+}: {
+  children: React.ReactNode;
+  initialData?: AppInitialData | null;
+}) {
   const location = useLocation();
-  const token = localStorage.getItem('tint_token');
-  const guestToken = localStorage.getItem('tint_guest_token');
+
+  // Si se cuenta con datos iniciales del SSR o autenticación indicada en initialData:
+  if (
+    initialData?.isAuthenticated ||
+    initialData?.rooms !== undefined ||
+    initialData?.token ||
+    initialData?.error !== undefined ||
+    initialData?.role !== undefined
+  ) {
+    return <>{children}</>;
+  }
+
+  const token = typeof window !== 'undefined' ? localStorage.getItem('tint_token') : null;
+  const guestToken = typeof window !== 'undefined' ? localStorage.getItem('tint_guest_token') : null;
 
   if (!token) {
     if (guestToken) {

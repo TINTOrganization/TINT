@@ -10,6 +10,9 @@ export interface ServerOptions {
   fetcher?: typeof fetch | null;
   apiUrl?: string;
   publicDir?: string;
+  token?: string | null;
+  userRole?: string | null;
+  timeoutMs?: number;
 }
 
 const MIME_TYPES: Record<string, string> = {
@@ -80,11 +83,26 @@ export async function handleRequest(
     const protocol = (req.headers['x-forwarded-proto'] as string) || 'http';
     const origin = `${protocol}://${host}`;
 
+    // Extraer token y rol de usuario de cabeceras o cookies
+    const authHeader = req.headers['authorization'];
+    let reqToken: string | undefined = undefined;
+    if (authHeader && authHeader.startsWith('Bearer ')) {
+      reqToken = authHeader.slice(7).trim();
+    } else if (req.headers.cookie) {
+      const match = req.headers.cookie.match(/(?:^|;\s*)tint_token=([^;]+)/);
+      if (match) reqToken = decodeURIComponent(match[1]);
+    }
+
+    const reqUserRole = req.headers['x-user-role'] as string | undefined;
+
     const ssrResult = await render(url, {
       templateHtml,
       origin,
       apiUrl: options?.apiUrl,
       fetcher: options?.fetcher,
+      token: options?.token !== undefined ? options.token : reqToken,
+      userRole: options?.userRole !== undefined ? options.userRole : reqUserRole,
+      timeoutMs: options?.timeoutMs,
     });
 
     res.writeHead(ssrResult.statusCode, {

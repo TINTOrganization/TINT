@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { apiFetch } from '../lib/api';
 import { errorStatus } from '../lib/errorStatus';
+import { readStored } from '../lib/safeStorage';
 import type { Correction } from '../lib/drift';
 import {
   decodeFrame,
@@ -63,7 +64,7 @@ export interface UseSyncSocketOptions {
   now?: () => number;
   /** Codificación pedida al servidor; por defecto VITE_SYNC_ENCODING (json). */
   encoding?: SyncEncoding;
-  /** false → no pide ticket ni abre socket (p. ej. sin sesión). Por defecto true. */
+  /** false → no pide ticket ni abre socket (p. ej. sin sesión o antes de hidratar). Por defecto true. */
   enabled?: boolean;
 }
 
@@ -148,22 +149,29 @@ interface SyncTicket {
 const defaultNow = () => performance.now();
 
 function validExtra(type: CommandType, extra: CommandExtra): boolean {
-  if (type === 'RATE') return typeof extra.rate === 'number' && Number.isFinite(extra.rate);
+  if (type === 'RATE') {
+    return typeof extra.rate === 'number' && Number.isFinite(extra.rate) && extra.rate > 0 && extra.rate <= 4;
+  }
   if (type === 'LOAD') {
-    return typeof extra.media_id === 'string' && extra.media_id.length > 0 && extra.media_id.length <= MAX_MEDIA_ID;
+    return (
+      typeof extra.media_id === 'string' &&
+      extra.media_id.trim().length > 0 &&
+      extra.media_id.trim().length <= MAX_MEDIA_ID
+    );
   }
   if (type === 'VOLUME') {
     return typeof extra.volume === 'number' && Number.isFinite(extra.volume) && extra.volume >= 0 && extra.volume <= 1;
   }
-  if (type === 'QUALITY') return isQualityPref(extra.quality);
+  if (type === 'QUALITY') {
+    return typeof extra.quality === 'string' && isQualityPref(extra.quality);
+  }
   return true;
 }
 
 /**
- * Cliente del Canal Sync (/ws/sync de sync-core). Solo refleja el estado maestro:
- * filtra broadcasts por versión, responde heartbeats y expone las correcciones que
- * decide el servidor. Reconecta con backoff exponencial mientras esté montado, salvo
- * si el servidor cierra con 4001 (token revocado).
+ * Cliente WebSocket del Canal Sync (/ws/sync) de sync-core.
+ * Se conecta con un ticket HS256 (host) o tint_guest_token (invitado), responde
+ * HEARTBEAT con SYNC_CHECK y difunde el estado maestro a SyncedPlayer.
  */
 export function useSyncSocket({
   roomId,
@@ -201,6 +209,7 @@ export function useSyncSocket({
   const broadcastSeqRef = useRef(0);
   const getPositionRef = useRef(getPositionMs);
   const nowRef = useRef(now ?? defaultNow);
+  const pendingCommandsRef = useRef<Array<{ type: CommandType; positionMs: number; extra: CommandExtra }>>([]);
 
   useEffect(() => {
     getPositionRef.current = getPositionMs;
@@ -224,9 +233,24 @@ export function useSyncSocket({
      */
     let awaitingFirstState = true;
 
+    const flushPendingCommands = () => {
+      const ws = wsRef.current;
+      if (!ws || ws.readyState !== WebSocket.OPEN || !canControlRef.current) return;
+      if (pendingCommandsRef.current.length > 0) {
+        const cmds = [...pendingCommandsRef.current];
+        pendingCommandsRef.current = [];
+        for (const c of cmds) {
+          const cmd = buildCommand(c.type, roomId, c.positionMs, new Date(), c.extra);
+          ws.send(encodeFrame(cmd, wireRef.current));
+          ownEventsRef.current = [...ownEventsRef.current.slice(-(OWN_EVENTS_MEMORY - 1)), cmd.event_id];
+        }
+      }
+    };
+
     const applyControl = (value: boolean) => {
       canControlRef.current = value;
       setCanControl(value);
+      if (value) flushPendingCommands();
     };
     applyControl(role === 'host');
 
@@ -297,6 +321,7 @@ export function useSyncSocket({
     const handleMessage = (ws: WebSocket, data: unknown) => {
       const msg = toServerMessage(decodeFrame(data));
       if (!msg) return;
+
       switch (msg.type) {
         case 'STATE':
           // Snapshot completo: el primero de cada conexión siempre reemplaza (p. ej. tras
@@ -386,8 +411,8 @@ export function useSyncSocket({
 
     const connect = () => {
       if (role === 'guest') {
-        // El guest token ya está en localStorage: conexión síncrona.
-        openSocket(localStorage.getItem('tint_guest_token'));
+        // El guest token ya está en storage seguro: conexión síncrona.
+        openSocket(readStored('tint_guest_token'));
         return;
       }
       // Ticket fresco en cada (re)conexión: son de vida corta.
@@ -429,6 +454,7 @@ export function useSyncSocket({
         setConnected(true);
         setReconnect(null);
         setLastError(null);
+        flushPendingCommands();
       };
       ws.onmessage = (ev: MessageEvent) => handleMessage(ws, ev.data);
       // El cierre posterior se encarga de reconectar.
@@ -438,7 +464,7 @@ export function useSyncSocket({
         setConnected(false);
         if (ev.code === CLOSE_REVOKED) {
           // El host retiró a este participante: no reconectar nunca.
-          if (role === 'guest') localStorage.removeItem('tint_guest_token');
+          if (role === 'guest' && typeof localStorage !== 'undefined') localStorage.removeItem('tint_guest_token');
           setRevoked(true);
           setReconnect(null);
           return;
@@ -450,7 +476,7 @@ export function useSyncSocket({
             connect();
             return;
           }
-          if (role === 'guest') localStorage.removeItem('tint_guest_token');
+          if (role === 'guest' && typeof localStorage !== 'undefined') localStorage.removeItem('tint_guest_token');
           setExpired(true);
           setReconnect(null);
           return;
@@ -464,11 +490,17 @@ export function useSyncSocket({
     return () => {
       disposed = true;
       clearTimeout(timer);
+      pendingCommandsRef.current = [];
       if (socket) {
         socket.onclose = null;
         socket.onmessage = null;
         socket.onopen = null;
-        socket.close();
+        socket.onerror = null;
+        try {
+          socket.close(1000, 'Unmounted');
+        } catch {
+          // ignore
+        }
       }
       wsRef.current = null;
     };
@@ -476,16 +508,21 @@ export function useSyncSocket({
 
   const sendCommand = useCallback(
     (type: CommandType, positionMs: number, extra: CommandExtra = {}): string | null => {
-      if (!canControlRef.current) return null;
       if (!validExtra(type, extra)) return null;
       const ws = wsRef.current;
-      if (!ws || ws.readyState !== WebSocket.OPEN) return null;
+      if (!canControlRef.current) return null;
+      if (!ws || ws.readyState !== WebSocket.OPEN) {
+        if (enabled) {
+          pendingCommandsRef.current.push({ type, positionMs, extra });
+        }
+        return null;
+      }
       const cmd = buildCommand(type, roomId, positionMs, new Date(), extra);
       ws.send(encodeFrame(cmd, wireRef.current));
       ownEventsRef.current = [...ownEventsRef.current.slice(-(OWN_EVENTS_MEMORY - 1)), cmd.event_id];
       return cmd.event_id;
     },
-    [roomId],
+    [roomId, enabled],
   );
 
   const sendBuffering = useCallback(

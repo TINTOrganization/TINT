@@ -218,6 +218,28 @@ export const SyncedPlayer = memo(function SyncedPlayer({
     video.muted = !canControl && localMuted;
   }, [volume, localMuted, canControl, videoSrc, videoRef]);
 
+  // AC3: Limpieza estricta de reproducción y listeners al desmontar
+  const activeVideoRef = useRef<HTMLVideoElement | null>(null);
+  useEffect(() => {
+    if (videoRef.current) {
+      activeVideoRef.current = videoRef.current;
+    }
+  });
+
+  useEffect(() => {
+    return () => {
+      cancelRateCorrection();
+      const video = activeVideoRef.current;
+      if (video) {
+        try {
+          video.pause();
+        } catch {
+          // ignore
+        }
+      }
+    };
+  }, [cancelRateCorrection]);
+
   // Aplica cada snapshot/broadcast aceptado por el hook.
   useEffect(() => {
     const video = videoRef.current;
@@ -453,6 +475,7 @@ export const SyncedPlayer = memo(function SyncedPlayer({
           <Button
             variant="primary"
             className="px-4 py-2"
+            data-action="play"
             aria-label="Reproducir"
             aria-keyshortcuts="Space k"
             disabled={controlsDisabled}
@@ -463,6 +486,7 @@ export const SyncedPlayer = memo(function SyncedPlayer({
           <Button
             variant="ghost"
             className="px-4 py-2"
+            data-action="pause"
             aria-label="Pausar"
             aria-keyshortcuts="Space k"
             disabled={controlsDisabled}

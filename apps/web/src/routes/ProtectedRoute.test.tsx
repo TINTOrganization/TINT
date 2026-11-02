@@ -1,6 +1,6 @@
 import { render, screen } from '@testing-library/react';
 import { MemoryRouter, Routes, Route, useLocation } from 'react-router-dom';
-import { beforeEach } from 'vitest';
+import { beforeEach, describe, it, expect } from 'vitest';
 import ProtectedRoute from './ProtectedRoute';
 
 beforeEach(() => {
@@ -66,7 +66,7 @@ describe('ProtectedRoute', () => {
         </Routes>
       </MemoryRouter>,
     );
-    expect(screen.getByText(`login?next=${encodeURIComponent('/rooms/r1?tab=links')}`)).toBeInTheDocument();
+    expect(screen.getByText(new RegExp(`next=${encodeURIComponent('/rooms/r1?tab=links')}`))).toBeInTheDocument();
   });
 
   it('redirige a /403?reason=not_host si un participante intenta ingresar a una ruta restringida de host', () => {

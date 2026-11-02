@@ -113,6 +113,151 @@ describe('entry-server SSR', () => {
       expect(result.html).toContain('property="og:title"');
       expect(result.html).toContain('Mira junto, siente al mismo tiempo');
     });
+
+    it('AC1: pre-renderiza el dashboard del host con salas, próximo evento y estado actual', async () => {
+      const mockFetcher = vi.fn().mockImplementation((url: string) => {
+        if (url.includes('/rooms')) {
+          return Promise.resolve({
+            ok: true,
+            json: async () => ({
+              rooms: [
+                {
+                  id: 'ssr-room-1',
+                  title: 'Cine Club Fin de Semana',
+                  status: 'active',
+                  nextScheduledEvent: {
+                    title: 'Interstellar 4K',
+                    scheduledStartTime: '2026-11-20T21:00:00.000Z',
+                  },
+                },
+                {
+                  id: 'ssr-room-2',
+                  title: 'Sala Deshabilitada',
+                  status: 'disabled',
+                  nextScheduledEvent: null,
+                },
+              ],
+            }),
+          });
+        }
+        return Promise.resolve({ ok: false });
+      });
+
+      const result = await render('/dashboard', {
+        fetcher: mockFetcher as unknown as typeof fetch,
+        token: 'host-bearer-token',
+        origin: 'https://tint.stream',
+      });
+
+      expect(result.statusCode).toBe(200);
+
+      // AC1: En el HTML inicial (appHtml y html)
+      // Nombres de las salas
+      expect(result.appHtml).toContain('Cine Club Fin de Semana');
+      expect(result.appHtml).toContain('Sala Deshabilitada');
+
+      // Próximos eventos
+      expect(result.appHtml).toContain('Interstellar 4K');
+      expect(result.appHtml).toContain('Sin eventos programados');
+
+      // Estados actuales (active o disabled)
+      expect(result.appHtml).toContain('active');
+      expect(result.appHtml).toContain('disabled');
+
+      // Meta tags del dashboard
+      expect(result.html).toContain('<title>Mis salas — TINT</title>');
+      expect(result.html).toContain('property="og:title" content="Mis salas — TINT"');
+      expect(result.html).toContain('id="__TINT_SSR_DATA__"');
+    });
+
+    it('AC2: oculta los controles y acciones de gestión del host para participantes regulares', async () => {
+      const mockFetcher = vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          rooms: [
+            {
+              id: 'room-guest-1',
+              title: 'Sala de Invitado',
+              status: 'active',
+              nextScheduledEvent: 'Noche de Anime',
+            },
+          ],
+        }),
+      });
+
+      const result = await render('/dashboard', {
+        fetcher: mockFetcher as unknown as typeof fetch,
+        userRole: 'participant',
+        token: 'participant-token',
+      });
+
+      expect(result.statusCode).toBe(200);
+      expect(result.appHtml).toContain('Sala de Invitado');
+      expect(result.appHtml).toContain('Noche de Anime');
+      expect(result.appHtml).toContain('Abrir');
+
+      // AC2: Acciones exclusivas de gestión del host quedan ocultas
+      expect(result.appHtml).not.toContain('Crear sala');
+      expect(result.appHtml).not.toContain('Gestionar');
+      expect(result.appHtml).not.toContain('Análisis');
+      expect(result.appHtml).not.toContain('Eliminar');
+    });
+
+    it('AC3: maneja timeout en identity-api renderizando un mensaje amigable sin crash', async () => {
+      const abortError = new Error('The operation was aborted');
+      abortError.name = 'AbortError';
+      const mockFetcher = vi.fn().mockRejectedValue(abortError);
+
+      const result = await render('/dashboard', {
+        fetcher: mockFetcher as unknown as typeof fetch,
+        timeoutMs: 1000,
+        token: 'host-token',
+      });
+
+      // No falla con excepción no capturada ni devuelve pantalla en blanco
+      expect(result.statusCode).toBe(503);
+      expect(result.appHtml).toContain('Mis salas');
+      expect(result.appHtml).toMatch(/tiempo de espera agotado|demasiado en responder/i);
+      expect(result.html).toContain('<div id="root">');
+      expect(result.html).toMatch(/tiempo de espera agotado|demasiado en responder/i);
+    });
+
+    it('AC3: maneja falla de servicio identity-api no disponible renderizando mensaje de error', async () => {
+      const mockFetcher = vi.fn().mockRejectedValue(new Error('ECONNREFUSED'));
+
+      const result = await render('/dashboard', {
+        fetcher: mockFetcher as unknown as typeof fetch,
+        token: 'host-token',
+      });
+
+      expect(result.statusCode).toBe(503);
+      expect(result.appHtml).toContain('Mis salas');
+      expect(result.appHtml).toMatch(/No se pudo conectar con el servicio de identidad/i);
+      expect(result.html).toContain('<div id="root">');
+    });
+
+    it('pre-renderiza /watch/:roomId con título por defecto y metadata (AC1)', async () => {
+      const result = await render('/watch/r123');
+
+      expect(result.statusCode).toBe(200);
+      expect(result.html).toContain('<title>Sala r123 — TINT</title>');
+      expect(result.html).toContain('property="og:title" content="Sala r123 — TINT"');
+      expect(result.initialData?.roomId).toBe('r123');
+    });
+
+    it('pre-renderiza /watch/:roomId con roomTitle provisto y initialData para SSR seguro', async () => {
+      const result = await render('/watch/sala-cine', {
+        roomTitle: 'Gran Noche de Cine',
+        origin: 'https://tint.stream',
+      });
+
+      expect(result.statusCode).toBe(200);
+      expect(result.html).toContain('<title>Gran Noche de Cine — TINT</title>');
+      expect(result.html).toContain('property="og:title" content="Gran Noche de Cine — TINT"');
+      expect(result.html).toContain('id="__TINT_SSR_DATA__"');
+      expect(result.initialData?.roomTitle).toBe('Gran Noche de Cine');
+      expect(result.initialData?.roomId).toBe('sala-cine');
+    });
   });
 
   describe('generateMetaTags', () => {

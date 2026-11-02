@@ -31,9 +31,7 @@ export function setHostTokenProvider(provider: HostTokenProvider | null) {
 
 /** Ruta de login que vuelve a `pathname + search` tras iniciar sesión. */
 export function loginRedirectPath(pathname: string, search = ''): string {
-  const target = `${pathname}${search}`;
-  const encoded = encodeURIComponent(target);
-  return `/login?returnUrl=${encoded}&redirect=${encoded}&next=${encoded}`;
+  return `/login?next=${encodeURIComponent(`${pathname}${search}`)}`;
 }
 
 /**

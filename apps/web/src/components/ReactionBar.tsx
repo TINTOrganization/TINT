@@ -69,6 +69,8 @@ export function ReactionBar({ onReact }: ReactionBarProps) {
         <div key={r} className="relative">
           <m.button
             type="button"
+            data-action="reaction"
+            data-reaction={r}
             onClick={() => {
               spawnBurst(r);
               react(r);

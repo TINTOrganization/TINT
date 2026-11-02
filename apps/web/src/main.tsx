@@ -3,7 +3,11 @@ import { createRoot, hydrateRoot } from 'react-dom/client';
 import App, { type AppInitialData } from './App';
 import { auth } from './lib/firebase';
 import { startHostSession } from './lib/authSession';
+import { initPreHydrationCapture } from './lib/hydration';
 import './index.css';
+
+// AC2: Captura temprana de interacciones antes y durante la hidratación
+initPreHydrationCapture();
 
 // Una sola vez al arrancar: mantiene fresco el ID token del host (caduca a la hora).
 startHostSession(auth);

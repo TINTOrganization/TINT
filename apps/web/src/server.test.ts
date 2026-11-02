@@ -8,7 +8,7 @@ describe('SSR HTTP Server', () => {
   let baseUrl: string;
 
   beforeAll(async () => {
-    const mockFetcher = vi.fn().mockImplementation((url: string) => {
+    const mockFetcher = vi.fn().mockImplementation((url: string, init?: RequestInit) => {
       if (url.includes('/invitations/TEST999')) {
         return Promise.resolve({
           ok: true,
@@ -19,6 +19,34 @@ describe('SSR HTTP Server', () => {
           }),
         });
       }
+
+      if (url.includes('/rooms')) {
+        const headers = init?.headers as Record<string, string> | undefined;
+        const auth = headers?.Authorization || headers?.authorization;
+        if (auth && auth.includes('timeout-token')) {
+          const abortError = new Error('AbortError');
+          abortError.name = 'AbortError';
+          return Promise.reject(abortError);
+        }
+
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            rooms: [
+              {
+                id: 'room-server-1',
+                title: 'Sala Principal en Vivo',
+                status: 'active',
+                nextScheduledEvent: {
+                  title: 'Gran Premiere',
+                  scheduledStartTime: '2026-11-20T21:00:00.000Z',
+                },
+              },
+            ],
+          }),
+        });
+      }
+
       return Promise.resolve({ ok: false, status: 404 });
     });
 
@@ -90,6 +118,62 @@ describe('SSR HTTP Server', () => {
     expect(html).toContain('<div id="root">');
     expect(html).toContain('id="__TINT_SSR_DATA__"');
     expect(html).toContain('Sala de Ensayo SSR');
+  });
+
+  it('GET /dashboard devuelve HTML pre-renderizado con salas, evento programado y estado (AC1)', async () => {
+    const res = await fetch(`${baseUrl}/dashboard`, {
+      headers: {
+        Authorization: 'Bearer valid-host-token',
+      },
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toContain('text/html');
+
+    const html = await res.text();
+    expect(html).toContain('Sala Principal en Vivo');
+    expect(html).toContain('Gran Premiere');
+    expect(html).toContain('active');
+    expect(html).toContain('<title>Mis salas — TINT</title>');
+    expect(html).toContain('Crear sala');
+    expect(html).toContain('Gestionar');
+    expect(html).toContain('Análisis');
+    expect(html).toContain('Eliminar');
+  });
+
+  it('GET /dashboard con rol de participante oculta controles de gestión del host (AC2)', async () => {
+    const res = await fetch(`${baseUrl}/dashboard`, {
+      headers: {
+        Authorization: 'Bearer participant-token',
+        'x-user-role': 'participant',
+      },
+    });
+
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain('Sala Principal en Vivo');
+    expect(html).toContain('Gran Premiere');
+    expect(html).toContain('Abrir');
+
+    // Controles de host ocultos (AC2)
+    expect(html).not.toContain('Crear sala');
+    expect(html).not.toContain('Gestionar');
+    expect(html).not.toContain('Análisis');
+    expect(html).not.toContain('Eliminar');
+  });
+
+  it('GET /dashboard con timeout en identity-api renderiza error en la vista sin crash (AC3)', async () => {
+    const res = await fetch(`${baseUrl}/dashboard`, {
+      headers: {
+        Authorization: 'Bearer timeout-token',
+      },
+    });
+
+    expect(res.status).toBe(503);
+    const html = await res.text();
+    expect(html).toContain('<div id="root">');
+    expect(html).toMatch(/tiempo de espera agotado|demasiado en responder/i);
+    expect(html).toContain('Mis salas');
   });
 
   it('GET de archivo estático en public (favicon.svg) se sirve correctamente', async () => {

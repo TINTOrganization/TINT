@@ -9,6 +9,7 @@ import InviteLanding from './pages/InviteLanding';
 import WatchRoom from './pages/WatchRoom';
 import ProtectedRoute from './routes/ProtectedRoute';
 import Forbidden from './pages/Forbidden';
+import type { DashboardRoom } from './lib/dashboard';
 import { MotionProvider } from './components/motion/MotionProvider';
 import { PageTransition } from './components/motion/PageTransition';
 
@@ -30,6 +31,12 @@ export interface AppInitialData {
   code?: string | null;
   roomId?: string | null;
   valid?: boolean;
+  rooms?: DashboardRoom[] | null;
+  isHost?: boolean;
+  role?: string | null;
+  error?: string | null;
+  isAuthenticated?: boolean;
+  token?: string | null;
   [key: string]: unknown;
 }
 
@@ -57,14 +64,26 @@ export function AnimatedRoutes({ initialData }: { initialData?: AppInitialData |
             />,
           )}
         />
-        <Route path="/dashboard" element={page(<ProtectedRoute><Dashboard /></ProtectedRoute>)} />
+        <Route
+          path="/dashboard"
+          element={page(
+            <ProtectedRoute initialData={initialData}>
+              <Dashboard
+                initialRooms={initialData?.rooms as DashboardRoom[] | undefined}
+                initialIsHost={initialData?.isHost as boolean | undefined}
+                initialError={initialData?.error as string | null | undefined}
+                initialRole={initialData?.role as string | null | undefined}
+              />
+            </ProtectedRoute>,
+          )}
+        />
         <Route path="/rooms/new" element={page(<ProtectedRoute><CreateRoom /></ProtectedRoute>)} />
         <Route path="/rooms/:id" element={page(<ProtectedRoute><CreateRoom /></ProtectedRoute>)} />
         <Route
           path="/rooms/:id/analytics"
           element={page(<ProtectedRoute><Suspense fallback={null}><RoomAnalytics /></Suspense></ProtectedRoute>)}
         />
-        <Route path="/watch/:roomId" element={page(<WatchRoom />)} />
+        <Route path="/watch/:roomId" element={page(<WatchRoom initialData={initialData} />)} />
         <Route path="/403" element={page(<Forbidden />)} />
         {/* Ruta oculta: cuestionario del monorepo, sin enlaces desde la UI. */}
         <Route path="/test-me" element={<Suspense fallback={null}><TestMe /></Suspense>} />

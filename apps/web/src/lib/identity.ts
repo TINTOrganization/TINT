@@ -1,3 +1,5 @@
+import { readStored } from './safeStorage';
+
 /** Identidad local para display (nick propio, mensajes propios). Solo UI. */
 
 export interface LocalIdentity {
@@ -46,7 +48,7 @@ export function guestTokenGrantsRoom(
  * nunca para decidir autorización (eso lo hace el backend).
  */
 export function getLocalIdentity(): LocalIdentity | null {
-  const hostToken = localStorage.getItem('tint_token');
+  const hostToken = readStored('tint_token');
   if (hostToken) {
     const p = decodePayload(hostToken);
     const sub = p ? str(p.sub) : '';
@@ -54,7 +56,7 @@ export function getLocalIdentity(): LocalIdentity | null {
     const nick = (p && (str(p.name) || str(p.email))) || 'Host';
     return { sub, nick, isGuest: false };
   }
-  const guestToken = localStorage.getItem('tint_guest_token');
+  const guestToken = readStored('tint_guest_token');
   if (guestToken) {
     const p = decodePayload(guestToken);
     const sub = p ? str(p.sub) : '';

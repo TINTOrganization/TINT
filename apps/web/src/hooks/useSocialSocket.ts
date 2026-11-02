@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { apiFetch } from '../lib/api';
 import { errorStatus } from '../lib/errorStatus';
 import { getLocalIdentity } from '../lib/identity';
+import { readStored } from '../lib/safeStorage';
 import {
   buildChatMute,
   buildChatSend,
@@ -82,7 +83,7 @@ function normalizeChatSettings(msg: Partial<ChatSettings>): ChatSettingsView {
   };
 }
 
-interface UseSocialSocketOptions {
+export interface UseSocialSocketOptions {
   /** Factoría inyectable para tests (por defecto el WebSocket global). */
   createSocket?: (url: string) => WebSocket;
   baseUrl?: string;
@@ -95,12 +96,12 @@ interface UseSocialSocketOptions {
    * token de Firebase); `guest` → `tint_guest_token`. Sin rol: el token guardado.
    */
   role?: 'host' | 'guest';
+  /** false → no abre socket (p. ej. durante SSR o antes de hidratar). Por defecto true. */
+  enabled?: boolean;
 }
 
 function resolveToken(): string {
-  return (
-    localStorage.getItem('tint_token') || localStorage.getItem('tint_guest_token') || ''
-  );
+  return readStored('tint_token') || readStored('tint_guest_token') || '';
 }
 
 /** Sync-ticket rechazado sin remedio: no es el dueño (403) o la sala no existe (404/410). */
@@ -115,7 +116,7 @@ function resolveBaseUrl(override?: string): string {
 
 /**
  * Canal Social (/ws/social) solo-chat: historial al entrar + broadcast en vivo,
- * con reconexión exponencial sin tumbar el reproductor.
+ * con reconexión exponencial y encolamiento resiliente previo a la hidratación / apertura.
  */
 export function useSocialSocket(roomId: string | undefined, opts: UseSocialSocketOptions = {}) {
   const [status, setStatus] = useState<SocialStatus>('connecting');
@@ -138,12 +139,15 @@ export function useSocialSocket(roomId: string | undefined, opts: UseSocialSocke
   const attemptRef = useRef(0);
   const timerRef = useRef<number | null>(null);
   const closedRef = useRef(false);
-  // Refs para no reconectar cuando el padre re-renderiza con callbacks inline.
   const role = opts.role;
   const optsRef = useRef(opts);
   optsRef.current = opts;
   // event_id ya vistos: traga ecos/redeliveries del servidor.
   const seenRef = useRef<Set<string>>(new Set());
+
+  // AC2: Colas de acciones pendientes antes de abrir o hidratar
+  const pendingReactionsRef = useRef<Array<{ emoji: string; positionMs: number }>>([]);
+  const pendingMessagesRef = useRef<Array<{ text: string; opts?: { spoiler?: boolean } }>>([]);
 
   const remember = useCallback((id: string): boolean => {
     if (seenRef.current.has(id)) return true;
@@ -186,7 +190,7 @@ export function useSocialSocket(roomId: string | undefined, opts: UseSocialSocke
   }, []);
 
   useEffect(() => {
-    if (!roomId) {
+    if (!roomId || opts.enabled === false) {
       setStatus('closed');
       return;
     }
@@ -221,7 +225,7 @@ export function useSocialSocket(roomId: string | undefined, opts: UseSocialSocke
           });
         return;
       }
-      openSocket(role === 'guest' ? (localStorage.getItem('tint_guest_token') ?? '') : resolveToken());
+      openSocket(role === 'guest' ? (readStored('tint_guest_token') ?? '') : resolveToken());
     };
 
     const openSocket = (token: string) => {
@@ -237,6 +241,24 @@ export function useSocialSocket(roomId: string | undefined, opts: UseSocialSocke
       ws.onopen = () => {
         attemptRef.current = 0;
         setStatus('open');
+
+        // AC2: Despachar cola de reacciones pendientes
+        if (pendingReactionsRef.current.length > 0) {
+          const queuedReactions = [...pendingReactionsRef.current];
+          pendingReactionsRef.current = [];
+          for (const r of queuedReactions) {
+            ws.send(buildReactionSend(roomId, r.emoji as ReactionEmoji, r.positionMs));
+          }
+        }
+
+        // AC2: Despachar cola de mensajes de chat pendientes
+        if (pendingMessagesRef.current.length > 0) {
+          const queuedMessages = [...pendingMessagesRef.current];
+          pendingMessagesRef.current = [];
+          for (const m of queuedMessages) {
+            ws.send(buildChatSend(roomId, m.text, m.opts?.spoiler === true));
+          }
+        }
       };
       ws.onmessage = (event: MessageEvent) => {
         const parsed = parseSocialMessage(String(event.data));
@@ -292,21 +314,43 @@ export function useSocialSocket(roomId: string | undefined, opts: UseSocialSocke
     };
 
     connect();
+
+    // AC3: Limpieza estricta en desmontaje para prevenir memory leaks y sockets zombi
     return () => {
       disposed = true;
       closedRef.current = true;
-      if (timerRef.current !== null) window.clearTimeout(timerRef.current);
-      wsRef.current?.close();
-      wsRef.current = null;
+      if (timerRef.current !== null) {
+        window.clearTimeout(timerRef.current);
+        timerRef.current = null;
+      }
+      pendingReactionsRef.current = [];
+      pendingMessagesRef.current = [];
+      if (wsRef.current) {
+        const ws = wsRef.current;
+        wsRef.current = null;
+        ws.onopen = null;
+        ws.onmessage = null;
+        ws.onerror = null;
+        ws.onclose = null;
+        try {
+          ws.close(1000, 'Unmounted');
+        } catch {
+          // ignore
+        }
+      }
     };
-  }, [roomId, role, pushMessage, pushReaction, pushLaser, applyPoll, remember]);
+  }, [roomId, role, opts.enabled, pushMessage, pushReaction, pushLaser, applyPoll, remember]);
 
   const send = useCallback(
     (text: string, sendOpts: { spoiler?: boolean } = {}) => {
       const trimmed = text.trim();
       if (!trimmed || !roomId) return false;
       const ws = wsRef.current;
-      if (!ws || ws.readyState !== WebSocket.OPEN) return false;
+      if (!ws || ws.readyState !== WebSocket.OPEN) {
+        // AC2: Encolar mensaje si el socket está conectando / hidratando
+        pendingMessagesRef.current.push({ text: trimmed, opts: sendOpts });
+        return false;
+      }
       ws.send(buildChatSend(roomId, trimmed, sendOpts.spoiler === true));
       // Pre-validación del modo lento (el host está exento; social-core decide).
       const slow = chatSettingsRef.current.slow_mode_s;
@@ -320,7 +364,11 @@ export function useSocialSocket(roomId: string | undefined, opts: UseSocialSocke
     (emoji: string, positionMs = 0) => {
       if (!roomId || !isReactionEmoji(emoji)) return false;
       const ws = wsRef.current;
-      if (!ws || ws.readyState !== WebSocket.OPEN) return false;
+      if (!ws || ws.readyState !== WebSocket.OPEN) {
+        // AC2: Encolar reacción si el socket está conectando / hidratando
+        pendingReactionsRef.current.push({ emoji, positionMs });
+        return false;
+      }
       ws.send(buildReactionSend(roomId, emoji as ReactionEmoji, positionMs));
       return true;
     },

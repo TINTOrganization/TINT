@@ -380,6 +380,7 @@ export function ChatPanel({
       )}
       <form
         onSubmit={submit}
+        data-action="chat-form"
         className="tint-glass -mx-5 -mb-5 mt-4 flex gap-2 rounded-b-2xl border-x-0 border-b-0 px-4 py-3"
       >
         <label htmlFor="chat-input" className="sr-only">
@@ -411,6 +412,7 @@ export function ChatPanel({
         <Button
           type="submit"
           size="sm"
+          data-action="chat-submit"
           disabled={muted || remaining > 0}
           aria-label={remaining > 0 ? `Espera ${remaining} s para enviar` : undefined}
           className="min-h-10 shrink-0 px-4 tabular-nums"

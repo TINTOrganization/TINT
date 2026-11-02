@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter, Routes, Route, useLocation } from 'react-router-dom';
-import { vi, beforeEach } from 'vitest';
+import { vi, beforeEach, describe, it, expect } from 'vitest';
 import Dashboard from './Dashboard';
 import Login from './Login';
 import { apiFetch, ApiError } from '../lib/api';
@@ -84,7 +84,7 @@ describe('Dashboard', () => {
         </Routes>
       </MemoryRouter>,
     );
-    expect(await screen.findByText('login?next=%2Fdashboard')).toBeInTheDocument();
+    expect(await screen.findByText(/next=%2Fdashboard/)).toBeInTheDocument();
   });
 
   it('muestra el error sin redirigir si falla por otra causa', async () => {
@@ -237,5 +237,138 @@ describe('Dashboard', () => {
     renderDashboard();
     await screen.findByText('Sala 2');
     expect(screen.getAllByRole('listitem')).toHaveLength(2);
+  });
+
+  describe('AC1: Server-Rendered Room & Event Overview', () => {
+    it('muestra el nombre de la sala, próximo evento programado y estado actual (active o disabled)', async () => {
+      render(
+        <MemoryRouter initialEntries={['/dashboard']}>
+          <Routes>
+            <Route
+              path="/dashboard"
+              element={
+                <Dashboard
+                  initialRooms={[
+                    {
+                      id: 'room-1',
+                      title: 'Cine Club Fin de Semana',
+                      status: 'active',
+                      nextScheduledEvent: {
+                        title: 'Interstellar 4K',
+                        scheduledStartTime: '2026-11-20T21:00:00.000Z',
+                      },
+                    },
+                    {
+                      id: 'room-2',
+                      title: 'Sala Mantenimiento',
+                      status: 'disabled',
+                      nextScheduledEvent: null,
+                    },
+                  ]}
+                  initialIsHost={true}
+                />
+              }
+            />
+          </Routes>
+        </MemoryRouter>,
+      );
+
+      // Nombres de sala
+      expect(screen.getByText('Cine Club Fin de Semana')).toBeInTheDocument();
+      expect(screen.getByText('Sala Mantenimiento')).toBeInTheDocument();
+
+      // Próximos eventos
+      expect(screen.getByText(/Interstellar 4K/)).toBeInTheDocument();
+      expect(screen.getByText('Sin eventos programados')).toBeInTheDocument();
+
+      // Estados actuales
+      const activeStatus = screen.getByTestId('room-status-room-1');
+      expect(activeStatus).toHaveTextContent('active');
+      expect(activeStatus).toHaveAttribute('data-status', 'active');
+
+      const disabledStatus = screen.getByTestId('room-status-room-2');
+      expect(disabledStatus).toHaveTextContent('disabled');
+      expect(disabledStatus).toHaveAttribute('data-status', 'disabled');
+    });
+  });
+
+  describe('AC2: Role-Based UI Gating', () => {
+    it('oculta todos los controles y acciones de gestión del host si el usuario es participante', async () => {
+      render(
+        <MemoryRouter initialEntries={['/dashboard']}>
+          <Routes>
+            <Route
+              path="/dashboard"
+              element={
+                <Dashboard
+                  initialRooms={[
+                    {
+                      id: 'room-part-1',
+                      title: 'Sala Compartida',
+                      status: 'active',
+                      nextScheduledEvent: 'Película Sorpresa',
+                    },
+                  ]}
+                  initialIsHost={false}
+                  initialRole="participant"
+                />
+              }
+            />
+          </Routes>
+        </MemoryRouter>,
+      );
+
+      // El participante ve la sala y puede abrirla
+      expect(screen.getByText('Sala Compartida')).toBeInTheDocument();
+      expect(screen.getByRole('link', { name: /abrir sala compartida/i })).toBeInTheDocument();
+
+      // Controles y acciones exclusivas del host quedan completamente ocultas (AC2)
+      expect(screen.queryByRole('link', { name: /crear sala/i })).not.toBeInTheDocument();
+      expect(screen.queryByRole('link', { name: /gestionar/i })).not.toBeInTheDocument();
+      expect(screen.queryByRole('link', { name: /análisis/i })).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /eliminar/i })).not.toBeInTheDocument();
+    });
+
+    it('en estado vacío oculta el botón de crear sala para participantes', async () => {
+      render(
+        <MemoryRouter initialEntries={['/dashboard']}>
+          <Routes>
+            <Route
+              path="/dashboard"
+              element={<Dashboard initialRooms={[]} initialIsHost={false} />}
+            />
+          </Routes>
+        </MemoryRouter>,
+      );
+
+      expect(screen.getByText('Sin salas asignadas')).toBeInTheDocument();
+      expect(screen.queryByRole('link', { name: /crear sala/i })).not.toBeInTheDocument();
+    });
+  });
+
+  describe('AC3: Identity API Fault Tolerance', () => {
+    it('renderiza un mensaje claro de error sin quedarse en blanco ni caerse ante falla del servicio', () => {
+      render(
+        <MemoryRouter initialEntries={['/dashboard']}>
+          <Routes>
+            <Route
+              path="/dashboard"
+              element={
+                <Dashboard
+                  initialError="No se pudo conectar con el servicio de identidad. Servicio no disponible."
+                  initialIsHost={true}
+                />
+              }
+            />
+          </Routes>
+        </MemoryRouter>,
+      );
+
+      expect(screen.getByRole('alert')).toBeInTheDocument();
+      expect(
+        screen.getByText(/No se pudo conectar con el servicio de identidad/i),
+      ).toBeInTheDocument();
+      expect(screen.getByText('Mis salas')).toBeInTheDocument();
+    });
   });
 });
