@@ -56,7 +56,8 @@ export async function centralTokenCheck(req: Request, res: Response, next: NextF
     }
   }
 
-  if (decoded.header.alg === 'RS256') {
+  // ID token de Firebase del host: RS256 o, solo en modo emulador, `none` (requireAuthHost decide).
+  if (decoded.header.alg === 'RS256' || decoded.header.alg === 'none') {
     return requireAuthHost(req, res, () => {
       const user = req.user;
       if (!user) {
