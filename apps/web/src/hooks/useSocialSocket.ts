@@ -10,6 +10,7 @@ import {
   buildChatSlowMode,
   buildTriviaAnswer,
   buildTriviaDelete,
+  buildTriviaLaunchNow,
   buildTriviaList,
   buildTriviaSchedule,
   buildTriviaUpdate,
@@ -489,6 +490,12 @@ export function useSocialSocket(roomId: string | undefined, opts: UseSocialSocke
     [sendFrame, listTrivia],
   );
 
+  /** `trivia_launch_now`: social-core abre la trivia ya (opens_at_ms = ahora) y reenvía la agenda. */
+  const launchTriviaNow = useCallback(
+    (triviaId: string) => sendFrame((room) => buildTriviaLaunchNow(room, triviaId)),
+    [sendFrame],
+  );
+
   const answerTrivia = useCallback(
     (triviaId: string, option: number) => {
       const ok = sendFrame((room) => buildTriviaAnswer(room, triviaId, option));
@@ -529,6 +536,7 @@ export function useSocialSocket(roomId: string | undefined, opts: UseSocialSocke
     updateTrivia,
     deleteTrivia,
     listTrivia,
+    launchTriviaNow,
     answerTrivia,
     dismissTrivia,
   };

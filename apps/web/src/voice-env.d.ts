@@ -2,4 +2,6 @@
 interface ImportMetaEnv {
   /** WebSocket del Canal de Voz de voice-core (por defecto ws://localhost:8085/ws/voice). */
   readonly VITE_VOICE_WS_URL?: string;
+  /** API REST de voice-core (escenario); por defecto el origen de VITE_VOICE_WS_URL en http(s). */
+  readonly VITE_VOICE_API_URL?: string;
 }

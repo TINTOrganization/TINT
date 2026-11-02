@@ -9,6 +9,16 @@ import { BackLink } from '../components/ui/BackLink';
 import { useConfirm } from '../components/ui/ConfirmDialog';
 import { Field, ErrorAlert, Card, Input } from '../components/ui/Primitives';
 import { ease, pop } from '../lib/motion';
+import { roomKindOf, roomPath, startLiveEvent, type RoomKind } from '../lib/rooms';
+
+const KIND_OPTIONS: { value: RoomKind; title: string; body: string }[] = [
+  { value: 'watch', title: 'Ver un vídeo juntos', body: 'Sube o elige un vídeo y todos lo ven sincronizado.' },
+  {
+    value: 'live',
+    title: 'Transmisión en vivo',
+    body: 'Comparte tu pantalla con audio del PC y cámara opcional. Al terminar, la sala se deshabilita.',
+  },
+];
 
 type Invitation = { code: string; link: string; expiresAt: string; createdAt?: string; revoked?: boolean };
 
@@ -28,6 +38,10 @@ export default function CreateRoom() {
   const [notice, setNotice] = useState('');
   /** Sala recién creada: el host entra directo como host (no por la invitación). */
   const [createdRoomId, setCreatedRoomId] = useState<string | null>(null);
+  /** Tipo de sala: se elige al crear; en Gestionar viene del servidor. */
+  const [kind, setKind] = useState<RoomKind>('watch');
+  /** Sala live terminada (ADR 0019): ya no admite cambios ni links nuevos. */
+  const [disabled, setDisabled] = useState(false);
 
   useEffect(() => {
     if (!roomId) return;
@@ -36,6 +50,8 @@ export default function CreateRoom() {
       .then(([roomRes, invRes]) => {
         if (cancelled) return;
         setTitle(roomRes.room?.title ?? '');
+        setKind(roomKindOf(roomRes.room?.kind));
+        setDisabled(roomRes.room?.status === 'disabled');
         const list = (invRes.invitations ?? []) as Invitation[];
         setInvitation(pickLatestActiveInvitation(list) ?? null);
         setCopied(false);
@@ -72,10 +88,14 @@ export default function CreateRoom() {
         setTitle(res.room?.title ?? title);
         setSaved(true);
       } else {
-        const res = await apiFetch('/rooms', {
-          method: 'POST',
-          body: JSON.stringify({ title }),
-        });
+        // Sala live: POST /events/start {kind:'live'} la registra en stream-core (no en sync-core).
+        const res =
+          kind === 'live'
+            ? await startLiveEvent(title)
+            : await apiFetch('/rooms', {
+                method: 'POST',
+                body: JSON.stringify({ title }),
+              });
         setInvitation(res.invitation);
         setCreatedRoomId(res.room?.id ?? null);
         setCopied(false);
@@ -181,7 +201,21 @@ export default function CreateRoom() {
             </div>
           )}
 
-          {!pageLoading && !gone && (
+          {disabled && !pageLoading && !gone && (
+            <Card className="mt-6 max-w-xl border-white/10 p-6">
+              <h2 className="text-lg font-semibold tracking-tight text-white">El evento terminó</h2>
+              <p role="status" className="mt-1 text-sm leading-relaxed">
+                La sala quedó deshabilitada: ya no admite invitaciones ni cambios. El análisis sigue disponible.
+              </p>
+              <div className="mt-4">
+                <ButtonLink to={`/rooms/${roomId}/analytics`} variant="ghost">
+                  Ver análisis
+                </ButtonLink>
+              </div>
+            </Card>
+          )}
+
+          {!pageLoading && !gone && !disabled && (
             <Card className="mt-6 max-w-xl p-6">
               <form onSubmit={handleSubmit} className="space-y-5">
                 <Field
@@ -201,6 +235,34 @@ export default function CreateRoom() {
                     autoComplete="off"
                   />
                 </Field>
+                {!isManage && (
+                  <fieldset>
+                    <legend className="text-sm font-medium text-white">Tipo de sala</legend>
+                    <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                      {KIND_OPTIONS.map((opt) => (
+                        <label
+                          key={opt.value}
+                          className={`flex cursor-pointer gap-3 rounded-xl border p-3 transition focus-within:ring-2 focus-within:ring-tint-accent/60 ${
+                            kind === opt.value ? 'border-tint-accent/60 bg-tint-accent/10' : 'border-white/10 bg-white/[0.03] hover:border-white/20'
+                          }`}
+                        >
+                          <input
+                            type="radio"
+                            name="room-kind"
+                            value={opt.value}
+                            checked={kind === opt.value}
+                            onChange={() => setKind(opt.value)}
+                            className="mt-1 accent-tint-accent"
+                          />
+                          <span>
+                            <span className="block text-sm font-semibold text-white">{opt.title}</span>
+                            <span className="mt-0.5 block text-[13px] leading-relaxed">{opt.body}</span>
+                          </span>
+                        </label>
+                      ))}
+                    </div>
+                  </fieldset>
+                )}
                 <Button type="submit" disabled={loading || title.trim().length < 3} className="w-full sm:w-auto">
                   {loading ? (isManage ? 'Guardando…' : 'Creando…') : isManage ? 'Guardar nombre' : 'Crear'}
                 </Button>
@@ -211,7 +273,7 @@ export default function CreateRoom() {
           )}
 
           <AnimatePresence initial={false}>
-            {invitation && !gone && (
+            {invitation && !gone && !disabled && (
               <m.div key="share" variants={pop} initial="hidden" animate="show" exit="exit" className="mt-4 max-w-xl">
                 <Card className="border-tint-accent/30 p-6 shadow-lift">
                   <h2 className="text-lg font-semibold tracking-tight text-white">Sala lista para compartir</h2>
@@ -239,7 +301,11 @@ export default function CreateRoom() {
                     </div>
                   </dl>
                   <div className="mt-5 flex flex-wrap gap-3">
-                    {!isManage && createdRoomId && <ButtonLink to={`/watch/${createdRoomId}`}>Entrar a la sala</ButtonLink>}
+                    {!isManage && createdRoomId && (
+                      <ButtonLink to={roomPath({ id: createdRoomId, kind })}>
+                        {kind === 'live' ? 'Ir a transmitir' : 'Entrar a la sala'}
+                      </ButtonLink>
+                    )}
                     <Button type="button" onClick={copyLink} variant="ghost">
                       {copied ? 'Copiado' : 'Copiar link'}
                     </Button>
@@ -250,7 +316,7 @@ export default function CreateRoom() {
                     )}
                     {isManage && (
                       <>
-                        <ButtonLink to={`/watch/${roomId}`}>Entrar a la sala</ButtonLink>
+                        <ButtonLink to={roomPath({ id: roomId ?? '', kind })}>Entrar a la sala</ButtonLink>
                         <Button type="button" onClick={handleNewLink} variant="quiet" disabled={loading}>
                           {loading ? 'Generando…' : 'Generar link adicional'}
                         </Button>
@@ -282,7 +348,7 @@ export default function CreateRoom() {
             )}
           </AnimatePresence>
 
-          {isManage && !invitation && !pageLoading && !gone && (
+          {isManage && !invitation && !pageLoading && !gone && !disabled && (
             <Card className="mt-4 max-w-xl border-tint-accent/30 p-6">
               <h2 className="text-lg font-semibold tracking-tight text-white">Sin link vigente</h2>
               <p className="mt-1 text-sm leading-relaxed">
