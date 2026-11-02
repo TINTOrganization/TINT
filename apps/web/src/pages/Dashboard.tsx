@@ -11,6 +11,7 @@ import { useConfirm } from '../components/ui/ConfirmDialog';
 import { StaggerItem, StaggerList } from '../components/motion/Stagger';
 import { scaleIn, spring } from '../lib/motion';
 import { roomKindOf, roomPath } from '../lib/rooms';
+import { EventChatHistory } from '../components/room/EventChatHistory';
 
 /** Insignia del tipo de sala sobre la miniatura: transmisión activa o evento terminado. */
 function RoomKindBadge({ room }: { room: Room }) {
@@ -207,6 +208,9 @@ export default function Dashboard() {
                       >
                         Análisis
                       </ButtonLink>
+                      {roomKindOf(room.kind) === 'live' && room.status === 'disabled' && (
+                        <EventChatHistory roomId={room.id} title={room.title} className="font-normal" />
+                      )}
                       <button
                         type="button"
                         onClick={() => void handleDelete(room)}

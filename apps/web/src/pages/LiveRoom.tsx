@@ -10,6 +10,7 @@ import { ChatPanel } from '../components/chat/ChatPanel';
 import { TriviaPanel, TriviaPopup } from '../components/quiz/TriviaPanel';
 import { VoiceSection } from '../components/voice/VoiceSection';
 import { RoomNotice } from '../components/room/RoomNotice';
+import { EventChatHistory } from '../components/room/EventChatHistory';
 import { HostStudio } from '../components/live/HostStudio';
 import { AudioMixerPanel } from '../components/live/AudioMixerPanel';
 import { HostStatsPanel } from '../components/live/HostStatsPanel';
@@ -168,6 +169,7 @@ export default function LiveRoom() {
         body={roomEndedBody(!isGuest)}
         to={homePath}
         linkLabel={isGuest ? 'Volver al inicio' : 'Ir al dashboard'}
+        extra={isGuest ? undefined : <EventChatHistory roomId={roomId} title={roomTitle ?? undefined} />}
       />
     );
   }

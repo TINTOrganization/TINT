@@ -60,6 +60,7 @@ describe('CreateRoom — salas live', () => {
     );
     expect(await screen.findByText('El evento terminó')).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Ver análisis' })).toHaveAttribute('href', '/rooms/r1/analytics');
+    expect(screen.getByRole('button', { name: 'Ver chat del evento' })).toBeInTheDocument();
     expect(screen.queryByPlaceholderText('Título')).not.toBeInTheDocument();
     expect(screen.queryByText('Sala lista para compartir')).not.toBeInTheDocument();
   });

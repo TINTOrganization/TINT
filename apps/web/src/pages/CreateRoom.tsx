@@ -10,6 +10,7 @@ import { useConfirm } from '../components/ui/ConfirmDialog';
 import { Field, ErrorAlert, Card, Input } from '../components/ui/Primitives';
 import { ease, pop } from '../lib/motion';
 import { roomKindOf, roomPath, startLiveEvent, type RoomKind } from '../lib/rooms';
+import { EventChatHistory } from '../components/room/EventChatHistory';
 
 const KIND_OPTIONS: { value: RoomKind; title: string; body: string }[] = [
   { value: 'watch', title: 'Ver un vídeo juntos', body: 'Sube o elige un vídeo y todos lo ven sincronizado.' },
@@ -207,10 +208,11 @@ export default function CreateRoom() {
               <p role="status" className="mt-1 text-sm leading-relaxed">
                 La sala quedó deshabilitada: ya no admite invitaciones ni cambios. El análisis sigue disponible.
               </p>
-              <div className="mt-4">
+              <div className="mt-4 flex flex-wrap gap-2">
                 <ButtonLink to={`/rooms/${roomId}/analytics`} variant="ghost">
                   Ver análisis
                 </ButtonLink>
+                <EventChatHistory roomId={roomId ?? ''} title={title || undefined} />
               </div>
             </Card>
           )}

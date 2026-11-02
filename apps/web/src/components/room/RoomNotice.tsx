@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 import { AmbientBackground } from '../layout/AmbientBackground';
 import { Card } from '../ui/Primitives';
@@ -8,11 +9,14 @@ export function RoomNotice({
   body,
   to = '/',
   linkLabel = 'Volver al inicio',
+  extra,
 }: {
   title: string;
   body: string;
   to?: string;
   linkLabel?: string;
+  /** Acción secundaria (p. ej. "Ver chat del evento" para el host). */
+  extra?: ReactNode;
 }) {
   return (
     <div className="relative isolate grid min-h-[100dvh] place-items-center bg-tint-bg px-4 text-tint-muted">
@@ -28,6 +32,7 @@ export function RoomNotice({
         >
           {linkLabel}
         </Link>
+        {extra && <div className="mt-3">{extra}</div>}
       </Card>
     </div>
   );

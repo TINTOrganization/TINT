@@ -155,6 +155,7 @@ describe('LiveRoom — audiencia', () => {
     renderLive();
     await flush();
     expect(screen.getByRole('alert')).toHaveTextContent(/el evento terminó y la sala fue deshabilitada/i);
+    expect(screen.queryByRole('button', { name: 'Ver chat del evento' })).not.toBeInTheDocument();
     await userEvent.click(screen.getByRole('link', { name: 'Volver al inicio' }));
     expect(await screen.findByText('Inicio OK')).toBeInTheDocument();
   });
@@ -226,6 +227,8 @@ describe('LiveRoom — host', () => {
     await flush();
     expect(screen.getByRole('alert')).toHaveTextContent(/el evento terminó/i);
     expect(screen.getByRole('link', { name: 'Ir al dashboard' })).toHaveAttribute('href', '/dashboard');
+    // El host puede leer el chat del evento terminado (HU-LIVE-09 AC3).
+    expect(screen.getByRole('button', { name: 'Ver chat del evento' })).toBeInTheDocument();
   });
 
   it('empieza a transmitir y, publicando, ve mezclador, estadísticas y escenas', async () => {

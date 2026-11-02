@@ -1,5 +1,5 @@
 /** Dashboard con salas live (ADR 0019). */
-import { render, screen } from '@testing-library/react';
+import { render, screen, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import Dashboard from './Dashboard';
@@ -30,5 +30,9 @@ describe('Dashboard — salas live', () => {
     expect(screen.getByTestId('room-card-l')).toHaveTextContent('En vivo');
     expect(screen.getByTestId('room-card-d')).toHaveTextContent('Evento terminado');
     expect(screen.getByTestId('room-card-w')).not.toHaveTextContent('En vivo');
+    // HU-LIVE-09 AC3: el chat del evento terminado se puede leer; las salas activas no lo ofrecen.
+    expect(within(screen.getByTestId('room-card-d')).getByRole('button', { name: 'Ver chat del evento' })).toBeInTheDocument();
+    expect(within(screen.getByTestId('room-card-l')).queryByRole('button', { name: 'Ver chat del evento' })).toBeNull();
+    expect(within(screen.getByTestId('room-card-w')).queryByRole('button', { name: 'Ver chat del evento' })).toBeNull();
   });
 });
