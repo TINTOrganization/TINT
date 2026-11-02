@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { apiFetch } from '../lib/api';
 import { errorStatus } from '../lib/errorStatus';
 import { getLocalIdentity } from '../lib/identity';
+import { sameOriginWebSocketUrl } from '../lib/publicEntry';
 import { CLOSE_EXPIRED, CLOSE_REVOKED } from '../lib/syncProtocol';
 import { CLOSE_ROOM_DISABLED, isRoomDisabledError } from '../lib/roomClosed';
 import {
@@ -122,8 +123,7 @@ const FATAL_TICKET_STATUS = [403, 404, 410];
 const SEEN_CAP = 200;
 
 function resolveBaseUrl(override?: string): string {
-  if (override) return override;
-  return import.meta.env.VITE_SOCIAL_WS_URL || 'ws://localhost:8082/ws/social';
+  return sameOriginWebSocketUrl(override || import.meta.env.VITE_SOCIAL_WS_URL || '/ws/social');
 }
 
 /**

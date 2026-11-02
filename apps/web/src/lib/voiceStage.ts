@@ -11,6 +11,11 @@ import { resolveVoiceWsUrl } from './voiceProtocol';
 export function resolveVoiceApiUrl(override?: string): string {
   const explicit = override || import.meta.env.VITE_VOICE_API_URL;
   if (explicit) return explicit.replace(/\/+$/, '');
+  const wsEnv = import.meta.env.VITE_VOICE_WS_URL;
+  if (typeof wsEnv === 'string' && wsEnv.trim().length > 0) {
+    const trimmed = wsEnv.trim();
+    if (!/^wss?:\/\//i.test(trimmed) && !trimmed.startsWith('/')) return 'http://localhost:8085';
+  }
   try {
     const ws = new URL(resolveVoiceWsUrl());
     ws.protocol = ws.protocol === 'wss:' ? 'https:' : 'http:';

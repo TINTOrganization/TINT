@@ -57,10 +57,10 @@ describe('useSocialSocket — URL del canal', () => {
     vi.unstubAllEnvs();
   });
 
-  it('por defecto apunta a social-core en el puerto 8082', () => {
+  it('por defecto usa la ruta pública del gateway', () => {
     vi.stubEnv('VITE_SOCIAL_WS_URL', '');
     renderHook(() => useSocialSocket('r1', { createSocket: create }));
-    expect(lastSocket().url.startsWith('ws://localhost:8082/ws/social')).toBe(true);
+    expect(lastSocket().url.startsWith('ws://localhost:3000/ws/social')).toBe(true);
     vi.unstubAllEnvs();
   });
 });

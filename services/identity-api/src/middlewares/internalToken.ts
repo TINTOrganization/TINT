@@ -1,6 +1,7 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
 import type { Request, Response, NextFunction } from 'express';
 import { env } from '../config/env.js';
+import { logger } from '../logging.js';
 
 const digest = (value: string) => createHash('sha256').update(value, 'utf8').digest();
 
@@ -14,7 +15,7 @@ export function internalTokenGuard(getSecret: () => string | undefined) {
   return (req: Request, res: Response, next: NextFunction) => {
     const secret = getSecret();
     if (!secret) {
-      console.error('[internal] INTERNAL_API_SECRET no está configurado: se rechaza la llamada');
+      logger.error('internal: INTERNAL_API_SECRET no está configurado; se rechaza la llamada');
       return res.status(503).json({ error: 'Service unavailable' });
     }
     const header = req.headers['x-internal-token'];

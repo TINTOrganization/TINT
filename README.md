@@ -328,24 +328,75 @@ Esquemas de tokens, matriz de permisos y flujos de login, invitación y retiro e
 
 ---
 
-## 🚀 Inicio Rápido en Local
+## 🚀 Instrucciones de Ejecución del Prototipo (OPS-06)
 
-**Requisitos:** Docker y Docker Compose.
+> Guía de **una página** para evaluadores y revisores. Todo el sistema está 100 % orientado a contenedores (**R10**, [ADR 0023](docs/adr/0023-instrucciones-de-ejecucion-del-prototipo.md)), permitiendo clonar, levantar y verificar el prototipo en **menos de 15 minutos**.
+
+### 1. Prerrequisitos
+- **Docker Engine** ≥ 24.0 y **Docker Compose** v2 (e.g. Docker Desktop en Windows/macOS o Docker nativo en Linux).
+- **Git** y al menos **4 GB de RAM** libre para el motor de contenedores.
+- Puertos libres por defecto: `80`, `443` (gateway) y `5173` (web dev).
+
+### 2. Comandos de ejecución rápida
+Compatible con **Linux**, **macOS** y **Windows** (PowerShell / WSL2):
 
 ```bash
-# 1. Clonar y arrancar todo el sistema (web, gateway, identity-api, workers, cores e infraestructura)
-git clone https://github.com/HanamDavid/tint-monorepo.git && cd tint-monorepo
-cp .env.example .env
-docker compose up -d --build
+# 1. Clonar el repositorio y entrar al directorio
+git clone https://github.com/TINTOrganization/TINT.git && cd TINT
 
-# 2. Suite global de pruebas (TDD Policy Check)
-make test-all
+# 2. Crear el archivo de entorno a partir de la plantilla preconfigurada
+cp .env.example .env    # En Windows CMD: copy .env.example .env
+
+# 3. Construir imágenes y arrancar todos los servicios en segundo plano (R10)
+docker compose up -d --build
 ```
 
-> [!IMPORTANT]
-> El primer arranque aplica automáticamente las migraciones de `identity-api`. Si falta `.env`, Compose detiene el arranque y muestra la ruta del archivo requerido; si faltan variables, `env-check` enumera todas las variables ausentes.
->
-> Sin el media-worker el vídeo se reproduce igual desde el original de `incoming/`, pero queda en `processing` y sin Ambilight. Si el worker lo rechaza (archivo corrupto) queda `failed` y no se sirve.
+### 3. Verificación del sistema (AC1)
+Una vez finalizado el arranque (típicamente 2–4 minutos):
+
+- **Estado de los contenedores**:
+  ```bash
+  docker compose ps
+  ```
+  *Todos los servicios (`tint-gateway`, `tint-web`, `tint-identity-api`, `tint-sync-core`, `tint-social-core`, `tint-analytics`, `tint-media-worker`, `tint-voice-core`, `tint-postgres`, `tint-redis`, `tint-mongodb`, `tint-minio`) deben figurar en estado `Up` y `healthy`.*
+
+- **Sonda de salud HTTP (Liveness)**:
+  ```bash
+  curl -k https://localhost/healthz
+  # Respuesta esperada: {"status":"ok","service":"gateway"}
+  ```
+
+- **Acceso visual desde el navegador**:
+  - **Entrada Principal HTTPS (Gateway)**: [`https://localhost`](https://localhost) *(aceptar el certificado local de Caddy en desarrollo)*.
+  - **Entrada Directa Web (HTTP)**: [`http://localhost:5173`](http://localhost:5173).
+  - **Rutas clave para el revisor (sin requerir credenciales externas de Firebase)**:
+    - [`/test-me`](https://localhost/test-me): Cuestionario interactivo con preguntas sobre la arquitectura, contratos y decisiones del monorepo.
+    - [`/arquitectura`](https://localhost/arquitectura): Mapa visual interactivo de componentes y conectores del sistema.
+    - [`/analitica`](https://localhost/analitica): Panel de KPIs y telemetría de salas.
+
+### 4. Apagado y reinicio
+```bash
+# Detener los contenedores conservando los datos
+docker compose down
+
+# Detener y reiniciar limpiando volúmenes de datos
+docker compose down -v && docker compose up -d
+```
+
+### 5. Solución de problemas comunes (AC3)
+| Error o síntoma | Causa probable | Solución inmediata |
+| :--- | :--- | :--- |
+| `Missing required variables in .env` | No se creó `.env` o una variable requerida quedó vacía. | Ejecutar `cp .env.example .env`. `env-check` valida los secretos antes de levantar el stack. |
+| `bind: address already in use` (`80`, `443`, `5432`, `6379`, `27017`) | Conflicto con un servicio local (Apache, Nginx, PostgreSQL, Redis o MongoDB nativos). | Detener el servicio en conflicto o cambiar puertos en `.env` (ej. `GATEWAY_HTTP_PORT=8080`, `GATEWAY_HTTPS_PORT=8443`). |
+| Advertencia de certificado SSL no seguro en `https://localhost` | Caddy genera certificados TLS autofirmados locales para desarrollo. | En el navegador, pulsar **Avanzado** → **Continuar a localhost (no seguro)**, o acceder directamente vía `http://localhost:5173`. |
+| Docker daemon no responde o falla por memoria | Docker Desktop está detenido o tiene asignado < 4 GB de RAM. | Iniciar Docker Desktop y en *Settings* → *Resources* asignar al menos 4 GB de memoria y 2 CPUs. |
+| Advertencia sobre `coturn` en Windows o macOS | `coturn` utiliza `network_mode: host` diseñado para Linux. | En Docker Desktop opera sobre la VM local (`localhost:3478`). La señalización WebSocket y la interfaz web funcionan sin cambios. |
+
+---
+
+## 🌐 Entrada Única y Puertos Locales
+
+Para depuración y arquitectura de red, la siguiente tabla resume los puertos y rutas directas:
 
 | Servicio local | URL |
 | :--- | :--- |
@@ -359,11 +410,20 @@ make test-all
 | Redis | `localhost:6379` |
 | MinIO API / Consola | `localhost:9000` / [`localhost:9001`](http://localhost:9001) |
 
-El gateway es la única entrada pública de las APIs y canales: `/api/*` llega a
-identity-api (con las rutas de analytics dirigidas a analytics), `/ws/sync` a
-sync-core y `/ws/social` a social-core. Caddy conserva el certificado local en
-`gateway-data`; para un dominio real, define `GATEWAY_HOST` con el nombre DNS
-público y sustituye los puertos publicados según tu despliegue.
+El gateway es la única entrada pública de la web, APIs y canales: la SPA usa
+`/api/v1`, `/ws/sync`, `/ws/social` y `/ws/voice` en el mismo origen. Caddy
+termina TLS, conserva certificados en `gateway-data` y renueva los certificados
+de dominios públicos automáticamente. Para desplegar, define `GATEWAY_HOST` con
+el nombre DNS público, apunta sus registros A/AAAA al host y permite tráfico
+entrante a 80 y 443. Usa el override de producción para que web, API y canales
+no publiquen puertos fuera de la red Compose:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.production.yml up -d --build
+```
+
+Los puertos directos del Compose base son solo para depuración local. El alcance
+de esta entrada única no incluye las URLs firmadas de MinIO ni el relay TURN.
 
 El gateway limita a 5 s la conexión y espera de cabeceras de cada upstream. Si
 identity-api, analytics, sync-core o social-core no están disponibles, o no

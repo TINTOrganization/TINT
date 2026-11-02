@@ -183,6 +183,7 @@ Todos los mensajes son JSON con `event_id`, `type`, `room_id`, `position_ms`, `o
 | `ALLOWED_ORIGINS` | `localhost:5173,127.0.0.1:5173` | Patrones de host permitidos en el handshake, separados por coma. |
 | `ROOM_TTL` | `12h` | Periodo de gracia de la sala (duración Go, positiva). |
 | `CONTROL_HANDOFF_AFTER` | `5m` | Tiempo sin host/cohost tras el cual se delega el control (duración Go, positiva). |
+| `LOG_LEVEL` | `info` | Nivel mínimo de log (`debug`, `info`, `warn`, `error`). Logs JSON a stdout (ADR 0021). |
 
 ## Métricas (`GET /metrics`, formato Prometheus)
 `sync_connections`, `sync_rooms`, `sync_commands_total{result}`, `sync_messages_invalid_total`, `sync_messages_rate_limited_total`, `sync_disconnects_total{reason}`, `sync_corrections_total{strategy}`, `sync_command_apply_seconds`, `sync_broadcast_delivery_seconds`, `sync_store_conflicts_total`, `sync_telemetry_dropped_total`, `sync_telemetry_failed_total`. **No exponer públicamente**: debe quedar detrás del ingress.

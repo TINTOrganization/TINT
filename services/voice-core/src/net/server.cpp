@@ -176,7 +176,7 @@ class HttpSession : public std::enable_shared_from_this<HttpSession> {
     req_ = std::move(req);
     if (!websocket::is_upgrade(req_)) {
       if (req_.method() == http::verb::get && req_.target() == "/healthz")
-        return respond(http::status::ok, R"({"status":"ok"})");
+        return respond(http::status::ok, R"({"status":"ok","service":"voice-core"})");
       if (parse_mute_path(req_.target())) return on_moderation_request(false);
       if (parse_stage_path(req_.target())) return on_moderation_request(true);
       if (target_path(req_.target()).starts_with(kMutesApiPrefix))

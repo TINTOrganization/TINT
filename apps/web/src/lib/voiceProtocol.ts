@@ -1,3 +1,4 @@
+import { sameOriginWebSocketUrl } from './publicEntry';
 import { ROOM_ENDED_TITLE } from './roomClosed';
 
 /**
@@ -53,8 +54,7 @@ export type VoiceServerMessage =
   | { type: 'error'; code: string; event_id_ref?: string };
 
 export function resolveVoiceWsUrl(override?: string): string {
-  if (override) return override;
-  return import.meta.env.VITE_VOICE_WS_URL || 'ws://localhost:8085/ws/voice';
+  return sameOriginWebSocketUrl(override || import.meta.env.VITE_VOICE_WS_URL || '/ws/voice');
 }
 
 export function buildVoiceUrl(base: string, roomId: string, token: string): string {

@@ -1,6 +1,7 @@
 import { create as createInvitation } from '../invitations/invitations.repo.js';
 import { publishAnalyticsEvent } from '../analytics/analytics.events.js';
 import { create as createRoom, softRemoveById, type Room } from '../rooms/rooms.repo.js';
+import { logger } from '../../logging.js';
 
 export type EventStartUser = {
   id: string;
@@ -59,7 +60,9 @@ export class EventStartError extends Error {
 }
 
 function rollbackFailure(service: ServiceName | 'identity', error: unknown) {
-  console.error(`[event-start] no se pudo compensar ${service}:`, (error as Error)?.message ?? String(error));
+  logger.error(`event-start: no se pudo compensar ${service}`, {
+    error: (error as Error)?.message ?? String(error),
+  });
 }
 
 export async function startEvent(

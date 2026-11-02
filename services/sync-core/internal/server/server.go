@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -69,7 +69,7 @@ func Run(ctx context.Context, getenv func(string) string) error {
 	}
 	errCh := make(chan error, 1)
 	go func() {
-		log.Printf("sync-core escuchando en %s", cfg.Addr)
+		slog.Info("sync-core escuchando", "addr", cfg.Addr)
 		errCh <- srv.ListenAndServe()
 	}()
 

@@ -272,6 +272,34 @@ def test_run_without_pending_goes_straight_to_new_events(caplog):
     assert "pendientes" not in caplog.text
 
 
+def test_run_beats_the_heartbeat_after_a_successful_cycle():
+    redis = FakeRedis()
+    stop = threading.Event()
+    beats = []
+    redis.xadd(STREAM_KEY, {"video_id": "a"})
+    make_consumer(
+        redis,
+        lambda _video_id: stop.set(),
+        heartbeat=lambda: beats.append(1),
+    ).run(stop)
+    assert beats
+
+
+def test_run_does_not_beat_the_heartbeat_while_redis_fails():
+    redis = Mock()
+    # El primer XREADGROUP es la recuperación de pendientes; el segundo, ya en el bucle, falla.
+    redis.xreadgroup.side_effect = [None, ConnectionError("redis caído")]
+    redis.xautoclaim.return_value = ("0-0", [])
+    stop = threading.Event()
+    beats = []
+    make_consumer(
+        redis,
+        sleep=lambda _seconds: stop.set(),
+        heartbeat=lambda: beats.append(1),
+    ).run(stop)
+    assert beats == [], "un bucle bloqueado no debe aparentar salud"
+
+
 def test_run_logs_recovered_events(caplog):
     redis = FakeRedis()
     stop = threading.Event()

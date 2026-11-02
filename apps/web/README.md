@@ -540,11 +540,12 @@ Copia `.env.example` a `.env` (nunca lo subas). Todas las variables son opcional
 
 | Variable | Por defecto | Para qué |
 | :--- | :--- | :--- |
-| `VITE_IDENTITY_API_URL` | `http://localhost:8081/api/v1` | identity-api (REST). |
-| `VITE_SYNC_WS_URL` | `ws://localhost:8083/ws/sync` | Canal Sync de sync-core. |
-| `VITE_SOCIAL_WS_URL` | `ws://localhost:8082/ws/social` | Canal Social de social-core. |
+| `VITE_IDENTITY_API_URL` | `/api/v1` | identity-api (REST) a través del gateway. |
+| `VITE_SYNC_WS_URL` | `/ws/sync` | Canal Sync de sync-core a través del gateway (`wss` bajo HTTPS). |
+| `VITE_SOCIAL_WS_URL` | `/ws/social` | Canal Social de social-core a través del gateway (`wss` bajo HTTPS). |
+| `VITE_VOICE_WS_URL` | `/ws/voice` | Señalización del Canal de Voz a través del gateway (`wss` bajo HTTPS). |
 | `VITE_SYNC_ENCODING` | `json` | `json` o `msgpack` (pide el subprotocolo `tint.sync.msgpack`; si sync-core no lo acepta, sigue en JSON). |
-| `VITE_ANALYTICS_API_URL` | `http://localhost:8084/api/v1` | API de lectura de analytics. |
+| `VITE_ANALYTICS_API_URL` | `/api/v1` | API de lectura de analytics a través del gateway. |
 | `VITE_DEMO_VIDEO_URL` | vacío | Vídeo de respaldo, solo si la sala no tiene vídeo (`mediaId: null`). |
 | `VITE_FIREBASE_API_KEY` · `VITE_FIREBASE_AUTH_DOMAIN` · `VITE_FIREBASE_PROJECT_ID` | `test` | Configuración del cliente de Firebase Auth (login del host). |
 

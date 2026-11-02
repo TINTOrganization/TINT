@@ -78,6 +78,7 @@ class StreamConsumer:
         max_attempts: int = MAX_ATTEMPTS,
         claim_idle_ms: int = CLAIM_IDLE_MS,
         clock: Callable[[], float] = time.monotonic,
+        heartbeat: Callable[[], object] | None = None,
     ) -> None:
         self.redis = redis
         self.handler = handler
@@ -91,6 +92,7 @@ class StreamConsumer:
         self.max_attempts = max_attempts
         self.claim_idle_ms = claim_idle_ms
         self.clock = clock
+        self.heartbeat = heartbeat
 
     def ensure_group(self) -> None:
         """Crea el grupo (y el stream) desde el inicio; ignora `BUSYGROUP` si ya existe."""
@@ -162,11 +164,16 @@ class StreamConsumer:
                     if self.clock() - last_sweep >= CLAIM_INTERVAL_S:
                         self._sweep_stale()
                         last_sweep = self.clock()
+                self._beat()
             except Exception:
                 logger.exception(
                     "fallo procesando un evento; se reintenta en %.0f s", RETRY_DELAY_S
                 )
                 retry = True
+
+    def _beat(self) -> None:
+        if self.heartbeat is not None:
+            self.heartbeat()
 
     def _sweep_stale(self) -> None:
         claimed = self.claim_stale()
