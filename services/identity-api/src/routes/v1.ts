@@ -7,7 +7,7 @@ import { centralTokenCheck } from '../middlewares/centralAuth.js';
 import { requireRoomOwner } from '../middlewares/requireRoomOwner.js';
 import { upsertByProvider } from '../modules/users/users.repo.js';
 import { requireRoomHostOrGuest } from '../middlewares/guestAuth.js';
-import { requireActiveRoom, inactiveRoomError } from '../middlewares/activeRoom.js';
+import { requireActiveRoom, requireReadableRoom, inactiveRoomError } from '../middlewares/activeRoom.js';
 import { createRoomWithInvitation } from '../modules/rooms/rooms.create.js';
 import { listByHost, findById, softRemoveById, updateTitle, setMedia } from '../modules/rooms/rooms.repo.js';
 import { create as createInvitation, findByCode, setRevoked, listByRoom, listLatestActiveByRooms } from '../modules/invitations/invitations.repo.js';
@@ -288,7 +288,10 @@ function hostNick(user: { displayName?: string | null; email?: string | null }) 
   return localPart || 'Host';
 }
 
-router.post('/rooms/:id/sync-ticket', requireAuthHost, requireRoomOwner, requireActiveRoom, async (req, res) => {
+// También con la sala `disabled` (no `deleted`): social-core exige un HS256 de host para leer el
+// historial de chat de una sala terminada (HU-LIVE-09 AC3). No reabre nada en vivo: sync, social,
+// voice y stream cierran con 4010 por room:{id}:closed en cada handshake (ADR 0019).
+router.post('/rooms/:id/sync-ticket', requireAuthHost, requireRoomOwner, requireReadableRoom, async (req, res) => {
   const rawId = req.params.id;
   const roomId = Array.isArray(rawId) ? rawId[0] : rawId;
   const user = req.user!;

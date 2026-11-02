@@ -494,8 +494,38 @@ describe('sala deshabilitada (HU-LIVE-09)', () => {
     expect(res.body).toEqual({ error: 'Disabled' });
   });
 
-  it('HU-LIVE-09: requireActiveRoom responde 410 Disabled (POST /rooms/:id/sync-ticket)', async () => {
+  // HU-LIVE-09 AC3: el host lee el historial de chat (social-core exige un HS256 de host).
+  // Los WS siguen cerrando con 4010 por room:{id}:closed, así que el ticket no reabre nada en vivo.
+  it('HU-LIVE-09 AC3: POST /rooms/:id/sync-ticket sigue emitiendo el ticket del dueño con la sala deshabilitada', async () => {
     const res = await request(app).post('/api/v1/rooms/room-1/sync-ticket').send({});
+
+    expect(res.status).toBe(200);
+    expect(typeof res.body.token).toBe('string');
+  });
+
+  it('HU-LIVE-09 AC3: el sync-ticket de una sala deshabilitada exige ser el dueño (403)', async () => {
+    vi.mocked(isOwner).mockResolvedValue(false);
+
+    const res = await request(app).post('/api/v1/rooms/room-1/sync-ticket').send({});
+
+    expect(res.status).toBe(403);
+  });
+
+  it.each([
+    ['borrada', { ...liveRoom, status: 'deleted' }, 410, { error: 'Deleted' }],
+    ['inexistente', null, 404, { error: 'Not found' }],
+    ['con status desconocido (falla cerrado)', { ...liveRoom, status: 'otro' }, 410, { error: 'Disabled' }],
+  ])('POST /rooms/:id/sync-ticket con la sala %s no emite ticket', async (_name, room, status, body) => {
+    vi.mocked(findById).mockResolvedValue(room as any);
+
+    const res = await request(app).post('/api/v1/rooms/room-1/sync-ticket').send({});
+
+    expect(res.status).toBe(status);
+    expect(res.body).toEqual(body);
+  });
+
+  it('HU-LIVE-09: requireActiveRoom responde 410 Disabled (POST /rooms/:id/bans)', async () => {
+    const res = await request(app).post('/api/v1/rooms/room-1/bans').send({ sub: 'guest:1' });
 
     expect(res.status).toBe(410);
     expect(res.body).toEqual({ error: 'Disabled' });

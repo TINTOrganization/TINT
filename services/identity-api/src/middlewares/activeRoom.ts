@@ -17,28 +17,39 @@ export function inactiveRoomError(room: Pick<Room, 'status'>): { error: 'Deleted
   return { error: room.status === 'deleted' ? 'Deleted' : 'Disabled' };
 }
 
+function roomGuard(allowed: ReadonlySet<string>) {
+  return async (req: Request, res: Response, next: NextFunction) => {
+    const rawId = req.params.id;
+    const roomId = Array.isArray(rawId) ? rawId[0] : rawId;
+    let room: Room | null;
+    try {
+      room = await findById(roomId);
+    } catch (err) {
+      console.error('[activeRoom] no se pudo leer la sala:', (err as Error).message);
+      return res.status(500).json({ error: 'Internal error' });
+    }
+    if (!room) {
+      return res.status(404).json({ error: 'Not found' });
+    }
+    if (!allowed.has(room.status)) {
+      // `allowed` siempre incluye `active`, así que aquí inactiveRoomError nunca es null.
+      return res.status(410).json(inactiveRoomError(room));
+    }
+    req.room = room;
+    next();
+  };
+}
+
 /**
  * Carga la sala `:id` y corta si no existe (404), tiene borrado lógico (410 Deleted)
  * o fue deshabilitada (410 Disabled). Deja la sala en `req.room`.
  * Va después de la autorización: así un tercero no puede sondear qué salas existen.
  */
-export async function requireActiveRoom(req: Request, res: Response, next: NextFunction) {
-  const rawId = req.params.id;
-  const roomId = Array.isArray(rawId) ? rawId[0] : rawId;
-  let room: Room | null;
-  try {
-    room = await findById(roomId);
-  } catch (err) {
-    console.error('[activeRoom] no se pudo leer la sala:', (err as Error).message);
-    return res.status(500).json({ error: 'Internal error' });
-  }
-  if (!room) {
-    return res.status(404).json({ error: 'Not found' });
-  }
-  const inactive = inactiveRoomError(room);
-  if (inactive) {
-    return res.status(410).json(inactive);
-  }
-  req.room = room;
-  next();
-}
+export const requireActiveRoom = roomGuard(new Set(['active']));
+
+/**
+ * Como requireActiveRoom, pero también deja pasar una sala live terminada (`disabled`):
+ * el host sigue leyendo lo que quedó de ella (historial de chat, HU-LIVE-09 AC3). Una sala
+ * borrada sigue siendo 410 Deleted y cualquier otro status, 410 Disabled (falla cerrado).
+ */
+export const requireReadableRoom = roomGuard(new Set(['active', 'disabled']));
