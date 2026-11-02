@@ -298,6 +298,8 @@ services:
       SYNC_CORE_URL: http://sync-core:8080
       SOCIAL_CORE_URL: http://social-core:8082
       ANALYTICS_URL: http://analytics:8084
+      STREAM_CORE_URL: http://stream-core:8086
+      INTERNAL_API_SECRET: ${INTERNAL_API_SECRET:-dev-internal-secret-change-in-prod}
       DATABASE_URL: postgresql://${POSTGRES_USER:-tint}:${POSTGRES_PASSWORD:-tint}@postgres:5432/${POSTGRES_DB:-tint}
       REDIS_URL: redis://redis:6379
       JWT_SECRET: ${JWT_SECRET:-dev-secret-change-in-prod}
