@@ -18,6 +18,7 @@ import (
 	"github.com/HanamDavid/tint-monorepo/services/social-core/internal/analytics"
 	"github.com/HanamDavid/tint-monorepo/services/social-core/internal/auth"
 	"github.com/HanamDavid/tint-monorepo/services/social-core/internal/chat"
+	"github.com/HanamDavid/tint-monorepo/services/social-core/internal/chatmeta"
 	"github.com/HanamDavid/tint-monorepo/services/social-core/internal/moderation"
 	"github.com/HanamDavid/tint-monorepo/services/social-core/internal/polls"
 	"github.com/HanamDavid/tint-monorepo/services/social-core/internal/reactions"
@@ -41,6 +42,14 @@ type Deps struct {
 	TrackReaction func(analytics.Reaction)
 	// analytics es el emisor cableado por DefaultDeps (Run lo arranca).
 	analytics *analytics.Emitter
+	// RecordChat registra los metadatos de cada intento de envío en MongoDB
+	// (ADR 0025, sin texto ni nick). Debe ser no bloqueante. Nil = sin
+	// metadatos (sin MONGO_URI): el chat funciona igual.
+	RecordChat func(chatmeta.Input)
+	// ChatMetaHealth informa en /healthz del escritor de metadatos.
+	ChatMetaHealth func(ctx context.Context) (chatmeta.Health, error)
+	// chatMeta son el registrador y el escritor que Run arranca.
+	chatMeta *chatMetaRuntime
 	// Subscribe abre la suscripción Pub/Sub de la sala (eventos de otras
 	// réplicas y REVOKED de identity-api); una sola por sala y réplica.
 	Subscribe func(ctx context.Context, roomID string) (<-chan chat.Inbound, func())
@@ -320,7 +329,7 @@ func MountSocial(mux *http.ServeMux, d *Deps) {
 // NewRouterWithDeps construye el router completo (healthz + social).
 func NewRouterWithDeps(d *Deps) http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /healthz", healthz)
+	mux.HandleFunc("GET /healthz", d.healthz)
 	mux.HandleFunc("POST /internal/events/start", startEvent)
 	mux.HandleFunc("POST /internal/events/start/{roomID}", startEvent)
 	mux.HandleFunc("DELETE /internal/events/start/{roomID}", stopEvent)
@@ -459,6 +468,8 @@ func handleSocial(w http.ResponseWriter, r *http.Request, d *Deps) {
 
 	connID := d.newID()
 	clientIP := remoteIP(r.RemoteAddr)
+	// Solo para las familias de cliente de los metadatos (nunca se guarda).
+	userAgent := r.Header.Get("User-Agent")
 	send := make(chan []byte, 64)
 	untrack := d.trackConn(roomID, connID, liveConn{jti: claims.JTI, sub: claims.Subject, send: send, close: func(code websocket.StatusCode, reason string) {
 		go func() { _ = c.Close(code, reason) }()
@@ -613,11 +624,20 @@ func handleSocial(w http.ResponseWriter, r *http.Request, d *Deps) {
 		}
 		// Silencio y modo lento al final: el freno solo se toma si el
 		// mensaje es válido y pasó el límite de tasa.
-		if code, retry := d.admitChat(ctx, roomID, claims); code == "SLOW_MODE" {
-			writeSlowMode(ctx, c, in.EventID, retry)
-			continue
-		} else if code != "" {
-			writeError(ctx, c, code, in.EventID)
+		if code, retry := d.admitChat(ctx, roomID, claims); code != "" {
+			if code == "SLOW_MODE" {
+				writeSlowMode(ctx, c, in.EventID, retry)
+			} else {
+				writeError(ctx, c, code, in.EventID)
+			}
+			if code == "SLOW_MODE" || code == "MUTED" {
+				now := d.now()
+				d.recordChat(claims, chatmeta.Input{
+					EventID: d.newID(), RoomID: roomID, Status: chatmeta.StatusRejected, RejectReason: code,
+					Text: trimText(in.Text), Spoiler: in.Spoiler, UserAgent: userAgent,
+					SentAt: socialevent.ClampOccurred(in.OccurredAt, now), ReceivedAt: now,
+				})
+			}
 			continue
 		}
 		text := trimText(in.Text)
@@ -644,6 +664,10 @@ func handleSocial(w http.ResponseWriter, r *http.Request, d *Deps) {
 		}
 		// broadcastOnce traga el eco de Redis si el relay lo vio primero.
 		d.broadcastOnce(roomID, out)
+		d.recordChat(claims, chatmeta.Input{
+			EventID: out.EventID, RoomID: roomID, Status: chatmeta.StatusAccepted,
+			Text: text, Spoiler: out.Spoiler, SentAt: out.OccurredAt, ReceivedAt: out.ReceivedAt, UserAgent: userAgent,
+		})
 	}
 
 	// Salida explícita antes del defer: el que se va no recibe su propio aviso.

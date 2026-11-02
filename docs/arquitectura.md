@@ -311,7 +311,7 @@ Son los únicos puntos en los que un PR puede necesitar coordinar dos dominios (
 | `room:{id}:stream` `STREAM_STARTED`/`STREAM_ENDED` + `room:{id}:stream:started_at` | stream-core → social-core | Trivia por minuto del stream ([formatos](dominio-transmision.md#61-formatos-estándar)) |
 | `room:{id}:kind` (`live`, TTL 24 h) | identity-api → voice-core, social-core | Escenario de voz (`4009`) y trivia por minuto del stream |
 | `TURN_SECRET` | voice-core ↔ coturn | Credenciales TURN efímeras (REST API de TURN), `.env.example` raíz |
-| `MONGO_URI` + colección `chat_messages` (índice `{room_id, occurred_at}`) | social-core ↔ mongodb | Historial de chat durable (SOC-02/SOC-07/DAT-02); `.env.example` raíz |
+| `MONGO_URI` + colección `social.chat_message_meta` (índice `{room_id, received_at}` y TTL) | social-core ↔ mongodb | Metadatos del chat sin texto, con escritura diferida por la cola `chat:meta:outbox` (SOC-07/DAT-02, [ADR 0025](adr/0025-metadatos-del-chat-en-mongodb.md)); `.env.example` raíz |
 | Puertos locales | infra ↔ web | social-core 8082, sync-core 8083, analytics 8084, voice-core 8085, stream-core 8086 (+ UDP `STREAM_UDP_PORT`), coturn 3478 (`docker-compose.yml`, `apps/web/.env.example`) |
 | Observabilidad y salud (`/healthz` con `status`/`service`; logs JSON a stdout con `LOG_LEVEL` configurable) | Todos los servicios | [ADR 0021](adr/0021-observabilidad-salud-y-logs.md) · [§8.2](#82-observabilidad-salud-y-logs) |
 
@@ -326,7 +326,8 @@ Son los únicos puntos en los que un PR puede necesitar coordinar dos dominios (
 | Redis | social-core | `room:{id}:chat:history`, `room:{id}:chat:settings`/`:muted`/`:last:{sub}` (moderación), `room:{id}:poll*` (encuestas), `room:{id}:recap:*` (métricas del recap y ancla de reproducción), `room:{id}:trivia:*` (trivias y rankings), Pub/Sub `room:{id}:social` (chat, reacciones, láser, `poll_state`, `chat_settings`, `trivia_question` y `trivia_result` entre réplicas) |
 | Redis Stream | identity-api → media-worker | `media:uploads` (grupo `media-workers`) |
 | Redis Stream | identity-api, social-core, sync-core, media-worker → analytics | `analytics:events` (grupo `analytics-workers`) |
-| MongoDB | social-core | `chat_messages`: historial de chat durable de las salas (SOC-02, SOC-07, DAT-02) |
+| MongoDB | social-core | `social.chat_message_meta`: metadatos de cada intento de envío del chat, sin texto (SOC-07, DAT-02, [ADR 0025](adr/0025-metadatos-del-chat-en-mongodb.md)). El texto sigue solo en Redis (`room:{id}:chat:history`, 12 h) |
+| Redis Stream | social-core | `chat:meta:outbox` (grupo `chat-meta-writer`): metadatos del chat pendientes de escribir en MongoDB |
 | MinIO | web (PUT/GET firmados) · media-worker | Bucket `tint-media`: `incoming/{videoId}/original.*` (staging del navegador, caduca a los 2 días), `{videoId}/source.mp4`, `{videoId}/720p.mp4`, `{videoId}/360p.mp4` y `{videoId}/ambilight.json` (publicados por el worker) |
 
 <a id="vista-de-despliegue"></a>
@@ -490,7 +491,7 @@ El requerimiento R10 y la historia OPS-06 (#91) establecen que el despliegue del
 | PostgreSQL | 5432 | |
 | Redis | 6379 | |
 | MinIO | 9000 (API) · 9001 (consola) | |
-| MongoDB | 27017 | `docker compose` (historial de chat durable; social-core) |
+| MongoDB | 27017 | `docker compose` (metadatos del chat; social-core) |
 
 El servicio `gateway` publica `80/443` como entrada única. Redirige HTTP a
 HTTPS, termina TLS con Caddy y mantiene el contrato público de rutas:

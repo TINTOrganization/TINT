@@ -11,6 +11,7 @@ Gestionas la interactividad de la audiencia en **TINT**: chat, reacciones con co
 - Redis: Sorted Sets (leaderboards), Hashes/contadores (heatmaps), Pub/Sub
 - Imagen Docker `distroless/static` (non-root)
 - Verificación de Firebase ID tokens solo con la librería estándar (`crypto/rsa`, `crypto/x509`): sin dependencias nuevas.
+- MongoDB (`go.mongodb.org/mongo-driver/v2` v2.8.2, el driver oficial; la versión más reciente compatible con Go 1.22): metadatos del chat ([ADR 0025](../../docs/adr/0025-metadatos-del-chat-en-mongodb.md)).
 
 ## Responsabilidades
 - Chat en vivo, reacciones y su rate limiting autoritativo (`internal/reactions`).
@@ -21,12 +22,13 @@ Gestionas la interactividad de la audiencia en **TINT**: chat, reacciones con co
 - *Previsto (sin implementar):* retransmisión de colores Ambilight. Hoy la web interpola `ambilight.json` directamente (ver [ADR 0011](../../docs/adr/0011-ambilight-precalculado-por-media-worker.md)).
 - Motor de trivias y puntuación (`internal/trivia`): preguntas programadas por posición del vídeo, respuestas y rankings.
 - Moderación del chat (`internal/moderation`): modo lento y silencio; spoilers en los mensajes.
+- Metadatos del chat en MongoDB (`internal/chatmeta`, [ADR 0025](../../docs/adr/0025-metadatos-del-chat-en-mongodb.md)): longitud, horas, contexto de la sala y familias de cliente de cada intento de envío, **sin texto**. Escritura diferida: el chat nunca espera a MongoDB.
 - Cierre de sala ([ADR 0019](../../docs/adr/0019-salas-live-y-cierre-room-closed.md)): `ROOM_CLOSED` cierra con `4010`; historial del chat por REST para el host; trivia por minuto del stream en salas `live`.
 
 ## Límites de Dominio
 - ❌ No emitas ni modifiques comandos de reproducción (→ `services/sync-core`).
 - ❌ No extraigas paletas de color de vídeo (→ `services/media-worker`); solo consumes `ambilight.json`.
-- ❌ No persistas el texto del chat en analítica; publica solo metadatos (→ `services/analytics`).
+- ❌ No persistas el texto del chat en analítica ni en MongoDB; publica y guarda solo metadatos (→ `services/analytics`, ADR 0025).
 
 ## Modelo de Datos Involucrado
 | Clave / Entidad | Tipo | Descripción |
@@ -63,6 +65,8 @@ Gestionas la interactividad de la audiencia en **TINT**: chat, reacciones con co
 | `room:{id}:recap:last_pos` | Redis Hash, TTL 12 h | Ancla de reproducción conocida: `pos`, `status`, `rate`, `updated_at_ms`, `version` y `seen_at_ms` (reloj de social-core al procesar el evento; base de `recap.Store.Position`) |
 | `room:{id}:recap:seen:{event_id}` | Redis String, EX 1 h | Dedup entre réplicas de los eventos del bus de sync (`SET NX`) |
 | `token:revoked:{jti}` | Redis String (solo lectura) | Marca de revocación de identity-api |
+| `chat:meta:outbox` | Redis Stream (`MAXLEN ~ 100000`, grupo `chat-meta-writer`) | Metadatos del chat pendientes de escribir en MongoDB; el escritor hace `XACK` + `XDEL` tras escribir |
+| `social.chat_message_meta` | MongoDB (índices `room_id_received_at` y TTL `received_at_ttl`) | Un documento por intento de envío aceptado o rechazado por `MUTED`/`SLOW_MODE`: seudónimo del autor, rol, estado, `length`, `words`, `emojis`, `has_link`, `spoiler`, horas, contexto de la sala y familias de cliente. Nunca `text`, `nick` ni `sub` |
 | `analytics:events` | Redis Stream (solo escritura) | `chat_message`, `presence`, `reaction` y `trivia_answer` para `services/analytics` (ver abajo) |
 
 ## Protocolo del Canal Social
@@ -182,6 +186,9 @@ Contrato: [docs/contrato-eventos-analitica.md](../../docs/contrato-eventos-anali
 | `SOCIAL_REACTION_IP_LIMIT` | `5` | Reacciones por segundo por IP de origen |
 | `SOCIAL_REACTION_WINDOW_MS` | `1000` | Ventana deslizante compartida por ambos límites, en milisegundos |
 | `LOG_LEVEL` | `info` | Nivel mínimo de log (`debug`, `info`, `warn`, `error`). Logs JSON a stdout (ADR 0021). |
+| `MONGO_URI` | — (vacía = sin metadatos) | MongoDB de los metadatos del chat. Necesita también `REDIS_URL` y `CHAT_META_PEPPER`; social-core no espera a MongoDB para arrancar |
+| `CHAT_META_PEPPER` | — | Secreto de los seudónimos (`author`). Sin él no se guardan metadatos |
+| `CHAT_META_RETENTION_DAYS` | `90` | Retención en MongoDB (índice TTL) |
 
 El control interno de arranque expone `POST /internal/events/start/{room_id}` con `{"hostId":"..."}` y `DELETE /internal/events/start/{room_id}` para compensación. Devuelve los datos de sesión WebSocket, no sustituye la conexión del cliente y no se publica por gateway.
 
@@ -195,5 +202,7 @@ El control interno de arranque expone `POST /internal/events/start/{room_id}` co
 ```bash
 go vet ./...
 go test -race -coverprofile=coverage.out ./...
+# Con MongoDB real (pruebas de internal/chatmeta; sin la variable se omiten):
+MONGO_TEST_URI=mongodb://localhost:27017 go test -race ./internal/chatmeta
 ../../scripts/check-go-coverage.sh coverage.out 85
 ```
