@@ -401,6 +401,11 @@ export function buildTriviaDelete(roomId: string, triviaId: string, eventId = ne
   return JSON.stringify({ type: 'trivia_delete', event_id: eventId, room_id: roomId, trivia_id: triviaId });
 }
 
+/** Abre ya una trivia programada que aún no salió (host/cohost; salas live). */
+export function buildTriviaLaunchNow(roomId: string, triviaId: string, eventId = newEventId()): string {
+  return JSON.stringify({ type: 'trivia_launch_now', event_id: eventId, room_id: roomId, trivia_id: triviaId });
+}
+
 export function buildTriviaList(roomId: string, eventId = newEventId()): string {
   return JSON.stringify({ type: 'trivia_list', event_id: eventId, room_id: roomId });
 }

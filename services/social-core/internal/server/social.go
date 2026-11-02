@@ -47,6 +47,14 @@ type Deps struct {
 	// IsRevoked consulta token:revoked:{jti}. Nil = sin Redis (modo memoria).
 	// Un error rechaza el handshake (falla cerrado).
 	IsRevoked func(ctx context.Context, jti string) (bool, error)
+	// IsRoomClosed consulta room:{id}:closed (ADR 0019). Nil = sin Redis.
+	// Un error rechaza el handshake con 503 (falla cerrado).
+	IsRoomClosed func(ctx context.Context, roomID string) (bool, error)
+	// IsLive consulta room:{id}:kind == "live" y StreamStartedAt lee
+	// room:{id}:stream:started_at (trivia por minuto del stream). Nil = sin
+	// Redis: todas las salas se tratan como watch.
+	IsLive          func(ctx context.Context, roomID string) (bool, error)
+	StreamStartedAt func(ctx context.Context, roomID string) (int64, bool, error)
 	// Auth
 	JWTSecret         string
 	JWTIssuer         string // vacío = auth.DefaultIssuer
@@ -101,6 +109,9 @@ type Deps struct {
 	// cierre por pregunta (ver trivia.go).
 	triviaArms    map[string]*triviaArm
 	triviaClosers map[string]func() bool
+	// streamStarts es started_at_ms del stream por sala live (streamEnded
+	// tras STREAM_ENDED); vive mientras la sala tenga relay.
+	streamStarts map[string]int64
 	// syncHook observa cada evento de sync procesado (solo tests).
 	syncHook func(recap.Kind)
 	// pollTimers es el timer de cierre de la encuesta vigente por sala.
@@ -313,6 +324,7 @@ func NewRouterWithDeps(d *Deps) http.Handler {
 	mux.HandleFunc("POST /internal/events/start", startEvent)
 	mux.HandleFunc("POST /internal/events/start/{roomID}", startEvent)
 	mux.HandleFunc("DELETE /internal/events/start/{roomID}", stopEvent)
+	mux.HandleFunc("GET /api/v1/social/rooms/{roomID}/chat", d.handleChatHistory)
 	MountSocial(mux, d)
 	return withCorrelation(mux)
 }
@@ -403,6 +415,12 @@ func handleSocial(w http.ResponseWriter, r *http.Request, d *Deps) {
 		return
 	}
 	claims, err := d.authenticate(ctx, token, roomID)
+	if errors.Is(err, auth.ErrExpired) {
+		// Bien firmado y de esta sala, pero caducado: estado terminal
+		// (ADR 0014): upgrade y 4003 para que el navegador lo sepa.
+		d.acceptAndClose(w, r, StatusTokenExpired, "token expirado")
+		return
+	}
 	if err != nil {
 		status := http.StatusUnauthorized
 		if errors.Is(err, auth.ErrWrongRoom) {
@@ -418,7 +436,17 @@ func handleSocial(w http.ResponseWriter, r *http.Request, d *Deps) {
 		return
 	}
 	if revoked {
-		correlationError(w, r, "token revocado", http.StatusUnauthorized)
+		d.acceptAndClose(w, r, StatusRevoked, "token revocado")
+		return
+	}
+	// Sala deshabilitada (ADR 0019): upgrade y 4010, sin historial.
+	closed, err := d.checkRoomClosed(ctx, roomID)
+	if err != nil {
+		correlationError(w, r, "no se pudo validar la sala", http.StatusServiceUnavailable)
+		return
+	}
+	if closed {
+		d.acceptAndClose(w, r, StatusRoomDisabled, "sala deshabilitada")
 		return
 	}
 
@@ -432,8 +460,8 @@ func handleSocial(w http.ResponseWriter, r *http.Request, d *Deps) {
 	connID := d.newID()
 	clientIP := remoteIP(r.RemoteAddr)
 	send := make(chan []byte, 64)
-	untrack := d.trackConn(roomID, connID, liveConn{jti: claims.JTI, sub: claims.Subject, send: send, close: func() {
-		go func() { _ = c.Close(StatusRevoked, "token revocado") }()
+	untrack := d.trackConn(roomID, connID, liveConn{jti: claims.JTI, sub: claims.Subject, send: send, close: func(code websocket.StatusCode, reason string) {
+		go func() { _ = c.Close(code, reason) }()
 	}})
 	defer untrack()
 	d.Hub.Join(roomID, connID, send)
@@ -551,6 +579,9 @@ func handleSocial(w http.ResponseWriter, r *http.Request, d *Deps) {
 			continue
 		case socialevent.TypeTriviaList:
 			d.handleTriviaList(ctx, c, roomID, claims, raw)
+			continue
+		case socialevent.TypeTriviaLaunchNow:
+			d.handleTriviaLaunchNow(ctx, c, roomID, claims, raw)
 			continue
 		case socialevent.TypeTriviaAnswer:
 			d.handleTriviaAnswer(ctx, c, roomID, claims, raw, actionLimiter)

@@ -54,6 +54,10 @@ func TestVerifyGuestOKAndWrongRoom(t *testing.T) {
 	if _, err := VerifyGuest(expired, guestCfg, "r1", now); err != ErrExpired {
 		t.Fatalf("expirado debe dar ErrExpired, got %v", err)
 	}
+	// Caducado y de otra sala: ErrWrongRoom (403 sin upgrade, ADR 0014).
+	if _, err := VerifyGuest(expired, guestCfg, "otra", now); err != ErrWrongRoom {
+		t.Fatalf("expirado de otra sala debe dar ErrWrongRoom, got %v", err)
+	}
 	// aud como arreglo (RFC 7519) también vale si contiene la audiencia.
 	arr := signGuest(guestClaims(now, func(c map[string]any) { c["aud"] = []string{"otra", "tint:room"} }), "secret")
 	if _, err := VerifyGuest(arr, guestCfg, "r1", now); err != nil {

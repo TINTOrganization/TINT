@@ -39,6 +39,10 @@ const (
 	// Revoked solo viaja por el bus entre réplicas (lo publica identity-api):
 	// cierra las conexiones del token revocado y nunca llega a los clientes.
 	Revoked Type = "REVOKED"
+	// RoomClosed solo viaja por el bus (lo publica identity-api al
+	// deshabilitar la sala, ADR 0019): cierra todas las conexiones de la sala
+	// con 4010 y nunca llega a los clientes.
+	RoomClosed Type = "ROOM_CLOSED"
 
 	// Buffering (cliente → servidor) informa un stall del reproductor. Solo
 	// alimenta la telemetría: sin ACK, sin broadcast y sin tocar el estado.
@@ -122,6 +126,8 @@ type Event struct {
 	Holder     string `json:"holder,omitempty"`
 	// Token revocado (REVOKED, solo bus).
 	JTI string `json:"jti,omitempty"`
+	// Motivo del cierre de sala (ROOM_CLOSED, solo bus).
+	Reason string `json:"reason,omitempty"`
 	// Duración del stall en BUFFERING (solo cliente → servidor).
 	DurationMs int64 `json:"duration_ms,omitempty"`
 }
@@ -283,6 +289,26 @@ func HostsKey(roomID string) string {
 // RevokedKey marca un jti revocado por identity-api.
 func RevokedKey(jti string) string {
 	return "token:revoked:" + jti
+}
+
+// ClosedKey marca una sala deshabilitada por identity-api (ADR 0019). No
+// tiene TTL: cubre a quien llega tarde y a quien reconecta.
+func ClosedKey(roomID string) string {
+	return "room:" + roomID + ":closed"
+}
+
+// Motivos válidos de ROOM_CLOSED (dominio-transmision §6.1).
+const (
+	ReasonHostEnded    = "host_ended"
+	ReasonGraceExpired = "grace_expired"
+)
+
+// ValidRoomClosed indica si un ROOM_CLOSED recibido por el canal de roomID
+// cumple el formato: mismo room_id que el canal y un reason conocido. Los
+// mensajes del bus que no lo cumplen se descartan (§6.1).
+func (e Event) ValidRoomClosed(roomID string) bool {
+	return e.Type == RoomClosed && e.RoomID == roomID &&
+		(e.Reason == ReasonHostEnded || e.Reason == ReasonGraceExpired)
 }
 
 // MembersKey es el ZSET de participantes vivos (miembro = sub, score = último latido).

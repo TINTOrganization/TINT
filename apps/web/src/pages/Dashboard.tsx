@@ -10,9 +10,27 @@ import { Button, ButtonLink } from '../components/ui/Button';
 import { useConfirm } from '../components/ui/ConfirmDialog';
 import { StaggerItem, StaggerList } from '../components/motion/Stagger';
 import { scaleIn, spring } from '../lib/motion';
+import { roomKindOf, roomPath } from '../lib/rooms';
+import { EventChatHistory } from '../components/room/EventChatHistory';
+
+/** Insignia del tipo de sala sobre la miniatura: transmisión activa o evento terminado. */
+function RoomKindBadge({ room }: { room: Room }) {
+  if (roomKindOf(room.kind) !== 'live') return null;
+  const ended = room.status === 'disabled';
+  return (
+    <span
+      className={`absolute left-3 top-3 inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide backdrop-blur ${
+        ended ? 'border-white/15 bg-tint-bg/70 text-tint-muted' : 'border-red-400/40 bg-red-500/20 text-red-100'
+      }`}
+    >
+      {!ended && <span aria-hidden="true" className="h-1.5 w-1.5 rounded-full bg-red-400" />}
+      {ended ? 'Evento terminado' : 'En vivo'}
+    </span>
+  );
+}
 
 type RoomInvitation = { code: string; link: string; expiresAt: string };
-type Room = { id: string; title: string; invitation?: RoomInvitation | null };
+type Room = { id: string; title: string; kind?: string; status?: string; invitation?: RoomInvitation | null };
 
 export default function Dashboard() {
   const [rooms, setRooms] = useState<Room[]>([]);
@@ -138,12 +156,13 @@ export default function Dashboard() {
                         className="h-full w-full object-cover opacity-60 transition-[opacity,transform] duration-700 ease-out group-hover:scale-[1.04] group-hover:opacity-75"
                       />
                       <div className="absolute inset-0 bg-gradient-to-t from-tint-card via-transparent to-transparent" />
+                      <RoomKindBadge room={room} />
                     </div>
                     <div className="flex items-center justify-between gap-3 p-4">
                       <p className="truncate text-[15px] font-semibold text-white" title={room.title}>
                         {room.title}
                       </p>
-                      <ButtonLink to={`/watch/${room.id}`} aria-label={`Abrir ${room.title}`} size="sm" className="shrink-0">
+                      <ButtonLink to={roomPath(room)} aria-label={`Abrir ${room.title}`} size="sm" className="shrink-0">
                         Abrir
                       </ButtonLink>
                     </div>
@@ -189,6 +208,9 @@ export default function Dashboard() {
                       >
                         Análisis
                       </ButtonLink>
+                      {roomKindOf(room.kind) === 'live' && room.status === 'disabled' && (
+                        <EventChatHistory roomId={room.id} title={room.title} className="font-normal" />
+                      )}
                       <button
                         type="button"
                         onClick={() => void handleDelete(room)}

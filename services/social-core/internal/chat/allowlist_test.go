@@ -15,7 +15,7 @@ func TestDecodeInboundModerationAndTrivia(t *testing.T) {
 		"trivia_result":   `{"event_id":"e3","type":"trivia_result","room_id":"r1","trivia_id":"t","correct":1,"top":[],"leaderboard":[]}`,
 	}
 	for typ, raw := range allowed {
-		in, ok := decodeInbound(false, []byte(raw))
+		in, ok := decodeInbound(sourceSocial, "r1", []byte(raw))
 		if !ok || string(in.Type) != typ || in.EventID == "" {
 			t.Fatalf("%s = %+v %v, want aceptado", typ, in, ok)
 		}
@@ -24,7 +24,7 @@ func TestDecodeInboundModerationAndTrivia(t *testing.T) {
 		}
 	}
 	// Un trivia_question con "correct" inyectado se re-serializa sin él.
-	in, _ := decodeInbound(false, []byte(allowed["trivia_question"]))
+	in, _ := decodeInbound(sourceSocial, "r1", []byte(allowed["trivia_question"]))
 	if strings.Contains(string(in.Payload), `"correct"`) {
 		t.Fatalf("trivia_question reenviado con correct: %s", in.Payload)
 	}
@@ -33,7 +33,7 @@ func TestDecodeInboundModerationAndTrivia(t *testing.T) {
 		`{"event_id":"e5","type":"trivia_schedule_state","questions":[]}`,
 		`{"event_id":"e6","type":"chat_mute","user_id":"u","muted":true}`,
 	} {
-		if _, ok := decodeInbound(false, []byte(raw)); ok {
+		if _, ok := decodeInbound(sourceSocial, "r1", []byte(raw)); ok {
 			t.Fatalf("%s debe rechazarse", raw)
 		}
 	}

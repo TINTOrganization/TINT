@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { apiFetch } from '../lib/api';
 import { errorStatus } from '../lib/errorStatus';
+import { isRoomDisabledError } from '../lib/roomClosed';
 import { toFailureReason, type FailureReason } from '../lib/mediaFailure';
 import { normalizeQualities, type PlaybackQuality } from '../lib/quality';
 
@@ -53,6 +54,8 @@ export interface RoomPlayback {
   error: string | null;
   /** El invitado recibió 401/403: su invitación ya no vale (se borra `tint_guest_token`). */
   revoked: boolean;
+  /** identity-api respondió `410 {error:"Disabled"}`: el evento terminó (ADR 0019). */
+  disabled: boolean;
   /**
    * El `<video>` falló (p. ej. URL firmada caducada): adopta las URLs refrescadas si las hay
    * o pide unas nuevas (como mucho una vez cada `PLAYBACK_RECOVER_COOLDOWN_MS`). Estable.
@@ -150,6 +153,7 @@ export function useRoomPlayback(
   const [loading, setLoading] = useState(enabled);
   const [error, setError] = useState<string | null>(null);
   const [revoked, setRevoked] = useState(false);
+  const [disabled, setDisabled] = useState(false);
 
   const requestRef = useRef(0);
   const pollRequestRef = useRef(0);
@@ -214,6 +218,7 @@ export function useRoomPlayback(
             localStorage.removeItem('tint_guest_token');
             setRevoked(true);
           }
+          if (isRoomDisabledError(err)) setDisabled(true);
           setError('No se pudo cargar el vídeo de la sala.');
           setLoading(false);
         });
@@ -332,5 +337,5 @@ export function useRoomPlayback(
     return () => clearTimeout(timer);
   }, [enabled, data.status, data.mediaId, pollTick, poll, processingPollMs, maxProcessingPolls]);
 
-  return { ...data, loading, error, revoked, recover, adoptFresh };
+  return { ...data, loading, error, revoked, disabled, recover, adoptFresh };
 }

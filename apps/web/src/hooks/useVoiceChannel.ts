@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { apiFetch } from '../lib/api';
 import { errorStatus } from '../lib/errorStatus';
+import { isRoomDisabledError, ROOM_ENDED_TITLE } from '../lib/roomClosed';
 import type { EnergySample } from '../lib/speaking';
 import { VoiceMesh } from '../lib/voiceMesh';
 import {
@@ -13,6 +14,7 @@ import {
   resolveVoiceWsUrl,
   voiceCloseNotice,
   voiceErrorMessage,
+  VOICE_CLOSE,
   type VoicePeer,
   type VoiceServerMessage,
 } from '../lib/voiceProtocol';
@@ -74,6 +76,10 @@ export function useVoiceChannel(roomId: string | undefined, opts: UseVoiceChanne
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
   const [muted, setMuted] = useState(false);
   const [hostMuted, setHostMuted] = useState(false);
+  /** Cierre 4009: sala `live` y este usuario no está en el escenario. */
+  const [notOnStage, setNotOnStage] = useState(false);
+  /** Cierre 4010 o sync-ticket con 410 Disabled: el evento terminó (ADR 0019). */
+  const [roomDisabled, setRoomDisabled] = useState(false);
 
   // Estado de la conexión fuera de React: los handlers del socket lo leen sin closures viejos.
   const rt = useRef({
@@ -221,6 +227,8 @@ export function useVoiceChannel(roomId: string | undefined, opts: UseVoiceChanne
       setConnection({});
       if (!rt.active) return;
       const terminal = voiceCloseNotice(ev.code, optsRef.current.role === 'host');
+      if (ev.code === VOICE_CLOSE.NOT_ON_STAGE) setNotOnStage(true);
+      if (ev.code === VOICE_CLOSE.ROOM_DISABLED) setRoomDisabled(true);
       if (terminal) {
         finish('ended', terminal);
         return;
@@ -245,6 +253,11 @@ export function useVoiceChannel(roomId: string | undefined, opts: UseVoiceChanne
       if (!rt.active) return;
       const code = errorStatus(err);
       if (code !== null && FATAL_TICKET_STATUS.includes(code)) {
+        if (isRoomDisabledError(err)) {
+          setRoomDisabled(true);
+          finish('ended', `${ROOM_ENDED_TITLE}.`);
+          return;
+        }
         finish('ended', 'No se pudo entrar a la voz de esta sala.');
         return;
       }
@@ -255,6 +268,7 @@ export function useVoiceChannel(roomId: string | undefined, opts: UseVoiceChanne
   const join = useCallback(async () => {
     if (rt.active) return;
     setNotice(null);
+    setNotOnStage(false);
     const gum =
       optsRef.current.getUserMedia ??
       (typeof navigator !== 'undefined' && navigator.mediaDevices?.getUserMedia
@@ -356,6 +370,8 @@ export function useVoiceChannel(roomId: string | undefined, opts: UseVoiceChanne
     localStream,
     muted,
     hostMuted,
+    notOnStage,
+    roomDisabled,
     join,
     leave,
     toggleMute,

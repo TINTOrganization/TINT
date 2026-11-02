@@ -1,4 +1,5 @@
 #include "redis/revocation.hpp"
+#include "redis/sync_message.hpp"
 
 #include <chrono>
 #include <condition_variable>
@@ -78,15 +79,15 @@ TEST(RedisIntegration, ChecksRevocationKey) {
   redis_command(*ep, "DEL", "token:revoked:" + jti);
 }
 
-TEST(RedisIntegration, ListenerReceivesRevokedAndStops) {
+TEST(RedisIntegration, ListenerReceivesRevokedAndRoomClosedAndStops) {
   auto ep = test_redis();
   if (!ep) GTEST_SKIP() << "VOICE_TEST_REDIS_URL no definida";
   std::mutex mu;
   std::condition_variable cv;
-  std::vector<std::pair<std::string, std::string>> got;
-  RevokedListener listener(*ep, [&](const std::string& room, const std::string& jti) {
+  std::vector<SyncMessage> got;
+  SyncListener listener(*ep, [&](const SyncMessage& message) {
     std::lock_guard lock(mu);
-    got.emplace_back(room, jti);
+    got.push_back(message);
     cv.notify_all();
   });
   listener.start();
@@ -94,12 +95,23 @@ TEST(RedisIntegration, ListenerReceivesRevokedAndStops) {
   ASSERT_TRUE(listener.subscribed());
 
   std::string room = unique("room-");
-  redis_command(*ep, "PUBLISH", "room:" + room + ":sync", R"({"type":"PLAY"})");
-  redis_command(*ep, "PUBLISH", "room:" + room + ":sync", R"({"type":"REVOKED","jti":"j-live"})");
+  const std::string channel = "room:" + room + ":sync";
+  redis_command(*ep, "PUBLISH", channel, R"({"type":"PLAY"})");
+  redis_command(*ep, "PUBLISH", channel, R"({"type":"REVOKED","jti":"j-live"})");
+  redis_command(*ep, "PUBLISH", channel,
+                R"({"type":"ROOM_CLOSED","event_id":"e1","room_id":")" + room +
+                    R"(","reason":"grace_expired","occurred_at":"2026-11-01T18:00:00.000Z"})");
 
   std::unique_lock lock(mu);
-  ASSERT_TRUE(cv.wait_for(lock, 3s, [&] { return !got.empty(); }));
-  EXPECT_EQ(got[0], std::make_pair(room, std::string("j-live")));
+  ASSERT_TRUE(cv.wait_for(lock, 3s, [&] { return got.size() >= 2; }));
+  auto* revoked = std::get_if<RevokedMessage>(&got[0]);
+  ASSERT_NE(revoked, nullptr);
+  EXPECT_EQ(revoked->room_id, room);
+  EXPECT_EQ(revoked->jti, "j-live");
+  auto* closed = std::get_if<RoomClosedMessage>(&got[1]);
+  ASSERT_NE(closed, nullptr);
+  EXPECT_EQ(closed->room_id, room);
+  EXPECT_EQ(closed->reason, "grace_expired");
   lock.unlock();
 
   auto t0 = std::chrono::steady_clock::now();
@@ -109,7 +121,7 @@ TEST(RedisIntegration, ListenerReceivesRevokedAndStops) {
 }
 
 TEST(RedisIntegration, ListenerRetriesWhileRedisIsDown) {
-  RevokedListener listener({"127.0.0.1", 1, "", 0}, [](const std::string&, const std::string&) {});
+  SyncListener listener({"127.0.0.1", 1, "", 0}, [](const SyncMessage&) {});
   listener.start();
   std::this_thread::sleep_for(100ms);
   EXPECT_FALSE(listener.subscribed());

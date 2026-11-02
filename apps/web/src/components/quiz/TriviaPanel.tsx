@@ -75,6 +75,10 @@ export interface TriviaPanelProps {
   /** Reemplaza una pregunta pendiente por su nueva versión. */
   onUpdate: (triviaId: string, draft: TriviaDraft) => boolean;
   onDelete: (triviaId: string) => boolean;
+  /** Sala `live`: abre ya una pregunta pendiente (`trivia_launch_now`). */
+  onLaunchNow?: (triviaId: string) => boolean;
+  /** Sala `live`: los momentos son minutos de la transmisión, no del vídeo. */
+  live?: boolean;
   /** Último `error.code` del canal social. */
   error: string | null;
 }
@@ -244,7 +248,18 @@ function TriviaForm({
 }
 
 /** Tarjeta de trivia: el host programa preguntas por momento del vídeo; el invitado ve cómo jugar. */
-export function TriviaPanel({ isHost, schedule, leaderboard, getCurrentMs, onSchedule, onUpdate, onDelete, error }: TriviaPanelProps) {
+export function TriviaPanel({
+  isHost,
+  schedule,
+  leaderboard,
+  getCurrentMs,
+  onSchedule,
+  onUpdate,
+  onDelete,
+  onLaunchNow,
+  live = false,
+  error,
+}: TriviaPanelProps) {
   const [form, setForm] = useState<FormTarget | null>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const channelError = error && TRIVIA_ERRORS.has(error) ? socialErrorMessage(error) : '';
@@ -254,7 +269,10 @@ export function TriviaPanel({ isHost, schedule, leaderboard, getCurrentMs, onSch
       <div>
         <h2 className="text-[15px] font-semibold text-white">Trivia</h2>
         <p className="mt-1 text-[13px] leading-relaxed">
-          Durante la película aparecerán preguntas sobre el reproductor. ¡Responde rápido para sumar más puntos!
+          {live
+            ? 'Durante la transmisión aparecerán preguntas sobre el vídeo.'
+            : 'Durante la película aparecerán preguntas sobre el reproductor.'}{' '}
+          ¡Responde rápido para sumar más puntos!
         </p>
         <LiveLeaderboard leaderboard={leaderboard} isHost={false} />
       </div>
@@ -270,7 +288,9 @@ export function TriviaPanel({ isHost, schedule, leaderboard, getCurrentMs, onSch
     <div>
       <h2 className="text-[15px] font-semibold text-white">Trivia</h2>
       <p className="mt-1 text-[13px] leading-relaxed">
-        Programa preguntas en momentos del vídeo: aparecerán a todos justo en ese segundo.
+        {live
+          ? 'Programa preguntas por minuto de la transmisión o lánzalas ahora: aparecen a todos a la vez.'
+          : 'Programa preguntas en momentos del vídeo: aparecerán a todos justo en ese segundo.'}
       </p>
       {form === null ? (
         <Button
@@ -313,6 +333,16 @@ export function TriviaPanel({ isHost, schedule, leaderboard, getCurrentMs, onSch
                 </p>
               </div>
               <div className="flex shrink-0 gap-1">
+                {onLaunchNow && (q.status ?? 'pending') === 'pending' && (
+                  <Button
+                    variant="ghost"
+                    className="px-3 py-1.5 text-[13px]"
+                    aria-label={`Lanzar ahora la pregunta de ${formatMmSs(q.at_ms)}`}
+                    onClick={() => onLaunchNow(q.trivia_id)}
+                  >
+                    Lanzar ahora
+                  </Button>
+                )}
                 {(q.status ?? 'pending') === 'pending' && (
                   <Button
                     variant="quiet"

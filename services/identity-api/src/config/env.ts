@@ -5,6 +5,10 @@ const envSchema = z.object({
   SYNC_CORE_URL: z.string().url().default('http://localhost:8083'),
   SOCIAL_CORE_URL: z.string().url().default('http://localhost:8082'),
   ANALYTICS_URL: z.string().url().default('http://localhost:8084'),
+  // stream-core: alta y baja de las salas live en POST /events/start (ADR 0019).
+  STREAM_CORE_URL: z.string().url().default('http://localhost:8086'),
+  // Secreto de las llamadas internas (X-Internal-Token). Sin él, /internal/rooms/* responde 503.
+  INTERNAL_API_SECRET: z.preprocess((v) => (v === '' ? undefined : v), z.string().optional()),
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   AUTH_PROVIDER: z.enum(['firebase']).default('firebase'),
   JWT_ISSUER: z.string().default('tint-identity'),

@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { apiFetch } from '../lib/api';
 import { inviteClaimErrorMessage } from '../lib/invite';
+import { roomPath } from '../lib/rooms';
 import { getDeviceId } from '../lib/deviceId';
 import { m, useReducedMotion } from 'framer-motion';
 import { Button, ButtonLink } from '../components/ui/Button';
@@ -22,16 +23,16 @@ export default function InviteLanding() {
   // Con sesión de host, canjear la invitación la sustituye por una de invitado: se
   // avisa y solo se hace con confirmación explícita ("Entrar como invitado").
   const [hasHostSession] = useState(() => !!localStorage.getItem('tint_token'));
-  /** Sala del host con esta invitación: undefined = buscando, null = no es suya. */
+  /** Ruta de la sala del host con esta invitación: undefined = buscando, null = no es suya. */
   const [hostRoomId, setHostRoomId] = useState<string | null | undefined>(undefined);
 
   useEffect(() => {
     if (!hasHostSession) return;
     let cancelled = false;
     apiFetch('/rooms', { method: 'GET' }, 'host')
-      .then((res: { rooms?: { id: string; invitation?: { code: string } | null }[] }) => {
+      .then((res: { rooms?: { id: string; kind?: string; invitation?: { code: string } | null }[] }) => {
         const own = (res.rooms ?? []).find((room) => room.invitation?.code === code);
-        if (!cancelled) setHostRoomId(own?.id ?? null);
+        if (!cancelled) setHostRoomId(own ? roomPath(own) : null);
       })
       .catch(() => {
         if (!cancelled) setHostRoomId(null);
@@ -60,7 +61,8 @@ export default function InviteLanding() {
       if (res.roomTitle) localStorage.setItem('tint_room_title', res.roomTitle);
       else localStorage.removeItem('tint_room_title');
       if (code) localStorage.setItem('tint_invite_link', `/invite/${code}`);
-      navigate(`/watch/${res.roomId}`);
+      // Sala live (ADR 0019): su página no abre el Canal Sync. Sin `roomKind` (API vieja) → watch.
+      navigate(roomPath({ id: res.roomId, kind: res.roomKind }));
     } catch (err) {
       setError(inviteClaimErrorMessage(err));
     } finally {
@@ -125,7 +127,7 @@ export default function InviteLanding() {
                   Si entras como invitado se cerrará tu sesión de host en este navegador.
                 </p>
                 {hostRoomId && (
-                  <ButtonLink to={`/watch/${hostRoomId}`} size="sm" className="mt-3">
+                  <ButtonLink to={hostRoomId} size="sm" className="mt-3">
                     Entrar como host
                   </ButtonLink>
                 )}

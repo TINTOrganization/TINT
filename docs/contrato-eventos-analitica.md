@@ -49,7 +49,7 @@ el Canal Sync no necesita identificar a la persona y así se publica lo mínimo.
 | :--- | :--- | :--- | :--- |
 | `user_login` | Login validado (`POST /auth/verify`) | `method` (`google`) | DAU/MAU (REQ-03) |
 | `room_created` | Se crea una sala | — | Salas por día |
-| `room_closed` | La sala deja de estar activa (hoy: borrado lógico) | `reason` (`deleted`, `host_closed`, `grace_expired`) | Dispara los KPIs de sesión (REQ-32) |
+| `room_closed` | La sala deja de estar activa (hoy: borrado lógico) | `reason` (`deleted`, `host_ended`, `grace_expired`) | Dispara los KPIs de sesión (REQ-32) |
 | `invitation_claimed` | Un invitado canjea un código | — | Invitados por sala |
 
 `user_login` no lleva `room_id`. En `invitation_claimed`, `user_id` es el `guest:<uuid>` emitido.

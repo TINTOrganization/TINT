@@ -17,6 +17,8 @@
 #include "redis/mute_store.hpp"
 #include "redis/redis_url.hpp"
 #include "redis/revocation.hpp"
+#include "redis/room_state_store.hpp"
+#include "redis/sync_message.hpp"
 #include "util/uuid.hpp"
 
 int main() {
@@ -67,12 +69,18 @@ int main() {
   auto revocation =
       std::make_shared<redis::RedisRevocationChecker>(*endpoint, std::chrono::milliseconds(500));
 
+  auto rooms = std::make_shared<redis::RedisRoomStateStore>(*endpoint, std::chrono::milliseconds(500));
+
   boost::asio::io_context ioc;
-  net::Server server(ioc, {config->allowed_origins}, verifier, revocation, mutes, hub);
+  net::Server server(ioc, {config->allowed_origins}, verifier, revocation, mutes, rooms, hub);
   const auto port = server.listen(config->host, config->port);
 
-  redis::RevokedListener listener(
-      *endpoint, [hub](const std::string& room_id, const std::string& jti) { hub->revoke(room_id, jti); });
+  // room:*:sync: REVOKED cierra con 4001 un jti; ROOM_CLOSED, con 4010 toda la sala (ADR 0019).
+  redis::SyncListener listener(*endpoint, [hub](const redis::SyncMessage& message) {
+    if (auto* revoked = std::get_if<redis::RevokedMessage>(&message))
+      return hub->revoke(revoked->room_id, revoked->jti);
+    hub->close_room(std::get<redis::RoomClosedMessage>(message).room_id);
+  });
   listener.start();
 
   boost::asio::signal_set signals(ioc, SIGINT, SIGTERM);

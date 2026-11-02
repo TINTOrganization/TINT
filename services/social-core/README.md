@@ -19,14 +19,16 @@ Servicio en Go que lleva la interacción de la audiencia por WebSocket (`/ws/soc
 ## 1. Propósito y límites
 
 **Responsabilidades** (todas implementadas en el código actual)
-- Chat en vivo con historial corto (50 mensajes), límite de 5 msg/s, spoilers, modo lento y silencio.
+- Chat en vivo con historial corto (50 mensajes por WebSocket; Redis guarda 100 para la ruta REST), límite de 5 msg/s, spoilers, modo lento y silencio.
 - Reacciones con límite de 5/s, conteo por ventanas de 5 s y métricas para el recap.
 - Puntero láser del host/cohost (efímero, 30/s).
 - Encuestas en vivo: una activa por sala, voto cambiable, cierre por tiempo o manual.
 - Trivias programadas en posiciones del vídeo, con puntaje por velocidad y rankings en Sorted Sets.
 - Recap de la sesión: quién reaccionó más, el momento más pausado, el pico de reacciones y los totales.
 - Avisos de presencia ("entró"/"salió del chat") con ventana de gracia.
-- Cierre con `4001` de las conexiones cuyo token revoca identity-api.
+- Cierre con `4001` de las conexiones cuyo token revoca identity-api y con `4010` de todas las de una sala que identity-api deshabilita (`ROOM_CLOSED`, ADR 0019).
+- Historial del chat por REST para el host (`GET /api/v1/social/rooms/{id}/chat`), también con la sala deshabilitada.
+- Trivia por minuto del stream en salas `live` (`room:{id}:stream`) y `trivia_launch_now`.
 - Publicación de metadatos (sin texto ni nick) en `analytics:events`.
 
 **Lo que NO hace** (ver [Límites de Dominio](AGENTS.md#límites-de-dominio))
@@ -71,7 +73,7 @@ flowchart LR
 | `internal/server` | Arranque y cableado (`DefaultDeps`), handshake y bucle de lectura de `/ws/social`, despacho por `type`, presencia, relay por sala, revocación, ping, y los handlers de reacciones, láser, moderación, encuestas, recap y trivias. | [`server.go`](internal/server/server.go), [`social.go`](internal/server/social.go), [`relay.go`](internal/server/relay.go) |
 | `internal/server` (features) | Un archivo por feature: [`moderation.go`](internal/server/moderation.go), [`laser.go`](internal/server/laser.go), [`polls.go`](internal/server/polls.go), [`recap.go`](internal/server/recap.go), [`trivia.go`](internal/server/trivia.go), [`revocation.go`](internal/server/revocation.go), [`liveness.go`](internal/server/liveness.go). | — |
 | `internal/auth` | Elige el verificador por el `alg` del header: HS256 (identity-api: firma, `iss`, `aud`, `exp`, `sub`, `jti`, `room_id`) o RS256 (Firebase, certificados de Google por `kid` con caché `max-age`). | [`auth.go`](internal/auth/auth.go), [`firebase.go`](internal/auth/firebase.go) |
-| `internal/chat` | `Hub` de difusión local por sala (no bloqueante); historial en LIST de Redis o en memoria; `Publish*`/`Subscribe` sobre `room:{id}:social` y `room:{id}:sync`; `IsRevoked`. | [`hub.go`](internal/chat/hub.go), [`redis.go`](internal/chat/redis.go), [`store.go`](internal/chat/store.go) |
+| `internal/chat` | `Hub` de difusión local por sala (no bloqueante); historial en LIST de Redis o en memoria; `Publish*`/`Subscribe` sobre `room:{id}:social`, `room:{id}:sync` y `room:{id}:stream`; `IsRevoked`, `IsRoomClosed`, `IsLive`, `StreamStartedAt`. | [`hub.go`](internal/chat/hub.go), [`redis.go`](internal/chat/redis.go), [`store.go`](internal/chat/store.go) |
 | `internal/reactions` | Limitadores de ventana deslizante por usuario e IP, con duración de reintento, y `Buckets` (conteo en memoria por sala, ventana de 5 s y emoji, con poda de salas inactivas). | [`limiter.go`](internal/reactions/limiter.go), [`buckets.go`](internal/reactions/buckets.go) |
 | `internal/moderation` | Ajustes del chat y script `admit` (silencio + modo lento en una ida y vuelta). | [`store.go`](internal/moderation/store.go) |
 | `internal/polls` | Encuestas en Redis con scripts Lua `create`, `vote` y `close`; marca de flush coalescido. | [`store.go`](internal/polls/store.go) |
@@ -100,16 +102,24 @@ sequenceDiagram
         S-->>C: 400
     end
     S->>A: authenticate (según alg: HS256 o RS256)
-    alt token inválido, expirado o alg desconocido
+    alt token inválido o alg desconocido
         S-->>C: 401
-    else HS256 de otra sala
+    else de otra sala (aunque esté caducado)
         S-->>C: 403
+    else bien firmado y de la sala, pero caducado
+        S-->>C: upgrade + cierre 4003
     end
     S->>R: EXISTS token:revoked:{jti}
     alt Redis falla
         S-->>C: 503 (falla cerrado)
     else revocado
-        S-->>C: 401
+        S-->>C: upgrade + cierre 4001
+    end
+    S->>R: EXISTS room:{id}:closed
+    alt Redis falla
+        S-->>C: 503 (falla cerrado)
+    else sala deshabilitada (ADR 0019)
+        S-->>C: upgrade + cierre 4010 (sin history)
     end
     S->>S: websocket.Accept (Origin en ALLOWED_ORIGINS), límite 8 KB
     S->>S: trackConn (para revocar por jti y personalizar trivia_result)
@@ -126,7 +136,7 @@ sequenceDiagram
     Note over S: arrancan la escritora (cola de 64), el ping (20 s) y el bucle de lectura
 ```
 
-> A diferencia de sync-core, social-core rechaza un token revocado o expirado **antes** del upgrade (401), sin cierre `4xxx`. La revocación de una conexión ya abierta sí cierra con `4001` (ver 3.9).
+> Como sync-core ([ADR 0014](../../docs/adr/0014-upgrade-y-cierre-4xxx-para-estados-terminales.md)), los estados terminales hacen upgrade y cierran con un código `4xxx` (el origen se comprueba antes, en el upgrade): `4001` revocado, `4003` caducado, `4010` sala deshabilitada. Firma inválida o sin token sigue siendo `401` y otra sala `403`, sin upgrade. Un `ROOM_CLOSED` en `room:{id}:sync` cierra con `4010` las conexiones ya abiertas (ver 3.9).
 
 **Host/cohost** (moderador) = HS256 de identity-api con `room_id` de la sala y `role` `host` o `cohost`, es decir, el sync-ticket (`isModerator` en `laser.go`). Un Firebase ID token autentica pero no da permisos de moderación.
 
@@ -243,6 +253,8 @@ sequenceDiagram
 ### 3.6 Trivias
 
 Las trivias se programan por **posición del vídeo** (`at_ms`) y se disparan cuando la posición proyectada llega a la marca. Esa posición sale del ancla del recap (`room:{id}:recap:last_pos`), que se mueve con los comandos de reproducción que sync-core publica en `room:{id}:sync`.
+
+En una sala `live` (`room:{id}:kind == "live"`) no hay vídeo: la posición es el minuto del stream, `now − started_at_ms` con el reloj del servidor. `started_at_ms` llega en `STREAM_STARTED` por `room:{id}:stream` (uno repetido con el mismo valor no reprograma) y, tras un reinicio, se lee de `room:{id}:stream:started_at`; `STREAM_ENDED` cancela lo pendiente. Sin inicio, lo programado queda pendiente. `trivia_launch_now` abre una pregunta en el acto con el mismo `Launch` (HSETNX), así que no compite con el timer ni entre réplicas.
 
 **Programación** (`trivia_schedule`, `trivia_update`, `trivia_delete`, `trivia_list`, solo moderadores): el script `schedule` guarda la pregunta en `room:{id}:trivia:questions` (máximo 50 por sala) y responde `trivia_schedule_state` solo a quien la programó. Editar (`trivia_update`, script `update`) reemplaza la pregunta conservando su `trivia_id`, así que se dispara la nueva versión; editar o borrar una que ya salió da `TRIVIA_CLOSED` y una inexistente, `TRIVIA_NOT_FOUND`. Cada cambio rearma el disparo.
 
@@ -368,7 +380,7 @@ sequenceDiagram
     RL->>HB: Broadcast a las conexiones locales
 ```
 
-Cada réplica abre **una sola** suscripción por sala (a `room:{id}:social` y `room:{id}:sync`), compartida por todas sus conexiones con conteo de referencias; la abre el primero que entra y la cierra el último que sale (que además cancela el timer de disparo de trivias). Sin ese relay compartido cada mensaje se entregaba 1 + N veces.
+Cada réplica abre **una sola** suscripción por sala (a `room:{id}:social`, `room:{id}:sync` y `room:{id}:stream`), compartida por todas sus conexiones con conteo de referencias; la abre el primero que entra y la cierra el último que sale (que además cancela el timer de disparo de trivias). Sin ese relay compartido cada mensaje se entregaba 1 + N veces.
 
 ### 3.9 Revocación
 

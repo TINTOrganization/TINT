@@ -37,6 +37,13 @@ type server struct {
 
 func newServer(t *testing.T, heartbeat time.Duration) *server {
 	t.Helper()
+	return newServerWithGate(t, heartbeat, nil)
+}
+
+// newServerWithGate permite sustituir la comprobación del handshake; gate
+// recibe el store real (nil = usar el store tal cual).
+func newServerWithGate(t *testing.T, heartbeat time.Duration, gate func(*store.Store) Gate) *server {
+	t.Helper()
 	mr := miniredis.RunT(t)
 	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr(), MaxRetries: -1})
 	t.Cleanup(func() { _ = rdb.Close() })
@@ -48,7 +55,11 @@ func newServer(t *testing.T, heartbeat time.Duration) *server {
 	b.Start(ctx, h.Deliver)
 	go h.Run(ctx)
 
-	ts := httptest.NewServer(NewHandler(h, auth.NewVerifier(secret, "tint-identity", "tint:room"), st, []string{"tint.app"}))
+	var g Gate = st
+	if gate != nil {
+		g = gate(st)
+	}
+	ts := httptest.NewServer(NewHandler(h, auth.NewVerifier(secret, "tint-identity", "tint:room"), g, []string{"tint.app"}))
 	t.Cleanup(ts.Close)
 	return &server{url: ts.URL, mr: mr}
 }
@@ -243,14 +254,23 @@ func TestMessageTooLargeClosesConnection(t *testing.T) {
 	}
 }
 
+// passGate deja pasar el handshake sin tocar Redis.
+type passGate struct{}
+
+func (passGate) IsRevoked(context.Context, string) (bool, error)    { return false, nil }
+func (passGate) IsRoomClosed(context.Context, string) (bool, error) { return false, nil }
+
+// Si Redis cae entre la comprobación del handshake (que con Redis caído
+// responde 503, ver TestClosedRoomCheckFailsClosed) y Connect, el socket ya
+// aceptado se cierra con 1011.
 func TestRedisDownClosesWithInternalError(t *testing.T) {
-	s := newServer(t, time.Second)
+	s := newServerWithGate(t, time.Second, func(*store.Store) Gate { return passGate{} })
 	s.mr.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	c, _, err := websocket.Dial(ctx, s.wsURL(room, token(t, "participant", room)), nil)
 	if err != nil {
-		t.Fatalf("el handshake ocurre antes de tocar Redis: %v", err)
+		t.Fatalf("la comprobación pasó: el handshake debe completarse: %v", err)
 	}
 	defer c.CloseNow()
 	if _, _, err := c.Read(ctx); websocket.CloseStatus(err) != websocket.StatusInternalError {
