@@ -11,7 +11,7 @@ import (
 	"github.com/HanamDavid/tint-monorepo/services/sync-core/internal/syncevent"
 )
 
-// statusRoomDisabled es el cierre terminal 4010 ROOM_DISABLED del ADR 0018:
+// statusRoomDisabled es el cierre terminal 4010 ROOM_DISABLED del ADR 0019:
 // la sala fue deshabilitada y el cliente no debe reconectar.
 const statusRoomDisabled websocket.StatusCode = 4010
 
@@ -29,7 +29,7 @@ func readUntilClose(t *testing.T, c *websocket.Conn) websocket.StatusCode {
 	}
 }
 
-// ADR 0018 + ADR 0014: con room:{id}:closed presente el handshake hace
+// ADR 0019 + ADR 0014: con room:{id}:closed presente el handshake hace
 // upgrade y cierra con 4010 sin enviar STATE (quien llega tarde o reconecta
 // ve "el evento terminó", HU-LIVE-08 AC3).
 func TestClosedRoomHandshakeClosesWith4010(t *testing.T) {
@@ -61,7 +61,7 @@ func TestClosedKeyOfOtherRoomDoesNotClose(t *testing.T) {
 	}
 }
 
-// ADR 0018 / HU-LIVE-09 AC1: ROOM_CLOSED en room:{id}:sync cierra todas las
+// ADR 0019 / HU-LIVE-09 AC1: ROOM_CLOSED en room:{id}:sync cierra todas las
 // conexiones vivas de la sala (host incluido) con 4010.
 func TestRoomClosedOnBusClosesWith4010(t *testing.T) {
 	s := newServer(t, time.Second)
@@ -72,7 +72,7 @@ func TestRoomClosedOnBusClosesWith4010(t *testing.T) {
 
 	_ = s.mr.Set(closedKey(room), "1")
 	s.mr.Publish(syncevent.ChannelKey(room), `{"type":"ROOM_CLOSED","room_id":"room-1","reason":"host_ended",`+
-		`"event_id":"c1","occurred_at":"2026-11-01T18:00:00Z"}`)
+		`"event_id":"7d0c8f3e-2b1a-4c5d-9e8f-0a1b2c3d4e5f","occurred_at":"2026-11-01T18:00:00.000Z"}`)
 
 	for name, c := range map[string]*websocket.Conn{"host": h, "participante": g} {
 		if code := readUntilClose(t, c); code != statusRoomDisabled {

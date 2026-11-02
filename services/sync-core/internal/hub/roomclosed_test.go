@@ -10,11 +10,11 @@ import (
 )
 
 // roomClosedPayload es el mensaje que identity-api publica en room:{id}:sync
-// al deshabilitar una sala (ADR 0018), después de escribir room:{id}:closed.
+// al deshabilitar una sala (ADR 0019), después de escribir room:{id}:closed.
 const roomClosedPayload = `{"type":"ROOM_CLOSED","room_id":"room-1","reason":"host_ended",` +
-	`"event_id":"c1","occurred_at":"2026-11-01T18:00:00Z"}`
+	`"event_id":"7d0c8f3e-2b1a-4c5d-9e8f-0a1b2c3d4e5f","occurred_at":"2026-11-01T18:00:00.000Z"}`
 
-// ADR 0018 / HU-LIVE-09 AC1: ROOM_CLOSED cierra todas las conexiones locales
+// ADR 0019 / HU-LIVE-09 AC1: ROOM_CLOSED cierra todas las conexiones locales
 // de la sala (host incluido, cuyo ticket nunca se revoca), en cualquier
 // réplica; las otras salas siguen abiertas.
 func TestRoomClosedDisconnectsWholeRoom(t *testing.T) {
@@ -35,8 +35,8 @@ func TestRoomClosedDisconnectsWholeRoom(t *testing.T) {
 	for name, c := range map[string]*Client{"host": hc, "invitado": g1, "invitado en otra réplica": g2} {
 		select {
 		case <-c.Done():
-			if errors.Is(c.Err(), ErrRevoked) || errors.Is(c.Err(), ErrStale) || errors.Is(c.Err(), ErrSlowConsumer) {
-				t.Errorf("%s: causa = %v, want una causa propia de sala cerrada (cierre 4010)", name, c.Err())
+			if !errors.Is(c.Err(), ErrRoomClosed) {
+				t.Errorf("%s: causa = %v, want ErrRoomClosed (cierre 4010)", name, c.Err())
 			}
 		case <-time.After(recvLimit):
 			t.Fatalf("%s: ROOM_CLOSED debe cerrar todas las conexiones de la sala", name)
