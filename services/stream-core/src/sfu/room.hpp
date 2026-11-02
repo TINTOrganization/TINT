@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -116,6 +117,8 @@ class Room {
   bool ended() const { return ended_.load(); }
 
   std::array<bool, kLayers> active_layers(std::int64_t now_ms) const;
+  // host_stats (1 Hz, plano de control): bitrate por capa desde la llamada anterior. Thread-safe.
+  HostStats host_stats(std::int64_t now_ms);
 
  private:
   using ViewerList = std::vector<std::shared_ptr<Viewer>>;
@@ -148,6 +151,14 @@ class Room {
   std::array<std::atomic<std::uint32_t>, kLayers> host_ssrc_{};
   std::array<std::atomic<std::int64_t>, kLayers> layer_seen_ms_{};
   std::array<std::atomic<bool>, kLayers> layer_seen_{};
+
+  // Contadores de host_stats (relaxed: solo se leen para mostrarlos).
+  std::array<std::atomic<std::uint64_t>, kLayers> layer_bytes_{};
+  std::atomic<std::uint64_t> nacks_{0};
+  std::atomic<std::uint64_t> plis_{0};
+  std::mutex stats_mu_;
+  std::array<std::uint64_t, kLayers> stats_bytes_{};
+  std::optional<std::int64_t> stats_ms_;
 };
 
 }  // namespace stream::sfu

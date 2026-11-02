@@ -3,6 +3,8 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
+
 #include "support/rtp_builder.hpp"
 #include "support/sdp_fixtures.hpp"
 #include "support/service_fakes.hpp"
@@ -287,4 +289,27 @@ TEST_F(StreamServiceTest, HostMediaReachesViewer) {
   auto v = watch("ana");
   host_sends_keyframe(h.session_id);
   EXPECT_EQ(peer(v.session_id).peer->video.size(), 1u);
+}
+
+TEST_F(StreamServiceTest, HostReceivesHostStatsOncePerSecond) {
+  // §4: host_stats llega solo al host, 1 Hz (el tick corre cada 250 ms).
+  auto h = publish_host();
+  auto v = watch("ana");
+  host_sends_keyframe(h.session_id);
+  auto count = [&] {
+    auto& p = *peer(h.session_id).peer;
+    std::lock_guard l(p.mu);
+    return std::ranges::count_if(p.events,
+                                 [](const auto& e) { return e.find("host_stats") != std::string::npos; });
+  };
+  svc.tick();
+  ASSERT_EQ(count(), 1);
+  EXPECT_TRUE(peer(h.session_id).peer->has_event(R"("rid":"l")"));
+  now += 500;
+  svc.tick();
+  EXPECT_EQ(count(), 1);
+  now += 500;
+  svc.tick();
+  EXPECT_EQ(count(), 2);
+  EXPECT_FALSE(peer(v.session_id).peer->has_event("host_stats")) << "los viewers no la reciben";
 }

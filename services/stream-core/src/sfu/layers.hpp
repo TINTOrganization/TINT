@@ -16,6 +16,15 @@ namespace stream::sfu {
 // Capas de simulcast: 0 = l (360p15), 1 = m (720p30), 2 = h (1080p30).
 inline constexpr int kLayers = 3;
 
+// Estadísticas para el host (DataChannel host_stats, dominio-transmision §4).
+struct HostStats {
+  std::array<std::uint64_t, kLayers> bitrate_bps{};  // de la última ventana
+  std::array<bool, kLayers> active{};
+  std::array<int, kLayers> viewers_per_layer{};
+  std::uint64_t nacks = 0;  // secuencias pedidas por los viewers (acumulado)
+  std::uint64_t plis = 0;   // PLI enviados al host (acumulado)
+};
+
 // rid -> capa: "l"/"m"/"h"; cualquier otro nombre se ordena por su posición en la oferta
 // (la primera codificación es la de más calidad, como en sendEncodings).
 std::optional<int> layer_for_rid(const std::string& rid, const std::vector<std::string>& offered_rids);

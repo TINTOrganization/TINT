@@ -107,6 +107,7 @@ Room::Ingest Room::on_host_video(rtp::ByteView packet, std::int64_t now_ms) {
   host_ssrc_[*layer].store(view->ssrc);
   layer_seen_ms_[*layer].store(now_ms);
   layer_seen_[*layer].store(true);
+  layer_bytes_[*layer].fetch_add(packet.size(), std::memory_order_relaxed);
   nack_[*layer]->store(view->seq, packet);
 
   auto vp8 = rtp::parse_vp8(packet.subspan(view->payload_offset, view->payload_size));
@@ -154,6 +155,7 @@ void Room::request_keyframe(int layer, std::int64_t now_ms) {
   auto host = host_video_.load();
   if (!host || !host->sink || layer < 0 || layer >= kLayers || !layer_seen_[layer].load()) return;
   if (!pli_.should_send(layer, now_ms)) return;
+  plis_.fetch_add(1, std::memory_order_relaxed);
   host->sink->send_video_rtcp(rtp::build_pli(config_.server_ssrc, host_ssrc_[layer].load()));
 }
 
@@ -170,6 +172,29 @@ std::array<bool, kLayers> Room::active_layers(std::int64_t now_ms) const {
   return out;
 }
 
+HostStats Room::host_stats(std::int64_t now_ms) {
+  HostStats out;
+  out.active = active_layers(now_ms);
+  out.nacks = nacks_.load(std::memory_order_relaxed);
+  out.plis = plis_.load(std::memory_order_relaxed);
+  // La instantánea vive en una variable: el temporal de *viewers() moriría antes del bucle.
+  const auto snapshot = viewers();
+  for (const auto& v : *snapshot) {
+    const int layer = v->desired_layer();
+    if (layer >= 0 && layer < kLayers) ++out.viewers_per_layer[layer];
+  }
+  std::lock_guard lock(stats_mu_);
+  for (int l = 0; l < kLayers; ++l) {
+    const auto bytes = layer_bytes_[l].load(std::memory_order_relaxed);
+    if (stats_ms_ && now_ms > *stats_ms_)
+      out.bitrate_bps[l] =
+          (bytes - stats_bytes_[l]) * 8 * 1000 / static_cast<std::uint64_t>(now_ms - *stats_ms_);
+    stats_bytes_[l] = bytes;
+  }
+  stats_ms_ = now_ms;
+  return out;
+}
+
 void Room::on_viewer_rtcp(const std::string& viewer_id, rtp::ByteView packet, std::int64_t now_ms) {
   auto list = viewers();
   auto it = std::ranges::find_if(*list, [&](const auto& v) { return v->id() == viewer_id; });
@@ -180,6 +205,7 @@ void Room::on_viewer_rtcp(const std::string& viewer_id, rtp::ByteView packet, st
 
   for (const auto& nack : info->nacks) {
     if (nack.media_ssrc != v.video_ssrc()) continue;
+    nacks_.fetch_add(nack.sequences.size(), std::memory_order_relaxed);
     for (auto out_seq : nack.sequences) {
       auto source = v.video_.source_of(out_seq);
       if (!source) continue;

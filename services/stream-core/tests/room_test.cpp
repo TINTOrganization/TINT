@@ -184,6 +184,38 @@ TEST_F(RoomTest, RembFromViewerChangesItsLayerOnly) {
   EXPECT_EQ(a.viewer->desired_layer(), 0) << "HU-LIVE-02 AC3: baja la calidad en lugar de congelar";
 }
 
+TEST_F(RoomTest, HostStatsReportBitrateActivityViewersAndFeedback) {
+  // §4 host_stats: bitrate y actividad por capa que aprendió el SFU, viewers por capa, NACK y PLI.
+  prime(0);
+  auto a = make_viewer("a", 0xA000);
+  auto b = make_viewer("b", 0xB000);
+  room.add_viewer(a.viewer, 0);
+  room.add_viewer(b.viewer, 0);
+  b.viewer->set_desired_layer(2);
+  (void)room.host_stats(0);  // referencia de la primera ventana
+  std::uint64_t bytes = 0;
+  for (std::uint16_t seq = 2; seq < 12; ++seq) {
+    auto p = host_video(0, seq, false);
+    bytes += p.size();
+    room.on_host_video(p, 100 * seq);
+  }
+  room.on_viewer_rtcp("a", build_pli(1, 0xA000), 1'200);
+  std::vector<std::uint16_t> lost{3, 4};
+  room.on_viewer_rtcp("a", build_nack(0xA000, 0xA000, lost), 1'200);
+  auto st = room.host_stats(2'000);
+  EXPECT_EQ(st.bitrate_bps[0], bytes * 8 * 1000 / 2'000);
+  EXPECT_EQ(st.bitrate_bps[1], 0u);
+  EXPECT_EQ(st.bitrate_bps[2], 0u);
+  EXPECT_TRUE(st.active[0]);
+  EXPECT_FALSE(st.active[1]) << "sin paquetes de m en más de 1 s";
+  EXPECT_EQ(st.viewers_per_layer, (std::array<int, kLayers>{1, 0, 1}));
+  EXPECT_EQ(st.plis, 1u);
+  EXPECT_EQ(st.nacks, 2u);
+  auto next = room.host_stats(3'000);
+  EXPECT_EQ(next.bitrate_bps[0], 0u) << "el bitrate es de la última ventana";
+  EXPECT_EQ(next.plis, 1u) << "NACK y PLI son acumulados";
+}
+
 TEST_F(RoomTest, HostReplaceKeepsViewersAndContinuity) {
   auto v = make_viewer("v");
   room.add_viewer(v.viewer, 0);

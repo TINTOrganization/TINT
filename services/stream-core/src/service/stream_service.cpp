@@ -378,6 +378,16 @@ void StreamService::tick() {
       e->last_viewer_count = count;
       e->room.broadcast_event(events::viewer_count(count));
     }
+    if (now - e->last_host_stats_ms >= 1000) {  // host_stats a 1 Hz, solo al host (§4)
+      e->last_host_stats_ms = now;
+      std::shared_ptr<Peer> host;
+      {
+        std::lock_guard lock(mu_);
+        host = e->host_video;
+      }
+      const auto stats = e->room.host_stats(now);
+      if (host) host->send_event(events::host_stats(stats));
+    }
   }
 }
 

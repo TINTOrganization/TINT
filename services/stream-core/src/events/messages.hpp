@@ -17,13 +17,7 @@ std::string stream_state(sfu::State state, std::optional<std::int64_t> grace_dea
 std::string viewer_count(int count);
 std::string scene(std::string_view name);
 
-struct HostStats {
-  std::array<std::uint64_t, sfu::kLayers> bitrate_bps{};
-  std::array<bool, sfu::kLayers> active{};
-  std::array<int, sfu::kLayers> viewers_per_layer{};
-  std::uint64_t nacks = 0;
-  std::uint64_t plis = 0;
-};
+using HostStats = sfu::HostStats;
 std::string host_stats(const HostStats& stats);
 
 // Mensaje del host por su DataChannel: solo {"type":"scene","name":"live|starting_soon|brb"}.

@@ -127,6 +127,7 @@ class StreamService : public http::SessionLookup {
     std::string host_audio_session;
     std::atomic<std::int64_t> last_state_rtp_ms{0};
     int last_viewer_count = -1;
+    std::int64_t last_host_stats_ms = INT64_MIN / 2;  // solo lo toca tick()
     std::string scene = "live";
   };
 
