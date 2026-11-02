@@ -166,8 +166,10 @@ router.patch('/rooms/:id', requireAuthHost, requireRoomOwner, validate(updateRoo
   if (!room) {
     return res.status(404).json({ error: 'Not found' });
   }
-  if (room.status === 'deleted') {
-    return res.status(410).json({ error: 'Deleted' });
+  // Falla cerrado: ni renombrar una sala borrada (Deleted) ni una terminada (Disabled).
+  const inactive = inactiveRoomError(room);
+  if (inactive) {
+    return res.status(410).json(inactive);
   }
   const updated = await updateTitle(roomId, req.body.title);
   res.json({ room: updated });
@@ -255,8 +257,10 @@ router.post('/rooms/:id/invitations', requireAuthHost, requireRoomOwner, validat
   if (!room) {
     return res.status(404).json({ error: 'Not found' });
   }
-  if (room.status === 'deleted') {
-    return res.status(410).json({ error: 'Deleted' });
+  // No tiene sentido invitar a una sala borrada (Deleted) ni a una terminada (Disabled).
+  const inactive = inactiveRoomError(room);
+  if (inactive) {
+    return res.status(410).json(inactive);
   }
   const ttlHours = req.body.ttlHours || parseInt(env.INVITATION_DEFAULT_TTL_HOURS, 10);
   const expiresAt = new Date(Date.now() + ttlHours * 60 * 60 * 1000);

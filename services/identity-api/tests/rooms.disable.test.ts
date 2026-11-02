@@ -541,6 +541,41 @@ describe('sala deshabilitada (HU-LIVE-09)', () => {
     expect(res.status).toBe(403);
   });
 
+  it('HU-LIVE-09: PATCH /rooms/:id sobre una sala deshabilitada responde 410 Disabled', async () => {
+    const res = await request(app).patch('/api/v1/rooms/room-1').send({ title: 'Otro' });
+
+    expect(res.status).toBe(410);
+    expect(res.body).toEqual({ error: 'Disabled' });
+  });
+
+  it('HU-LIVE-09: POST /rooms/:id/invitations sobre una sala deshabilitada responde 410 Disabled', async () => {
+    const res = await request(app).post('/api/v1/rooms/room-1/invitations').send({});
+
+    expect(res.status).toBe(410);
+    expect(res.body).toEqual({ error: 'Disabled' });
+  });
+
+  it('HU-LIVE-09: GET /rooms/:id/invitations sigue respondiendo 200 con la sala deshabilitada', async () => {
+    const { listByRoom } = await import('../src/modules/invitations/invitations.repo.js');
+    vi.mocked(listByRoom).mockResolvedValueOnce([]);
+
+    const res = await request(app).get('/api/v1/rooms/room-1/invitations');
+
+    expect(res.status).toBe(200);
+  });
+
+  it('HU-LIVE-09: GET /rooms sigue listando la sala deshabilitada', async () => {
+    const { listByHost } = await import('../src/modules/rooms/rooms.repo.js');
+    const { listLatestActiveByRooms } = await import('../src/modules/invitations/invitations.repo.js');
+    vi.mocked(listByHost).mockResolvedValueOnce([disabledRoom] as any);
+    vi.mocked(listLatestActiveByRooms).mockResolvedValueOnce(new Map());
+
+    const res = await request(app).get('/api/v1/rooms');
+
+    expect(res.status).toBe(200);
+    expect(res.body.rooms[0]).toMatchObject({ status: 'disabled', kind: 'live' });
+  });
+
   it('HU-LIVE-09: GET /rooms/:id sigue devolviendo la sala deshabilitada (con status y kind) para el dueño', async () => {
     const res = await request(app).get('/api/v1/rooms/room-1');
 
