@@ -144,9 +144,11 @@ func TestSocialRoomClosedClosesAllWith4010(t *testing.T) {
 	const secret = "s3cr3t"
 	mr := miniredis.RunT(t)
 	base, _ := closedReplica(t, mr, secret)
-	h, _ := joinCol(t, wsSocialURL(base, "r1"), roleTicket(t, secret, "host-1", "Ana", "host", "r1"))
+	// Sin collector: closeCode es el único lector de estas conexiones (dos
+	// lectores concurrentes se roban el frame de cierre).
+	h := dial(t, wsSocialURL(base, "r1"), roleTicket(t, secret, "host-1", "Ana", "host", "r1"))
 	defer h.CloseNow()
-	g, _ := joinCol(t, wsSocialURL(base, "r1"), guestToken(t, secret, "guest:a", "r1", exp0()))
+	g := dial(t, wsSocialURL(base, "r1"), guestToken(t, secret, "guest:a", "r1", exp0()))
 	defer g.CloseNow()
 	o, colO := joinCol(t, wsSocialURL(base, "r2"), guestToken(t, secret, "guest:o", "r2", exp0()))
 	defer o.CloseNow()
