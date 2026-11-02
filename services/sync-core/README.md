@@ -73,12 +73,12 @@ flowchart LR
 | :--- | :--- | :--- |
 | `internal/config` | Lee el entorno con un `getenv` inyectable; exige `JWT_SECRET` y valida `ROOM_TTL` y `CONTROL_HANDOFF_AFTER`. | [`config.go`](internal/config/config.go) |
 | `internal/server` | Arma las dependencias (Redis, bus, telemetría, store, hub) y expone `GET /healthz`, `GET /ws/sync` y `GET /metrics`. Apagado ordenado. | [`server.go`](internal/server/server.go) |
-| `internal/ws` | Handshake: valida query, token y revocación; hace el upgrade y cierra con `4001`/`4003` en los casos terminales. Una goroutine lectora y una escritora por conexión. | [`handler.go`](internal/ws/handler.go) |
+| `internal/ws` | Handshake: valida query, token, revocación y sala deshabilitada; hace el upgrade y cierra con `4001`/`4003`/`4010` en los casos terminales. Una goroutine lectora y una escritora por conexión. | [`handler.go`](internal/ws/handler.go) |
 | `internal/auth` | Verifica tokens HS256 (`iss`, `aud`, `exp`, `room_id`, rol) y distingue "expirado pero bien firmado" (`ErrTokenExpired`). | [`auth.go`](internal/auth/auth.go) |
 | `internal/hub` | Salas locales y su caché de estado, `Connect`/`Disconnect`, `Handle` (comandos, `SYNC_CHECK`, `BUFFERING`), `Deliver` desde el bus, bucles de `HEARTBEAT` y de barrido de presencia, delegación y revocación. | [`hub.go`](internal/hub/hub.go), [`client.go`](internal/hub/client.go), [`heartbeat.go`](internal/hub/heartbeat.go) |
 | `internal/master` | Reloj Maestro sin I/O: `State`, `PositionAt`, `Apply` (incluido el re-anclaje de `VOLUME`/`QUALITY`). | [`state.go`](internal/master/state.go) |
 | `internal/drift` | `UpdateRTT` (EWMA α = 0,2) y `Check` (umbral 500 ms, `rate` hasta 2000 ms, `seek` por encima o en pausa). | [`drift.go`](internal/drift/drift.go) |
-| `internal/store` | `sync_state` con compare-and-set por `version` en un script Lua que también publica; deduplicación por `event_id`; presencia en un script por sala (`Sweep`); delegado; `IsRevoked`. | [`store.go`](internal/store/store.go), [`presence.go`](internal/store/presence.go) |
+| `internal/store` | `sync_state` con compare-and-set por `version` en un script Lua que también publica; deduplicación por `event_id`; presencia en un script por sala (`Sweep`); delegado; `IsRevoked`; `IsRoomClosed` (y `Init` falla con `ErrRoomClosed` si existe `room:{id}:closed`). | [`store.go`](internal/store/store.go), [`presence.go`](internal/store/presence.go) |
 | `internal/bus` | Una conexión Pub/Sub por réplica; se suscribe solo a `room:{id}:sync` de salas con clientes locales. | [`bus.go`](internal/bus/bus.go) |
 | `internal/codec` | JSON por defecto; MessagePack con el subprotocolo `tint.sync.msgpack`. | [`codec.go`](internal/codec/codec.go) |
 | `internal/syncevent` | Contrato `Event`, tipos, códigos de error, validación y nombres de claves Redis. | [`event.go`](internal/syncevent/event.go) |
