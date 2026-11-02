@@ -248,7 +248,7 @@ std::expected<SessionAnswer, http::Problem> StreamService::watch(const http::Whe
                           .on_closed = [this, session_id] { remove_session(session_id); },
                           .on_open =
                               [this, weak, session_id] {
-                                if (auto e = weak.lock()) e->room.on_viewer_ready(session_id, clock_());
+                                if (auto e = weak.lock()) e->room.on_viewer_ready(session_id);
                               }};
   auto peer = peers_.create({PeerRole::Viewer, session_id, cmd.sdp, options}, std::move(callbacks));
   if (!peer) return std::unexpected(peer.error());

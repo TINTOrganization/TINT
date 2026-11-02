@@ -95,19 +95,25 @@ rtp::Bytes empty_rr(std::uint32_t sender) {
           static_cast<std::uint8_t>(sender)};
 }
 
-TEST_F(RoomTest, KeyframeRequestedOnFirstViewerRtcpNotOnJoin) {
+TEST_F(RoomTest, KeyframeRequestedOnTickOnceViewerIsReadyNotOnJoin) {
   // S2: un keyframe pedido al entrar (o al abrir la pista del lado del SFU) llega antes de que el
-  // viewer tenga las claves SRTP y se pierde; el siguiente cae en la ventana de PliThrottle (~1.2 s
-  // de TTFF). El primer RTCP del viewer prueba que ya descifra.
+  // viewer tenga las claves SRTP y se pierde. Su primer RTCP prueba que ya descifra; el pedido sale en
+  // el siguiente tick (250 ms) para que las entradas simultáneas compartan un keyframe.
   prime();
   host->rtcp.clear();
   auto v = make_viewer("v");
   room.add_viewer(v.viewer, 5'000);
+  room.on_host_video(host_video(0, 2, false), 5'000);
+  room.tick(5'000);
   EXPECT_TRUE(host->plis().empty()) << "todavía no puede recibirlo";
   room.on_viewer_rtcp("v", empty_rr(0xC000), 5'100);
+  EXPECT_TRUE(host->plis().empty()) << "se agrupa en el siguiente tick";
+  room.tick(5'250);
   EXPECT_EQ(host->plis(), (std::vector<std::uint32_t>{kSsrcL})) << "entra en la capa baja: TTFF rápido";
-  room.on_viewer_rtcp("v", empty_rr(0xC000), 7'000);
-  EXPECT_EQ(host->plis().size(), 1u) << "solo el primer RTCP sin PLI pide keyframe";
+  room.on_host_video(host_video(0, 3, true), 5'300);
+  room.on_viewer_rtcp("v", empty_rr(0xC000), 6'500);
+  room.tick(6'500);
+  EXPECT_EQ(host->plis().size(), 1u) << "ya recibe su capa: no pide más";
 }
 
 TEST_F(RoomTest, KeyframeRequestedWhenViewerDataChannelOpens) {
@@ -117,12 +123,11 @@ TEST_F(RoomTest, KeyframeRequestedWhenViewerDataChannelOpens) {
   host->rtcp.clear();
   auto v = make_viewer("v");
   room.add_viewer(v.viewer, 5'000);
-  room.on_viewer_ready("v", 5'050);
+  room.on_host_video(host_video(0, 2, false), 5'000);
+  room.on_viewer_ready("v");
+  room.on_viewer_ready("nadie");
+  room.tick(5'250);
   EXPECT_EQ(host->plis(), (std::vector<std::uint32_t>{kSsrcL}));
-  room.on_viewer_rtcp("v", empty_rr(0xC000), 7'000);
-  EXPECT_EQ(host->plis().size(), 1u) << "el primer RTCP ya no pide otro";
-  room.on_viewer_ready("nadie", 7'100);
-  EXPECT_EQ(host->plis().size(), 1u);
 }
 
 TEST_F(RoomTest, ThrottledKeyframeRequestIsRetriedUntilViewerGetsOne) {
@@ -133,18 +138,20 @@ TEST_F(RoomTest, ThrottledKeyframeRequestIsRetriedUntilViewerGetsOne) {
   auto a = make_viewer("a", 0xA000);
   auto b = make_viewer("b", 0xB000);
   room.add_viewer(a.viewer, 5'000);
-  room.on_viewer_ready("a", 5'000);
-  room.on_host_video(host_video(0, 2, true), 5'100);
+  room.on_viewer_ready("a");
+  room.on_host_video(host_video(0, 2, false), 5'000);
+  room.tick(5'000);
+  room.on_host_video(host_video(0, 3, true), 5'100);
   room.add_viewer(b.viewer, 5'200);
-  room.on_viewer_ready("b", 5'200);
+  room.on_viewer_ready("b");
+  room.tick(5'250);
   EXPECT_EQ(host->plis().size(), 1u) << "limitado: 1 PLI por capa y por segundo";
-  room.tick(5'500);
-  EXPECT_EQ(host->plis().size(), 1u);
-  room.tick(6'100);
+  room.on_host_video(host_video(0, 4, false), 6'000);
+  room.tick(6'000);
   EXPECT_EQ(host->plis().size(), 2u) << "b sigue sin keyframe: se pide otra vez";
-  room.on_host_video(host_video(0, 3, true), 6'200);
+  room.on_host_video(host_video(0, 5, true), 6'100);
   EXPECT_EQ(b.sink->video_count(), 1u);
-  room.tick(7'300);
+  room.tick(7'000);
   EXPECT_EQ(host->plis().size(), 2u) << "todos reciben su capa: no hay más PLI";
 }
 
@@ -154,7 +161,9 @@ TEST_F(RoomTest, HostUploadIndependentOfViewerCount) {
   host->rtcp.clear();
   for (int i = 0; i < 50; ++i)
     ASSERT_TRUE(room.add_viewer(make_viewer("v" + std::to_string(i)).viewer, 10'000));
+  room.on_host_video(host_video(0, 2, false), 10'000);
   for (int i = 0; i < 50; ++i) room.on_viewer_rtcp("v" + std::to_string(i), empty_rr(0xC000), 10'000 + i);
+  room.tick(10'100);
   EXPECT_EQ(host->plis().size(), 1u) << "un PLI compartido por capa y por segundo";
   EXPECT_EQ(room.viewer_count(), 50);
 }

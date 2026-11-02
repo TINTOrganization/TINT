@@ -321,5 +321,6 @@ TEST_F(StreamServiceTest, ViewerDataChannelOpenRequestsKeyframe) {
   ASSERT_TRUE(peer(v.session_id).callbacks.on_open);
   peer(h.session_id).peer->rtcp.clear();
   peer(v.session_id).callbacks.on_open();
+  svc.tick();
   EXPECT_EQ(peer(h.session_id).peer->rtcp.size(), 1u) << "PLI al host: TTFF sin esperar el RTCP del viewer";
 }

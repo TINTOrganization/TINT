@@ -49,11 +49,11 @@ bool Room::add_viewer(std::shared_ptr<Viewer> viewer, std::int64_t /*now_ms*/) {
     next->push_back(viewer);
     viewers_.store(std::move(next), std::memory_order_release);
   }
-  // Entra en la capa baja (primer frame rápido). El keyframe se pide cuando abre su DataChannel o con
-  // su primer RTCP (lo que llegue antes): uno pedido ahora (o al abrir la pista del lado del SFU) llega
-  // antes de que el viewer tenga las claves SRTP, se pierde y el siguiente cae en la ventana de
-  // PliThrottle (spike S2: TTFF 1.2 s -> 0.17 s). Chrome manda su primer RTCP ~2.5 s después de
-  // conectar; su DataChannel abre enseguida (E2E R7).
+  // Entra en la capa baja (primer frame rápido). Queda listo cuando abre su DataChannel o con su primer
+  // RTCP (lo que llegue antes) y el keyframe lo pide el siguiente tick(). Uno pedido ahora (o al abrir
+  // la pista del lado del SFU) llega antes de que tenga las claves SRTP y se pierde (spike S2). Chrome
+  // manda su primer RTCP ~2.5 s después de conectar; su DataChannel abre enseguida (E2E R7). Pedirlo
+  // en el tick agrupa las entradas simultáneas en un keyframe.
   return true;
 }
 
@@ -200,11 +200,10 @@ HostStats Room::host_stats(std::int64_t now_ms) {
   return out;
 }
 
-void Room::on_viewer_ready(const std::string& viewer_id, std::int64_t now_ms) {
+void Room::on_viewer_ready(const std::string& viewer_id) {
   auto list = viewers();
   auto it = std::ranges::find_if(*list, [&](const auto& v) { return v->id() == viewer_id; });
-  if (it == list->end()) return;
-  if (!(*it)->ready_.exchange(true)) request_keyframe((*it)->desired_layer(), now_ms);
+  if (it != list->end()) (*it)->ready_.store(true);
 }
 
 void Room::on_viewer_rtcp(const std::string& viewer_id, rtp::ByteView packet, std::int64_t now_ms) {
@@ -226,8 +225,8 @@ void Room::on_viewer_rtcp(const std::string& viewer_id, rtp::ByteView packet, st
       if (auto rtx = v.video_.retransmission(*stored, out_seq)) v.sink().send_video(std::move(*rtx));
     }
   }
-  const bool first_signal = !v.ready_.exchange(true);
-  if (first_signal || !info->keyframe_requests.empty()) request_keyframe(v.desired_layer(), now_ms);
+  v.ready_.store(true);  // el keyframe de entrada lo pide tick(); un PLI/FIR explícito, ya
+  if (!info->keyframe_requests.empty()) request_keyframe(v.desired_layer(), now_ms);
 
   std::lock_guard lock(v.selector_mu_);
   int layer = v.selector_.layer();

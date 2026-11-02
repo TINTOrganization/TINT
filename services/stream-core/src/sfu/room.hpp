@@ -110,10 +110,10 @@ class Room {
   };
   Ingest on_host_video(rtp::ByteView packet, std::int64_t now_ms);
   void on_host_audio(rtp::ByteView packet, std::int64_t now_ms);
-  // El primer RTCP del viewer (o cualquier PLI/FIR) pide un keyframe de su capa (limitado).
+  // El primer RTCP marca al viewer listo (keyframe en el tick); un PLI/FIR pide uno ya (limitado).
   void on_viewer_rtcp(const std::string& viewer_id, rtp::ByteView packet, std::int64_t now_ms);
-  // Su DataChannel abrió (terminó su DTLS): pide el keyframe sin esperar al primer RTCP.
-  void on_viewer_ready(const std::string& viewer_id, std::int64_t now_ms);
+  // Su DataChannel abrió (terminó su DTLS): el próximo tick pide su keyframe sin esperar al primer RTCP.
+  void on_viewer_ready(const std::string& viewer_id);
   void tick(std::int64_t now_ms);  // evalúa capas de todos los viewers
 
   void broadcast_event(const std::string& json);
