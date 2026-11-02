@@ -68,6 +68,7 @@ bool origin_allowed(std::string_view origin, const std::vector<std::string>& all
 
 HandshakeDecision decide_handshake(const HandshakeRequest& request, const auth::TokenVerifier& verifier,
                                    RevocationChecker& revocation, moderation::MuteStore& mutes,
+                                   rooms::RoomStateStore& rooms,
                                    const std::vector<std::string>& allowed_origins, std::int64_t now_s) {
   if (target_path(request.target) != kVoicePath) return Reject{404, "not found"};
   // Sin Origin no es un navegador (no hay CSWSH posible); con Origin debe estar permitido.
@@ -90,6 +91,21 @@ HandshakeDecision decide_handshake(const HandshakeRequest& request, const auth::
   auto revoked = revocation.is_revoked(claims->jti);
   if (!revoked) return Reject{503, "revocation store unavailable"};
   if (*revoked) return AcceptThenClose{4001, "token revoked"};
+
+  // ADR 0019: una sala deshabilitada cierra a todos, también al host (gana sobre 4009).
+  auto closed = rooms.is_closed(room->second);
+  if (!closed) return Reject{503, "room state unavailable"};
+  if (*closed) return AcceptThenClose{4010, "room disabled"};
+  // Modo escenario: en una sala live solo entran host/cohost y los invitados al escenario.
+  if (!moderation::can_moderate(claims->role)) {
+    auto live = rooms.is_live(room->second);
+    if (!live) return Reject{503, "room state unavailable"};
+    if (*live) {
+      auto on_stage = rooms.is_on_stage(room->second, claims->sub);
+      if (!on_stage) return Reject{503, "room state unavailable"};
+      if (!*on_stage) return AcceptThenClose{4009, "not on stage"};
+    }
+  }
   // El silencio del host sigue vigente al volver a entrar (HU-VOZ-04 AC2).
   auto host_muted = mutes.is_muted(room->second, claims->sub);
   if (!host_muted) return Reject{503, "mute store unavailable"};
