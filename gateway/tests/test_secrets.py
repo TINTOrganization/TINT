@@ -19,6 +19,8 @@ DOCKERIGNORE = ROOT / ".dockerignore"
 ENV_EXAMPLE = ROOT / ".env.example"
 GITLEAKS_TOML = ROOT / ".gitleaks.toml"
 ADR = ROOT / "docs" / "adr" / "0022-secretos-por-variables-de-entorno.md"
+# Los secretos se documentan en ADR 0022 y en los ADR que añaden secretos nuevos.
+SECRET_ADRS = (ADR, ROOT / "docs" / "adr" / "0025-metadatos-del-chat-en-mongodb.md")
 
 REQUIRED_SECRETS = (
     "POSTGRES_PASSWORD",
@@ -28,6 +30,8 @@ REQUIRED_SECRETS = (
     "JWT_SECRET",
     "TURN_SECRET",
     "INTERNAL_API_SECRET",
+    "MONGO_APP_PASSWORD",
+    "CHAT_META_PEPPER",
 )
 
 DOCKERFILES = [
@@ -46,8 +50,9 @@ class SecretsContractTests(unittest.TestCase):
     def test_adr_documents_secrets_contract(self):
         self.assertTrue(ADR.exists(), f"Falta el ADR 0022 en {ADR}")
         content = ADR.read_text(encoding="utf-8")
+        documented = "\n".join(adr.read_text(encoding="utf-8") for adr in SECRET_ADRS if adr.exists())
         for secret in REQUIRED_SECRETS:
-            self.assertIn(secret, content, f"ADR 0022 debe documentar el secreto {secret}")
+            self.assertIn(secret, documented, f"Un ADR de secretos debe documentar {secret}")
         self.assertTrue(
             "docker compose up -d --no-build" in content or "--no-build" in content,
             "ADR 0022 debe documentar la regla de recreación con --no-build",
@@ -91,6 +96,8 @@ class SecretsContractTests(unittest.TestCase):
             "JWT_SECRET",
             "TURN_SECRET",
             "INTERNAL_API_SECRET",
+            "MONGO_APP_PASSWORD",
+            "CHAT_META_PEPPER",
         ):
             pattern = rf"\$\{{{secret}:-[^}}]*\}}"
             matches = re.findall(pattern, raw_compose)
@@ -108,6 +115,8 @@ class SecretsContractTests(unittest.TestCase):
             "POSTGRES_PASSWORD",
             "MINIO_ROOT_PASSWORD",
             "MONGO_ROOT_PASSWORD",
+            "MONGO_APP_PASSWORD",
+            "CHAT_META_PEPPER",
         )
         for dockerfile in DOCKERFILES:
             self.assertTrue(dockerfile.exists(), f"No existe {dockerfile}")

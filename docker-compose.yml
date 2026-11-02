@@ -23,7 +23,8 @@ services:
         for variable in POSTGRES_USER POSTGRES_PASSWORD POSTGRES_DB \
           MINIO_ROOT_USER MINIO_ROOT_PASSWORD MINIO_BUCKET \
           JWT_SECRET JWT_ISSUER JWT_AUDIENCE FIREBASE_PROJECT_ID TURN_SECRET \
-          MONGO_ROOT_PASSWORD MONGO_URI INTERNAL_API_SECRET; do
+          MONGO_ROOT_PASSWORD MONGO_URI INTERNAL_API_SECRET \
+          MONGO_APP_PASSWORD CHAT_META_PEPPER; do
           value=$$(printenv "$$variable" || true)
           if [ -z "$$value" ]; then
             missing="$$missing\n  - $$variable"
@@ -31,6 +32,7 @@ services:
         done
         if [ -n "$$missing" ]; then
           printf 'Missing required variables in .env:%b\n' "$$missing" >&2
+          printf 'Run make env-sync (or python scripts/env_sync.py) to add them from .env.example.\n' >&2
           exit 1
         fi
         LOG_LEVEL=$${LOG_LEVEL:-info}
@@ -276,6 +278,12 @@ services:
       SOCIAL_REACTION_IP_LIMIT: ${SOCIAL_REACTION_IP_LIMIT:-5}
       SOCIAL_REACTION_WINDOW_MS: ${SOCIAL_REACTION_WINDOW_MS:-1000}
       LOG_LEVEL: ${LOG_LEVEL:-info}
+      # Metadatos del chat en MongoDB (ADR 0025), sin texto: usuario de aplicación,
+      # no el raíz. No depende de mongodb: si MongoDB cae, el chat sigue y los
+      # metadatos esperan en Redis.
+      MONGO_URI: mongodb://${MONGO_APP_USER:-social_core}:${MONGO_APP_PASSWORD}@mongodb:27017/social?authSource=social
+      CHAT_META_PEPPER: ${CHAT_META_PEPPER}
+      CHAT_META_RETENTION_DAYS: ${CHAT_META_RETENTION_DAYS:-90}
     depends_on:
       env-check:
         condition: service_completed_successfully
@@ -410,6 +418,41 @@ services:
       interval: 10s
       timeout: 5s
       retries: 10
+
+  # Usuario de aplicación de social-core (ADR 0025): readWrite sobre la base social
+  # más el rol chat_meta_schema (solo collMod, para actualizar el validador y el TTL),
+  # nunca el usuario raíz. Idempotente: en cada arranque crea el rol y el usuario o
+  # actualiza su contraseña y sus permisos (también con un volumen ya inicializado).
+  mongo-init:
+    image: mongo:8.0
+    container_name: tint-mongo-init
+    depends_on:
+      env-check:
+        condition: service_completed_successfully
+      mongodb:
+        condition: service_healthy
+    environment:
+      MONGO_ROOT_USER: ${MONGO_ROOT_USER:-tint}
+      MONGO_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD}
+      MONGO_APP_USER: ${MONGO_APP_USER:-social_core}
+      MONGO_APP_PASSWORD: ${MONGO_APP_PASSWORD}
+    entrypoint:
+      - /bin/sh
+      - -ec
+      - |
+        mongosh --quiet "mongodb://mongodb:27017/admin" \
+          --username "$$MONGO_ROOT_USER" --password "$$MONGO_ROOT_PASSWORD" --eval '
+          const social = db.getSiblingDB("social");
+          const user = process.env.MONGO_APP_USER;
+          const pwd = process.env.MONGO_APP_PASSWORD;
+          const schema = [{ resource: { db: "social", collection: "" }, actions: ["collMod"] }];
+          if (social.getRole("chat_meta_schema")) { social.updateRole("chat_meta_schema", { privileges: schema, roles: [] }); }
+          else { social.createRole({ role: "chat_meta_schema", privileges: schema, roles: [] }); }
+          const roles = [{ role: "readWrite", db: "social" }, { role: "chat_meta_schema", db: "social" }];
+          if (social.getUser(user)) { social.updateUser(user, { pwd, roles }); }
+          else { social.createUser({ user, pwd, roles }); }
+          print("usuario " + user + " listo (readWrite y chat_meta_schema sobre social)");
+        '
 
   # Transmisión en vivo (C++ SFU, ADR 0018): señalización WHIP/WHEP (/api/v1/stream/*) y medios
   # WebRTC en un solo puerto UDP (ICE UDP mux). STREAM_PUBLIC_IP es la IP que el navegador
