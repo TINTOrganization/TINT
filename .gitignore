@@ -15,3 +15,6 @@
 # Local agent tooling (no commitear)
 .agents/
 skills-lock.json
+
+# Python (pruebas del gateway y scripts)
+__pycache__/

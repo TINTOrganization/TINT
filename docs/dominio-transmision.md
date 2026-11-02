@@ -1,8 +1,8 @@
 # 📡 Dominio de Transmisión en vivo (stream-core)
 
 > El host transmite su pantalla (con cámara opcional y audio del PC) a la sala, y el servidor reenvía esa señal a cada espectador (SFU). Es un servicio propio en C++ (`services/stream-core`) sobre libdatachannel, con señalización WHIP/WHEP por el gateway.
-> Decisiones: [ADR 0018](adr/0018-stream-core-sfu-cpp-con-libdatachannel.md) (SFU en C++) · [ADR 0019](adr/0019-salas-live-y-cierre-room-closed.md) (salas `live` y `ROOM_CLOSED`).
-> Estado: **especificación** (SDD). Cada AC tiene pruebas con nombre fijo (§8). Los umbrales no se relajan.
+> Decisiones: [ADR 0019](adr/0018-stream-core-sfu-cpp-con-libdatachannel.md) (SFU en C++) · [ADR 0019](adr/0019-salas-live-y-cierre-room-closed.md) (salas `live` y `ROOM_CLOSED`).
+> Estado: **stream-core implementado** (señalización, SFU y ciclo de vida, con pruebas en verde). identity-api, sync, social, voz y web: **pruebas rojas escritas**. Spikes S1, S3 y S5 pendientes en navegador real. Los umbrales no se relajan.
 
 ## 1. Historias de usuario y criterios de aceptación
 
@@ -155,7 +155,7 @@ Todos los mensajes nuevos de esta feature siguen las mismas reglas. Un mensaje q
 {"type":"STREAM_ENDED","event_id":"<uuid>","room_id":"r1","reason":"grace_expired","occurred_at":"2026-11-01T18:00:00.000Z"}
 ```
 
-Los consumidores son **idempotentes**: un `ROOM_CLOSED` repetido no hace nada nuevo, y un `STREAM_STARTED` repetido con el mismo `started_at_ms` no reprograma trivias.
+Los consumidores son **idempotentes**: un `ROOM_CLOSED` repetido no hace nada nuevo, y un `STREAM_STARTED` repetido con el mismo `started_at_ms` no reprograma trivias. Al terminar la sala, stream-core borra `room:{id}:stream:started_at` antes de publicar `STREAM_ENDED`: un social-core que arranque después del fin no encuentra la clave y no rearma trivias.
 
 **identity-api** (`/api/v1`, Firebase ID token del dueño salvo la ruta interna)
 
@@ -209,13 +209,30 @@ En una sala `live`, una trivia programada con `at_ms` se abre en `started_at_ms 
 | Camino caliente | `atomic<shared_ptr<const vector>>` de viewers; un escritor por reescritor; capa deseada atómica | Sin mutex por paquete (TSan) |
 | Señalización | Decisión pura → Redis (500 ms) → `setRemoteDescription` → recolección ≤ 1.5 s | < 5 s (timeout de Caddy) |
 
+### 7.1 Medido (2026-11-01)
+| Medición | Resultado | Cómo |
+| :--- | :--- | :--- |
+| Camino caliente del SFU (demux + buffer NACK + reescritura por viewer), **sin SRTP** | **261 ns por paquete saliente** con 50 viewers; 4.3 µs por paquete del host repartido a 50. A la tasa real (~370 paquetes/s del host) es **0.16 % de un núcleo** | `stream_core_bench 50 20000` (Release, 4 vCPU, `loadtest/forward_bench.cpp`) |
+| Imagen de runtime | 148 MB | `docker images` |
+| Señalización contra el servicio real | `/healthz` 200; smoke 13/13 (401/403/404/410/415/400/201/DELETE) | `scripts/smoke.py` |
+| **S2: TTFF** con 50 viewers que entran a la vez (WHEP + ICE + DTLS + PLI → keyframe), keyframe pedido **al entrar** (`add_viewer`) | p50 1159 ms · p95 1163 ms · máx 1166 ms (< 2 s). Señalización WHEP p50 48 ms, p95 72 ms | `make load-stream` (`loadtest/loadbot.cpp`, 4 vCPU, contenedor de compose, 30 s) |
+| S2: TTFF con el keyframe pedido **al abrir la pista del viewer** en el SFU (descartado) | p50 1162 ms · p95 1165 ms: sin mejora | ídem |
+| **S2: TTFF** con el keyframe pedido **en el primer RTCP del viewer** (actual) | **p50 161–166 ms** en 3 de 4 corridas (1217 ms en la otra) · **p95 1222–1231 ms** · máx 1231 ms. Fases p50: Connected ~140 ms, primer RTP ~165 ms. Entre 12 y 15 de los 50 viewers (45 en la corrida mala) esperan la siguiente ventana | 1 corrida de 30 s + 3 de 8 s |
+| S2: errores y cupo | 50/50 viewers con vídeo, audio y DataChannel; 0 fallos; el viewer 51 recibe `409 ROOM_FULL` | ídem |
+| S2: CPU con SRTP y 50 PeerConnections reales | Contenedor: media 14.7 %, máx 18.4–22.9 % de **un** núcleo (`docker stats`). Hilo más cargado (mux UDP de libdatachannel): **4.4 %** (< 70 %, `top -H`). Memoria ~26 MiB | ídem |
+| S2: tráfico | Subida del host 3.8 Mbps constante (VP8 l/m/h 250k/800k/2.5M + Opus); egreso medio 89 Mbps con los viewers subiendo de `l` a `h` por REMB (régimen en `h` ≈ 130 Mbps) | ídem |
+
+Conclusión: ni el reenvío ni el cifrado SRTP son el cuello de botella con 50 viewers; queda el egreso de red. Con `STREAM_PUBLIC_IP=127.0.0.1` el UDP pasa por `docker-proxy`, cuya CPU no cuenta en el contenedor; en el humo de CI (`--network host`, 20 viewers) el contenedor usa ~4 %.
+
+**TTFF.** Con el keyframe pedido al entrar, el TTFF era casi constante (~1.16 s). Las fases (`loadbot` imprime Connected, primer RTP y primer keyframe) muestran la causa: el viewer queda Connected a los ~190 ms y recibe deltas a los ~200 ms, pero su primer keyframe llega a ~1.2 s. El keyframe pedido al entrar, o al abrir la pista del lado del SFU (se probó y no mejoró), sale antes de que el viewer tenga sus claves SRTP, porque el DTLS termina antes en el SFU. Ese keyframe se pierde, y el PLI siguiente del viewer cae en la ventana de 1 s de `PliThrottle`. Ahora el SFU pide el keyframe con el **primer RTCP del viewer** (sea RR o PLI), que prueba que ya descifra. Con eso el p50 baja a ~165 ms. El p95 sigue en ~1.2 s porque, con 50 entradas simultáneas, los viewers cuyas claves llegan después del keyframe compartido esperan a la siguiente ventana. Bajarlo exige cambiar `PliThrottle` (más keyframes del host) o reenviar el último keyframe guardado en el `NackBuffer` al viewer que entra. Ninguna de las dos se hizo: el p95 ya cumple la meta de < 2 s. Los bots fuerzan un keyframe solo cada 10 s, así que esa cadencia no influye en las cifras.
+
 ## 8. Plan de pruebas (TDD)
 
 Las pruebas unitarias (GoogleTest) cubren el código puro, sin libdatachannel: `request_decision`, `stream_state`, `room`, `layer_selector`, `rtp_rewriter`, `vp8`, `rtp_packet`, `rtcp`, `simulcast_demux`, `nack_buffer`, `pli_throttle`, `sdp_munge`, `ice_servers`, `internal_api`, `sync_listener`, `room_store`, `identity_client`, `config` y `server`. La lista de casos está en [stream-core/AGENTS.md](../services/stream-core/AGENTS.md#pruebas).
 
 Las demás pruebas:
 - **Integración:** `rtc_loopback_test` (dos peers de libdatachannel en el mismo proceso).
-- **Carga** (`make load-stream`): bots en C++, un publicador VP8 sintético y 50 viewers. Exige TTFF p95 < 2 s, 0 fallos, `409` para el viewer 51 y una subida del host constante.
+- **Carga** (`make load-stream`, `loadtest/run.sh`): bots en C++ con libdatachannel, un publicador VP8 simulcast sintético (3 `rid`, keyframe al recibir PLI) y 50 viewers WHEP que piden keyframe y envían REMB. Exige TTFF p95 < 2 s, 0 fallos, `409` para el viewer 51 y el hilo más cargado < 70 %. En CI, `stream-load-smoke` lo corre con 20 viewers durante 15 s.
 - **E2E** (`make e2e-stream`, local): Chromium como host y dos viewers. Mide glass-to-glass p95 < 500 ms y prueba el modo `relay`, la gracia y el aviso de fin.
 
 ## 9. Fase 0: spikes
@@ -223,7 +240,7 @@ Las demás pruebas:
 | Spike | Se sigue si… | Si no, la alternativa | Dónde corre |
 | :--- | :--- | :--- | :--- |
 | S1 Simulcast: Chrome y Firefox publican 3 `rid` a libdatachannel | Se aprenden 3 SSRC y las 3 capas están activas en < 10 s | transport-cc o 2 capas | Navegador real |
-| S2 Fan-out: 1 publicador + 50 viewers bot en un puerto mux, con 4 vCPU | Hilo mux < 70 %, TTFF p95 < 2 s, 0 errores SRTP | Rango de puertos sin mux | Docker (CI/local) |
+| S2 Fan-out: 1 publicador + 50 viewers bot en un puerto mux, con 4 vCPU | Hilo mux < 70 %, TTFF p95 < 2 s, 0 errores SRTP | Rango de puertos sin mux | Docker (CI/local). **Pasó** (2026-11-01): ver §7.1 |
 | S3 Docker: bridge + UDP publicado + reescritura del candidato | Conexión directa desde la LAN; `relay` por coturn | `network_mode: host` | Navegador real |
 | S4 Build en `debian:trixie-slim` y `ubuntu-24.04` | Release, ASan y TSan enlazan | Imagen dev precompilada | Docker |
 | S5 Audio del PC: Chrome/Edge/Firefox × Windows/Linux/macOS, pantalla vs pestaña | Matriz documentada; música estéreo sin eco en Chrome+Windows y en pestaña de Chrome | Solo audio de pestaña + aviso | Equipos del equipo |
