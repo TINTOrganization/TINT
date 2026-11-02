@@ -253,7 +253,7 @@ describe('POST /rooms/:id/media/uploads/:videoId/complete', () => {
     expect(res.body).toEqual({ mediaId: VID, mediaKey: pending.storageKey, status: 'processing' });
     expect(stat).toHaveBeenCalledWith(pending.storageKey);
     expect(transitionStatus).toHaveBeenCalledWith(VID, 'pending', 'processing');
-    expect(xadd).toHaveBeenCalledWith('media:uploads', '*', 'video_id', VID);
+    expect(xadd).toHaveBeenCalledWith('media:uploads', 'MAXLEN', '~', 10_000, '*', 'video_id', VID);
     expect(setMedia).toHaveBeenCalledWith('room-1', { mediaId: VID, mediaKey: pending.storageKey });
   });
 

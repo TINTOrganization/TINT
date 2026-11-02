@@ -45,7 +45,7 @@ Documentación de referencia: [README del servicio (cómo funciona por dentro)](
 | `guest_sessions` | PostgreSQL | `jti` (PK), `room_id`, `sub` (`guest:<uuid>`), `nick` (≤64), `joined_at`, `expires_at`, `revoked`, `device_id` (uuid nullable, migración `0007`) |
 | `videos` | PostgreSQL | `id` (= `video_id`), `room_id`, `uploaded_by`, `storage_key` (`incoming/{id}/original.*` al reservar; el worker la cambia a `{id}/source.*` al publicar), `content_type`, `size_bytes`, `duration_ms`, `status` (`pending` → `processing` al confirmar, en identity-api → `ready`/`failed`, en media-worker), `renditions` (jsonb, `[]` por defecto: alturas publicadas por media-worker en `{id}/{h}p.mp4`, migración `0006`), `failure_reason` (varchar(40), nullable: código del motivo cuando `status = failed`, lo escribe media-worker; `unsupported_format` · `unreadable` · `invalid_duration` · `missing_file` · `processing_failed`; migración `0008`), `title` (≤255, nullable: `filename` sin extensión al reservar, migración `0007`) |
 | `token:revoked:{jti}` | Redis String | Marca de revocación con `EXAT` = `exp` del token (la lee sync-core) |
-| `media:uploads` | Redis Stream | `XADD * video_id <id>` al confirmar una subida (lo consume media-worker, grupo `media-workers`) |
+| `media:uploads` | Redis Stream | `XADD MAXLEN ~ 10000 * video_id <id>` al confirmar una subida (lo consume media-worker, grupo `media-workers`). El tope evita que los eventos ya confirmados (`XACK`) se acumulen para siempre |
 | `analytics:events` | Redis Stream | `XADD MAXLEN ~ 100000 *` de `user_login`, `room_created`, `room_closed` e `invitation_claimed` (lo consume analytics). Ver [Eventos de analítica](#eventos-de-analítica) |
 | `room:{id}:sync` | Redis Pub/Sub | Solo se publica `REVOKED{jti}` |
 
@@ -59,7 +59,7 @@ Prefijo `/api/v1`. Los errores siempre tienen la forma `{ "error": "<texto>" }`;
 | `GET /healthz` | — | Estado del servicio |
 | `GET /internal/auth/check` | Gateway | Verifica Firebase RS256 o tokens propios HS256, comprueba revocación y devuelve 204 con headers `X-User-*`; responde 401 si el token no es válido |
 | `POST /auth/verify` | Firebase | Verifica el token y crea o recupera el usuario |
-| `POST /rooms` | Firebase | Crea sala (`title` 1–150) + invitación inicial |
+| `POST /rooms` | Firebase | Crea sala (`title` 1–150) + invitación inicial **en una transacción** (`rooms.create.ts`): si la invitación falla no queda la sala |
 | `POST /events/start` | Firebase | Orquesta en orden la creación de identidad, la inicialización de sync/social/analytics y devuelve room, invitación y sesiones; los fallos de dependencias responden 503 y compensan lo ya iniciado |
 | `GET /rooms` | Firebase | Salas activas del usuario, con su invitación vigente |
 | `GET /rooms/:id` · `PATCH /rooms/:id` · `DELETE /rooms/:id` | Firebase + dueño | Detalle, renombrar (`{ title }` ≤ 150) y borrado lógico. El borrado revoca las sesiones de invitado activas (`token:revoked:{jti}` + `REVOKED`); si Redis falla responde 503 y repetir el `DELETE` sobre la sala ya borrada re-publica las pendientes (410 cuando termina) |
@@ -139,3 +139,5 @@ npx drizzle-kit migrate         # aplica migrations/ en DATABASE_URL
 # con WAIT_WORKER=1 espera además a que media-worker deje el vídeo en ready.
 npm run test:integration
 ```
+
+`tests/integration/data-stores.int.test.ts` comprueba los almacenes con la infraestructura real: la sala se guarda con su dueño y su invitación, la transacción revierte, las migraciones se pueden aplicar dos veces (en una base temporal), una marca de Redis caduca, el cliente de Redis se reconecta tras un corte y MinIO deniega el objeto privado sin firma válida.

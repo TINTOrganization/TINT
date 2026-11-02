@@ -308,7 +308,7 @@ sequenceDiagram
         API-->>H: 413 (el vídeo sigue en pending)
     end
     API->>PG: UPDATE videos SET status processing WHERE status = pending
-    API->>R: XADD media:uploads * video_id {id}
+    API->>R: XADD media:uploads MAXLEN ~ 10000 * video_id {id}
     alt Redis falla
         API->>PG: UPDATE videos SET status pending
         API-->>H: 503
@@ -530,7 +530,7 @@ Solo los vídeos en `processing` o `ready` aparecen en la biblioteca y se pueden
 | :--- | :--- | :--- | :--- |
 | `token:revoked:{jti}` | String con `EXAT` = `exp` del token | identity-api (retirar, bloquear, borrar sala) | identity-api (`requireRoomGuest`), sync-core, social-core, analytics |
 | `room:{id}:sync` | Pub/Sub | identity-api publica solo `REVOKED` (el resto es de sync-core) | sync-core, social-core |
-| `media:uploads` | Stream | identity-api: `XADD * video_id <id>` | media-worker (grupo `media-workers`) |
+| `media:uploads` | Stream | identity-api: `XADD MAXLEN ~ 10000 * video_id <id>` | media-worker (grupo `media-workers`) |
 | `analytics:events` | Stream, `MAXLEN ~ 100000` | identity-api: `user_login`, `room_created`, `room_closed`, `invitation_claimed` | analytics (grupo `analytics-workers`) |
 | `incoming/{id}/original.*` | Objeto MinIO | Navegador (PUT firmado) | identity-api (`HEAD`/`DELETE`), media-worker |
 | `{id}/source.mp4`, `{id}/ambilight.json`, `{id}/{720,360}p.mp4` | Objetos MinIO | media-worker | Navegador (GET firmado por identity-api) |
