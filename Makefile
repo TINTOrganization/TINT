@@ -5,7 +5,7 @@ COVERAGE_MIN := 85
 NODE_SERVICES := services/identity-api
 CPP_SERVICES := services/voice-core
 
-.PHONY: up down test-all test-go test-python test-web test-node test-cpp
+.PHONY: up down test-all test-go test-python test-web test-node test-cpp load-voice e2e-voice
 
 up:
 	docker compose up -d
@@ -47,3 +47,13 @@ test-cpp:
 		 cmake --build build-cov && ctest --test-dir build-cov --output-on-failure && \
 		 gcovr --root . --filter src/ --exclude src/main.cpp build-cov --fail-under-line $(COVERAGE_MIN)) || exit 1; \
 	done
+
+# Carga de la señalización de voz (k6 en Docker contra voice-core en :8085).
+load-voice:
+	docker run --rm --network host -v $(PWD)/services/voice-core/loadtest:/lt:ro grafana/k6:0.54.0 run \
+	  -e BASE_URL=ws://localhost:8085 -e JWT_SECRET=$${JWT_SECRET:-$$(grep -E '^JWT_SECRET=' .env 2>/dev/null | cut -d= -f2-)} \
+	  -e VUS=$${VUS:-50} -e DURATION=$${DURATION:-20s} /lt/voice.js
+
+# E2E de la voz con dos Chromium reales (ruta libre y solo TURN). Requiere la web, voice-core y coturn.
+e2e-voice:
+	services/voice-core/e2e/run.sh

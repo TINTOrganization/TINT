@@ -10,8 +10,8 @@ reproduciendo.
 Cada resultado terminal (`ready` o `failed`) publica `media_processed` en `analytics:events` con el
 `publish` inyectado (ver `events.py`). Es best-effort: un fallo al publicar solo se registra y no
 cambia el resultado ni impide el `XACK` de `media:uploads`. Los eventos que no procesan nada
-(id inválido, fila inexistente o borrada, duplicado ya publicado) y los fallos de infraestructura
-que dejan el mensaje pendiente no publican.
+(id inválido, fila inexistente o borrada, duplicado ya publicado) y los intentos fallidos que se
+reencolan no publican; al agotar los reintentos `mark_exhausted` publica `failed`.
 """
 
 from __future__ import annotations
@@ -31,7 +31,7 @@ from media_worker.pipeline import (
     process_video,
     validate_extension,
 )
-from media_worker.probe import VideoStatus
+from media_worker.probe import FailureReason, VideoStatus
 from media_worker.storage import BlobNotFoundError
 
 logger = logging.getLogger(__name__)
@@ -102,13 +102,33 @@ def handle_upload(
     return status
 
 
+def mark_exhausted(video_id: str, repo, publish: Publisher | None = None) -> None:
+    """Marca `failed` (`processing_failed`) un vídeo cuyos reintentos se agotaron.
+
+    No toca ids que no son UUID, filas inexistentes ni vídeos ya publicados: un evento duplicado
+    de un vídeo `ready` no puede estropearlo. Los errores de SQL se propagan para que el evento
+    quede pendiente.
+    """
+    if not _is_uuid(video_id):
+        return
+    row = repo.get_video(video_id)
+    if row is None:
+        return
+    if row.status == VideoStatus.READY.value and not row.storage_key.startswith(INCOMING_PREFIX):
+        return
+    logger.warning("vídeo %s: reintentos agotados; se marca failed", video_id)
+    repo.mark_failed(video_id, FailureReason.PROCESSING_FAILED)
+    if publish is not None:
+        _publish(publish, video_id, VideoStatus.FAILED, None, 0, row.uploader_sub)
+
+
 def _process_upload(video_id: str, key: str, repo, blobs, process) -> VideoStatus | None:
     try:
         validate_extension(key)
     except UnsupportedFormatError as exc:
         # Reintentar no cambia la extensión: se marca failed sin descargar el archivo.
         logger.warning("vídeo %s rechazado: %s", video_id, exc)
-        repo.mark_failed(video_id)
+        repo.mark_failed(video_id, FailureReason.UNSUPPORTED_FORMAT)
         return VideoStatus.FAILED
 
     with tempfile.TemporaryDirectory(prefix="tint-media-") as workdir:
@@ -117,7 +137,7 @@ def _process_upload(video_id: str, key: str, repo, blobs, process) -> VideoStatu
             blobs.download(key, local)
         except BlobNotFoundError:
             logger.warning("vídeo %s: no está %s en el bucket; se marca failed", video_id, key)
-            repo.mark_failed(video_id)
+            repo.mark_failed(video_id, FailureReason.MISSING_FILE)
             return VideoStatus.FAILED
         try:
             return process(video_id, local, repo, blobs)

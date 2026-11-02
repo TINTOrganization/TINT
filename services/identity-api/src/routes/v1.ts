@@ -1,4 +1,4 @@
-import { Router } from 'express';
+import { Router, type Response } from 'express';
 import { z } from 'zod';
 import { env } from '../config/env.js';
 import { validate } from '../middlewares/validate.js';
@@ -21,6 +21,8 @@ import {
   transitionStatus as transitionVideoStatus,
   listByUploader as listVideosByUploader,
   updateTitle as updateVideoTitle,
+  removePendingById as removePendingVideo,
+  removeStalePendingByRoom as removeStalePendingVideos,
   type Video,
 } from '../modules/videos/videos.repo.js';
 import {
@@ -350,13 +352,61 @@ const startUploadSchema = z.object({
   sizeBytes: z.number().int().positive(),
 });
 
+/**
+ * Motivos de fallo que media-worker guarda en `videos.failure_reason` (contrato `videos`). Códigos
+ * estables y sin datos personales: la web los traduce a un mensaje. Cualquier otro valor se ignora.
+ */
+const FAILURE_REASONS = ['unsupported_format', 'unreadable', 'invalid_duration', 'missing_file', 'processing_failed'] as const;
+
+function failureReasonOf(video: { status: string; failureReason?: string | null } | null | undefined) {
+  const reason = video?.status === 'failed' ? video.failureReason : null;
+  return (FAILURE_REASONS as readonly string[]).includes(reason ?? '') ? reason : null;
+}
+
+/** Margen sobre el TTL de la URL PUT antes de dar por abandonada una subida `pending`. */
+const STALE_UPLOAD_GRACE_MS = 60 * 60 * 1000;
+
+const tooLarge = (res: Response) =>
+  res.status(413).json({ error: 'File too large', maxUploadBytes: env.MAX_UPLOAD_BYTES });
+
+/** Borra el objeto de `incoming/` de una subida descartada; un fallo se registra y no se propaga. */
+async function discardUploadObject(storageKey: string) {
+  try {
+    await getMediaStore().remove(storageKey);
+  } catch (err) {
+    console.error('[uploads] no se pudo borrar el objeto de una subida descartada:', (err as Error).message);
+  }
+}
+
+/**
+ * Limpieza perezosa al reservar: las subidas `pending` de la sala cuya URL caducó hace más de
+ * una hora (interrumpidas o abandonadas) se borran junto con su objeto. Sin proceso programado
+ * y idempotente entre réplicas; un fallo no impide reservar la subida nueva.
+ */
+async function cleanupStaleUploads(roomId: string) {
+  try {
+    const cutoff = new Date(Date.now() - (env.UPLOAD_URL_TTL_SECONDS * 1000 + STALE_UPLOAD_GRACE_MS));
+    const stale = await removeStalePendingVideos(roomId, cutoff);
+    await Promise.all(stale.map((v) => discardUploadObject(v.storageKey)));
+  } catch (err) {
+    console.error('[uploads] no se pudieron limpiar las subidas abandonadas:', (err as Error).message);
+  }
+}
+
+// Tamaño máximo de subida: identity-api es la única fuente de verdad (la web lo muestra y
+// pre-valida el archivo, pero la decisión sigue siendo del servidor).
+router.get('/uploads/limits', requireAuthHost, (_req, res) => {
+  res.json({ maxUploadBytes: env.MAX_UPLOAD_BYTES });
+});
+
 // 1) Reserva el vídeo y entrega una URL PUT firmada: el archivo va directo del
 //    navegador a MinIO, sin pasar por identity-api.
 router.post('/rooms/:id/media/uploads', requireAuthHost, requireRoomOwner, validate(startUploadSchema), requireActiveRoom, async (req, res) => {
   const { filename, contentType, sizeBytes } = req.body;
   if (sizeBytes > env.MAX_UPLOAD_BYTES) {
-    return res.status(413).json({ error: 'File too large' });
+    return tooLarge(res);
   }
+  await cleanupStaleUploads(req.room!.id);
   const videoId = uuidv4();
   // Staging: el original va a incoming/ y el media-worker publica {id}/source.<ext>
   // solo si el vídeo es válido (actualiza videos.storage_key al marcarlo ready).
@@ -380,6 +430,31 @@ router.post('/rooms/:id/media/uploads', requireAuthHost, requireRoomOwner, valid
     expiresAt: new Date(Date.now() + ttl * 1000).toISOString(),
     headers: { 'Content-Type': contentType },
   });
+});
+
+// Cancela una subida interrumpida o abandonada por el cliente: borra la fila `pending` y
+// el objeto de incoming/ (si llegó algo), para que el reintento empiece limpio. Idempotente:
+// si la fila ya no existe (o es de otra sala) no hay nada que cancelar → 204. Una subida ya
+// confirmada (processing/ready) no se cancela: 409.
+router.delete('/rooms/:id/media/uploads/:videoId', requireAuthHost, requireRoomOwner, requireActiveRoom, async (req, res) => {
+  const roomId = req.room!.id;
+  const videoId = paramId(req.params.videoId);
+  if (!UUID_RE.test(videoId)) {
+    return res.status(404).json({ error: 'Not found' });
+  }
+  const video = await findVideo(videoId);
+  if (!video || video.roomId !== roomId) {
+    return res.status(204).end();
+  }
+  if (video.status !== 'pending') {
+    return res.status(409).json({ error: 'Upload already confirmed' });
+  }
+  const removed = await removePendingVideo(video.id);
+  if (!removed) {
+    return res.status(409).json({ error: 'Upload already confirmed' });
+  }
+  await discardUploadObject(removed.storageKey);
+  res.status(204).end();
 });
 
 // 2) Confirma la subida: comprueba el objeto, encola el procesamiento
@@ -412,7 +487,7 @@ router.post('/rooms/:id/media/uploads/:videoId/complete', requireAuthHost, requi
     } catch (err) {
       console.error('[uploads] no se pudo borrar un objeto que supera el tamaño:', (err as Error).message);
     }
-    return res.status(413).json({ error: 'File too large' });
+    return tooLarge(res);
   }
   // Transición condicional: de dos confirmaciones concurrentes solo una encola.
   const queued = await transitionVideoStatus(video.id, 'pending', 'processing');
@@ -442,7 +517,7 @@ type PlaybackQuality = { id: 'source' | `${(typeof PLAYBACK_RENDITION_HEIGHTS)[n
 router.get('/rooms/:id/playback', requireRoomHostOrGuest, requireActiveRoom, async (req, res) => {
   const room = req.room!;
   if (!room.mediaId || !room.mediaKey) {
-    return res.json({ mediaId: null, url: null, expiresAt: null, status: null, ambilightUrl: null, qualities: [] });
+    return res.json({ mediaId: null, url: null, expiresAt: null, status: null, failureReason: null, ambilightUrl: null, qualities: [] });
   }
   // Vídeos subidos por la API tienen fila en `videos` (estado del media-worker);
   // los asignados por clave manual no (status null). Mientras se procesa se
@@ -450,7 +525,15 @@ router.get('/rooms/:id/playback', requireRoomHostOrGuest, requireActiveRoom, asy
   // (storage_key la actualiza el worker). Un vídeo failed no se sirve.
   const video = await findVideo(room.mediaId);
   if (video?.status === 'failed') {
-    return res.json({ mediaId: room.mediaId, url: null, expiresAt: null, status: 'failed', ambilightUrl: null, qualities: [] });
+    return res.json({
+      mediaId: room.mediaId,
+      url: null,
+      expiresAt: null,
+      status: 'failed',
+      failureReason: failureReasonOf(video),
+      ambilightUrl: null,
+      qualities: [],
+    });
   }
   const ttl = env.PLAYBACK_URL_TTL_SECONDS;
   const expiresAt = new Date(Date.now() + ttl * 1000);
@@ -471,6 +554,7 @@ router.get('/rooms/:id/playback', requireRoomHostOrGuest, requireActiveRoom, asy
     url,
     expiresAt: expiresAt.toISOString(),
     status: video?.status ?? null,
+    failureReason: null,
     ambilightUrl,
     qualities,
   });

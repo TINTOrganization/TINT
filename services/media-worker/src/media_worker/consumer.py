@@ -22,8 +22,16 @@ STREAM_KEY = "media:uploads"
 CONSUMER_GROUP = "media-workers"
 DEFAULT_BLOCK_MS = 5000
 DEFAULT_COUNT = 10
-# Espera tras un fallo de infraestructura antes de reintentar los pendientes.
+# Espera tras un fallo antes de seguir, para no martillar una dependencia caída.
 RETRY_DELAY_S = 5.0
+# Intentos totales por evento (el campo `attempt` empieza en 1) antes de darlo por fallido.
+MAX_ATTEMPTS = 3
+# Un evento entregado a otro worker que lleva este tiempo sin confirmarse se da por huérfano.
+# Debe superar con holgura lo que tarda el vídeo más largo: reclamar uno que sigue en curso
+# solo lo reprocesa (es idempotente), pero desperdicia un FFmpeg.
+CLAIM_IDLE_MS = 15 * 60 * 1000
+# Cada cuánto, con la cola vacía, se buscan eventos huérfanos.
+CLAIM_INTERVAL_S = 60.0
 
 
 def parse_video_id(fields: dict | None) -> str | None:
@@ -34,12 +42,26 @@ def parse_video_id(fields: dict | None) -> str | None:
     return None
 
 
+def parse_attempt(fields: dict | None) -> int:
+    """Número de intento del evento (1 si falta o no es un entero positivo)."""
+    try:
+        attempt = int((fields or {}).get("attempt", 1))
+    except (TypeError, ValueError):
+        return 1
+    return attempt if attempt >= 1 else 1
+
+
 class StreamConsumer:
     """Lee `media:uploads` con un grupo de consumidores y confirma cada evento tras procesarlo.
 
-    Si el handler lanza una excepción (p. ej. SQL o S3 caídos) el evento no se confirma: queda
-    pendiente, `run` espera `RETRY_DELAY_S` y lo reintenta (`recover_pending`) sin tumbar el
-    worker. Al reiniciar también se reprocesan los pendientes.
+    Si el handler lanza una excepción (p. ej. SQL o S3 caídos) el evento se confirma y se vuelve
+    a publicar al final del stream con `attempt + 1`, así un vídeo que siempre falla no bloquea
+    a los demás y el contador sobrevive a un reinicio. Al agotar `max_attempts` se llama a
+    `on_exhausted` (que lo marca `failed`) y se confirma. Si Redis o `on_exhausted` fallan, el
+    evento queda pendiente y `run` lo reintenta (`recover_pending`) sin tumbar el worker.
+
+    Los eventos pendientes de un worker que murió (otro nombre de consumidor) se reclaman con
+    `XAUTOCLAIM` pasado `claim_idle_ms` (`claim_stale`), al arrancar y cada `CLAIM_INTERVAL_S`.
     """
 
     def __init__(
@@ -52,6 +74,10 @@ class StreamConsumer:
         block_ms: int = DEFAULT_BLOCK_MS,
         count: int = DEFAULT_COUNT,
         sleep: Callable[[float], object] = time.sleep,
+        on_exhausted: Callable[[str], object] | None = None,
+        max_attempts: int = MAX_ATTEMPTS,
+        claim_idle_ms: int = CLAIM_IDLE_MS,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self.redis = redis
         self.handler = handler
@@ -61,6 +87,10 @@ class StreamConsumer:
         self.block_ms = block_ms
         self.count = count
         self.sleep = sleep
+        self.on_exhausted = on_exhausted
+        self.max_attempts = max_attempts
+        self.claim_idle_ms = claim_idle_ms
+        self.clock = clock
 
     def ensure_group(self) -> None:
         """Crea el grupo (y el stream) desde el inicio; ignora `BUSYGROUP` si ya existe."""
@@ -90,6 +120,26 @@ class StreamConsumer:
             total += handled
         return total
 
+    def claim_stale(self) -> int:
+        """Reprocesa los eventos que otro worker recibió y dejó sin confirmar `claim_idle_ms`."""
+        total = 0
+        cursor = "0-0"
+        while True:
+            # Redis 7 devuelve (siguiente_id, mensajes, borrados); antes solo los dos primeros.
+            cursor, messages = self.redis.xautoclaim(
+                self.stream,
+                self.group,
+                self.consumer,
+                min_idle_time=self.claim_idle_ms,
+                start_id=cursor,
+                count=self.count,
+            )[:2]
+            for message_id, fields in messages:
+                self._handle(message_id, fields)
+            total += len(messages)
+            if cursor in ("0-0", b"0-0"):
+                return total
+
     def run(self, stop: threading.Event) -> None:
         self.ensure_group()
         if stop.is_set():
@@ -97,6 +147,8 @@ class StreamConsumer:
         recovered = self.recover_pending()
         if recovered:
             logger.info("reprocesados %d eventos pendientes", recovered)
+        self._sweep_stale()
+        last_sweep = self.clock()
         retry = False
         while not stop.is_set():
             try:
@@ -107,16 +159,57 @@ class StreamConsumer:
                     retry = False
                 else:
                     self.poll()
+                    if self.clock() - last_sweep >= CLAIM_INTERVAL_S:
+                        self._sweep_stale()
+                        last_sweep = self.clock()
             except Exception:
                 logger.exception(
                     "fallo procesando un evento; se reintenta en %.0f s", RETRY_DELAY_S
                 )
                 retry = True
 
+    def _sweep_stale(self) -> None:
+        claimed = self.claim_stale()
+        if claimed:
+            logger.info("reclamados %d eventos de otros workers", claimed)
+
     def _handle(self, message_id: str, fields: dict | None) -> None:
         video_id = parse_video_id(fields)
         if video_id is None:
             logger.warning("evento %s inválido, se descarta: %r", message_id, fields)
         else:
-            self.handler(video_id)
+            try:
+                self.handler(video_id)
+            except Exception as exc:
+                self._failed(message_id, video_id, parse_attempt(fields), exc)
+                return
+        self.redis.xack(self.stream, self.group, message_id)
+
+    def _failed(self, message_id: str, video_id: str, attempt: int, exc: Exception) -> None:
+        reason = f"{type(exc).__name__}: {exc}"
+        if attempt < self.max_attempts:
+            logger.warning(
+                "vídeo %s: falló el intento %d/%d (%s); se reintenta en %.0f s",
+                video_id,
+                attempt,
+                self.max_attempts,
+                reason,
+                RETRY_DELAY_S,
+                exc_info=exc,
+            )
+            # Primero se reencola y después se confirma: si Redis cae entre ambos, el evento se
+            # duplica (el pipeline es idempotente) en lugar de perderse.
+            self.redis.xadd(self.stream, {"video_id": video_id, "attempt": str(attempt + 1)})
+            self.redis.xack(self.stream, self.group, message_id)
+            self.sleep(RETRY_DELAY_S)
+            return
+        logger.error(
+            "vídeo %s: reintentos agotados tras %d intentos (%s); se marca failed",
+            video_id,
+            attempt,
+            reason,
+            exc_info=exc,
+        )
+        if self.on_exhausted is not None:
+            self.on_exhausted(video_id)
         self.redis.xack(self.stream, self.group, message_id)

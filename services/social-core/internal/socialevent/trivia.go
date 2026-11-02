@@ -7,6 +7,7 @@ import "errors"
 // publica el resultado.
 const (
 	TypeTriviaSchedule      Type = "trivia_schedule"
+	TypeTriviaUpdate        Type = "trivia_update"
 	TypeTriviaDelete        Type = "trivia_delete"
 	TypeTriviaList          Type = "trivia_list"
 	TypeTriviaScheduleState Type = "trivia_schedule_state"
@@ -14,6 +15,7 @@ const (
 	TypeTriviaAnswer        Type = "trivia_answer"
 	TypeTriviaAck           Type = "trivia_ack"
 	TypeTriviaResult        Type = "trivia_result"
+	TypeTriviaLeaderboard   Type = "trivia_leaderboard"
 )
 
 // Límites de producto de una trivia.
@@ -97,6 +99,45 @@ func (m TriviaSchedule) Normalized() (string, []string, int) {
 	}
 	return trim(m.Question), options, window
 }
+
+// TriviaUpdate reemplaza una pregunta que aún no salió (misma forma que
+// trivia_schedule más el trivia_id de la pregunta a editar).
+type TriviaUpdate struct {
+	EventID       string   `json:"event_id"`
+	Type          Type     `json:"type"`
+	RoomID        string   `json:"room_id"`
+	TriviaID      string   `json:"trivia_id"`
+	AtMS          *int64   `json:"at_ms"`
+	Question      string   `json:"question"`
+	Options       []string `json:"options"`
+	Correct       *int     `json:"correct"`
+	AnswerWindowS int      `json:"answer_window_s"`
+}
+
+// asSchedule reutiliza las reglas de trivia_schedule.
+func (m TriviaUpdate) asSchedule() TriviaSchedule {
+	return TriviaSchedule{
+		EventID: m.EventID, Type: TypeTriviaSchedule, RoomID: m.RoomID, AtMS: m.AtMS,
+		Question: m.Question, Options: m.Options, Correct: m.Correct, AnswerWindowS: m.AnswerWindowS,
+	}
+}
+
+// Validate verifica un trivia_update.
+func (m TriviaUpdate) Validate() error {
+	if m.EventID == "" {
+		return ErrMissingEventID
+	}
+	if m.Type != TypeTriviaUpdate {
+		return ErrUnsupportedType
+	}
+	if m.TriviaID == "" {
+		return ErrMissingTrivia
+	}
+	return m.asSchedule().Validate()
+}
+
+// Normalized devuelve pregunta y opciones recortadas y la ventana (0 = 20 s).
+func (m TriviaUpdate) Normalized() (string, []string, int) { return m.asSchedule().Normalized() }
 
 // TriviaDelete borra una pregunta que aún no salió.
 type TriviaDelete struct {
@@ -228,5 +269,18 @@ type TriviaResult struct {
 	Top         []TriviaScore `json:"top"`
 	Leaderboard []TriviaScore `json:"leaderboard"`
 	MyScore     *int          `json:"my_score,omitempty"`
+	MyTotal     *int          `json:"my_total,omitempty"`
+	MyRank      *int          `json:"my_rank,omitempty"`
+}
+
+// TriviaLeaderboard es el ranking acumulado de la sala que recibe cada
+// cliente al entrar (persiste en Redis, así que sobrevive a reinicios).
+// my_rank y my_total se agregan por cliente; sin puntos no hay my_rank.
+type TriviaLeaderboard struct {
+	EventID     string        `json:"event_id"`
+	Type        Type          `json:"type"`
+	RoomID      string        `json:"room_id"`
+	Leaderboard []TriviaScore `json:"leaderboard"`
+	MyRank      *int          `json:"my_rank,omitempty"`
 	MyTotal     *int          `json:"my_total,omitempty"`
 }

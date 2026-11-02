@@ -48,6 +48,36 @@ export function formatDuration(ms: number | null | undefined): string {
   return `${s} s`;
 }
 
+/**
+ * Mezcla la lista recién descargada con la que ya se muestra, para refrescar sin recargar las
+ * miniaturas: cada `GET /videos` firma URLs nuevas, y si cambiara el `src` de cada `<video>` el
+ * navegador volvería a cargarlos (parpadeo y salto de layout cada 5 s). Un vídeo conserva su
+ * `previewUrl` mientras su estado no cambie; al pasar a `ready` se adopta la nueva (la 360p). Si
+ * no cambió nada más, devuelve la lista anterior (misma referencia) y no se vuelve a pintar.
+ */
+export function mergeLibrary(prev: LibraryVideo[] | null, next: LibraryVideo[]): LibraryVideo[] {
+  if (!prev) return next;
+  const before = new Map(prev.map((v) => [v.id, v]));
+  const merged = next.map((v) => {
+    const old = before.get(v.id);
+    return old && old.status === v.status && old.previewUrl && v.previewUrl ? { ...v, previewUrl: old.previewUrl } : v;
+  });
+  const same =
+    merged.length === prev.length &&
+    merged.every((v, i) => {
+      const old = prev[i];
+      return (
+        v.id === old.id &&
+        v.title === old.title &&
+        v.durationMs === old.durationMs &&
+        v.status === old.status &&
+        v.createdAt === old.createdAt &&
+        v.previewUrl === old.previewUrl
+      );
+    });
+  return same ? prev : merged;
+}
+
 export function videoStatusLabel(status: string): string {
   return status === 'ready' ? 'Listo' : 'Preparando…';
 }

@@ -8,9 +8,11 @@ import pytest
 from media_worker.probe import (
     DEFAULT_TIMEOUT_S,
     FFPROBE_CMD,
+    FailureReason,
     ProbeError,
     VideoStatus,
     inspect_media,
+    inspect_media_reason,
     inspect_status,
     parse_duration_ms,
     parse_height,
@@ -168,3 +170,47 @@ def test_inspect_media_ready_with_height():
 
 def test_inspect_media_failed_on_corrupt_file():
     assert inspect_media("bad.mp4", fake_run(returncode=1)) == (VideoStatus.FAILED, None, None)
+
+
+def test_failure_reason_codes_are_the_contract_with_identity_api_and_the_web():
+    assert {r.name: r.value for r in FailureReason} == {
+        "UNSUPPORTED_FORMAT": "unsupported_format",
+        "UNREADABLE": "unreadable",
+        "INVALID_DURATION": "invalid_duration",
+        "MISSING_FILE": "missing_file",
+        "PROCESSING_FAILED": "processing_failed",
+    }
+
+
+@pytest.mark.parametrize(
+    ("runner", "reason"),
+    [
+        (fake_run(returncode=1, stderr="moov atom not found"), FailureReason.UNREADABLE),
+        (fake_run(stdout="no es json"), FailureReason.UNREADABLE),
+        (fake_run(stdout='{"streams": []}'), FailureReason.UNREADABLE),
+        (
+            Mock(side_effect=subprocess.TimeoutExpired(cmd="ffprobe", timeout=30)),
+            FailureReason.UNREADABLE,
+        ),
+        (fake_run(stdout='{"format": {"duration": "0"}}'), FailureReason.INVALID_DURATION),
+        (fake_run(stdout='{"format": {"duration": "-3"}}'), FailureReason.INVALID_DURATION),
+        (fake_run(stdout='{"format": {"duration": "nan"}}'), FailureReason.INVALID_DURATION),
+        (Mock(side_effect=FileNotFoundError("ffprobe")), FailureReason.PROCESSING_FAILED),
+    ],
+)
+def test_inspect_media_reason_tells_why_the_video_failed(runner, reason):
+    assert inspect_media_reason("x.mp4", runner) == (VideoStatus.FAILED, None, None, reason)
+
+
+def test_inspect_media_reason_has_no_reason_when_the_video_is_valid():
+    assert inspect_media_reason("ok.mp4", fake_run(stdout=PROBE_1080)) == (
+        VideoStatus.READY,
+        2500,
+        1080,
+        None,
+    )
+
+
+def test_probe_error_carries_its_reason_and_defaults_to_unreadable():
+    assert ProbeError("x").reason is FailureReason.UNREADABLE
+    assert ProbeError("x", FailureReason.INVALID_DURATION).reason is FailureReason.INVALID_DURATION

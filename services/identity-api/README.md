@@ -289,8 +289,9 @@ sequenceDiagram
 
     H->>API: POST /rooms/:id/media/uploads { filename, contentType, sizeBytes }
     alt sizeBytes > MAX_UPLOAD_BYTES
-        API-->>H: 413 File too large
+        API-->>H: 413 File too large { maxUploadBytes }
     end
+    API->>PG: DELETE videos pending abandonados de la sala (> TTL + 1 h) + objeto de incoming/
     API->>PG: INSERT videos (id, storage_key incoming/{id}/original.ext, status pending, title)
     API->>API: presignPut(storage_key, contentType, UPLOAD_URL_TTL_SECONDS)
     API-->>H: { videoId, uploadUrl, storageKey, expiresAt, headers }
@@ -318,6 +319,8 @@ sequenceDiagram
     end
 ```
 
+- **Subidas interrumpidas:** el PUT firmado es único (sin *multipart*), así que un corte no deja un objeto parcial; lo que sí queda es la fila `pending`. La web la cancela con `DELETE /rooms/:id/media/uploads/:videoId` (borra la fila, de forma condicional a que siga `pending`, y el objeto de `incoming/`; idempotente, 409 si ya se confirmó). Si no pudo avisar (pestaña cerrada, corte de red), la **limpieza perezosa** de `POST …/uploads` borra las filas `pending` de la sala creadas hace más de `UPLOAD_URL_TTL_SECONDS` + 1 h (`STALE_UPLOAD_GRACE_MS`) y su objeto; sin proceso programado y sin bloquear la reserva si falla.
+- **Límite de tamaño:** `GET /uploads/limits` devuelve `{ maxUploadBytes }` y el 413 lleva el mismo campo, para que la web muestre el límite sin duplicar el valor.
 - La extensión de la clave sale del nombre del archivo si es `.mp4`, `.webm`, `.mov`, `.mkv`, `.m4v` u `.ogv`; si no, del `contentType`. El nombre del usuario nunca forma parte de la clave; sí se guarda, sin extensión, como `videos.title`.
 - La URL PUT no acota el tamaño: por eso `complete` compara el tamaño real (`HEAD`) con el declarado.
 - La transición `pending → processing` es un `UPDATE ... WHERE status = 'pending'`: de dos confirmaciones simultáneas solo una encola.
@@ -536,7 +539,7 @@ Detalle de los eventos y sus campos en [AGENTS.md › Eventos de analítica](AGE
 
 ## 5. Configuración
 
-identity-api **no está en `docker-compose.yml`**: corre con `npm run dev` y lee `services/identity-api/.env` (plantilla: [`.env.example`](.env.example)). La tabla completa con valores por defecto está en [AGENTS.md › Variables de Entorno](AGENTS.md#variables-de-entorno).
+identity-api corre en `docker compose` como `identity-api` (puerto `8081`), aplica las migraciones al arrancar y usa las variables del `.env` raíz. Para desarrollo aislado también puede ejecutarse con `npm run dev` y `services/identity-api/.env` (plantilla: [`.env.example`](.env.example)). La tabla completa con valores por defecto está en [AGENTS.md › Variables de Entorno](AGENTS.md#variables-de-entorno).
 
 | Grupo | Variables | Notas |
 | :--- | :--- | :--- |
@@ -553,16 +556,10 @@ Puertos relacionados: web 5173, PostgreSQL 5432, Redis 6379, MinIO 9000 (API) y 
 ## 6. Ejecutar y probar
 
 ```bash
-# Infraestructura (desde la raíz del monorepo)
+# Stack completo (desde la raíz del monorepo)
 cp .env.example .env
-docker compose up -d postgres redis minio minio-init
-
-# identity-api
-cd services/identity-api
-cp .env.example .env
-npm ci
-npx drizzle-kit migrate     # aplica migrations/ sobre DATABASE_URL
-npm run dev                 # http://localhost:8081/api/v1/healthz
+docker compose up -d --build
+# http://localhost:8081/api/v1/healthz
 ```
 
 **Gate del dominio** (lo mismo que corre el CI):

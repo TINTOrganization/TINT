@@ -18,6 +18,7 @@ import { ChangeVideoPanel } from '../components/host/ChangeVideoPanel';
 import { ParticipantsPanel } from '../components/host/ParticipantsPanel';
 import { ReconnectStatus, SyncQualityIndicator } from '../components/sync/SyncStatus';
 import { ToastStack } from '../components/sync/SyncToasts';
+import { VoiceSection } from '../components/voice/VoiceSection';
 import { BackLink } from '../components/ui/BackLink';
 import { BrandMark } from '../components/layout/AppShell';
 import { AmbientBackground } from '../components/layout/AmbientBackground';
@@ -27,6 +28,8 @@ import { ease } from '../lib/motion';
 import { apiFetch } from '../lib/api';
 import { toAbsoluteInviteLink, pickLatestActiveInvitation, parseInviteCode } from '../lib/invite';
 import { getLocalIdentity, guestTokenGrantsRoom } from '../lib/identity';
+import { useRevocationProbe } from '../hooks/useRevocationProbe';
+import { hostFailureMessage } from '../lib/mediaFailure';
 import { useRoomPlayback, type MediaStatus } from '../hooks/useRoomPlayback';
 import { useRecapGate } from '../hooks/useRecapGate';
 
@@ -138,7 +141,11 @@ export default function WatchRoom() {
     muteUser,
     trivia,
     triviaSchedule,
+    revoked: socialRevoked,
+    expired: socialExpired,
+    triviaLeaderboard,
     scheduleTrivia,
+    updateTrivia,
     deleteTrivia,
     answerTrivia,
     dismissTrivia,
@@ -173,7 +180,13 @@ export default function WatchRoom() {
   const sync = useSyncSocket({ roomId: roomId ?? '', role, getPositionMs: getHeartbeatPositionMs, enabled: hasAccess });
   const playback = useRoomPlayback(roomId ?? '', sync.state ? sync.state.media_id : undefined, {
     role,
-    enabled: hasAccess && !sync.revoked,
+    enabled: hasAccess && !sync.revoked && !socialRevoked,
+  });
+  // Si un cierre 4001 no llega (el navegador lo entrega como 1006), la API confirma la expulsión.
+  const probe = useRevocationProbe({
+    roomId,
+    role,
+    active: hasAccess && (sync.reconnect !== null || status === 'reconnecting'),
   });
   useEffect(() => {
     roomMediaRef.current = sync.state?.media_id ?? '';
@@ -192,15 +205,23 @@ export default function WatchRoom() {
   // Los controles los habilita el servidor (STATE.can_control / CONTROL), no el rol local.
   const canControl = sync.canControl;
   const delegated = isGuest && canControl;
+  // El host ve por qué falló el vídeo; los invitados siguen viendo el texto genérico.
+  const hostReason = isGuest ? null : playback.failureReason;
   const videoSrc = playback.url ?? (!playback.loading && !playback.error && !playback.mediaId ? demoVideoUrl : undefined);
   const emptyMessage = playback.url
     ? undefined
     : playback.loading
       ? 'Cargando vídeo…'
       : playback.status === 'failed'
-        ? 'Este vídeo no se pudo procesar. El host puede subir otro.'
+        ? hostReason
+          ? `${hostFailureMessage(hostReason)} Sube otro vídeo.`
+          : 'Este vídeo no se pudo procesar. El host puede subir otro.'
         : (playback.error ?? 'Sin video configurado');
-  const mediaStatusUi = playback.status ? MEDIA_STATUS_UI[playback.status] : null;
+  const mediaStatusUi = playback.status
+    ? playback.status === 'failed' && hostReason
+      ? { ...MEDIA_STATUS_UI.failed, text: hostFailureMessage(hostReason) }
+      : MEDIA_STATUS_UI[playback.status]
+    : null;
   const { sendCommand } = sync;
   const loadMedia = useCallback(
     (mediaId: string) => sendCommand('LOAD', 0, { media_id: mediaId }) !== null,
@@ -330,7 +351,8 @@ export default function WatchRoom() {
   };
 
   // Antes que la puerta: al revocar se borra el guest token y hasAccess cae a false.
-  if (sync.revoked) {
+  // El chat (social-core) cierra con 4001 igual que sync: cualquiera de los dos expulsa.
+  if (sync.revoked || socialRevoked || probe.revoked) {
     if (videoFinished) {
       return (
         <RoomNotice
@@ -347,7 +369,7 @@ export default function WatchRoom() {
     );
   }
   // Cierre 4003: el token caducó (el host ya reintentó una vez con un ticket nuevo).
-  if (sync.expired) {
+  if (sync.expired || socialExpired) {
     // Al invitado ya se le borró el guest token: sin sesión de host, es un invitado.
     return !hostToken ? (
       <RoomNotice
@@ -552,6 +574,9 @@ export default function WatchRoom() {
             </div>
           </AmbilightGlow>
 
+          {/* Canal de voz (voice-core): no conecta nada hasta pulsar "Unirse a la voz". */}
+          <VoiceSection roomId={roomId ?? ''} role={isGuest ? 'guest' : 'host'} />
+
           {!isGuest && (
             <div className="mt-4 grid gap-4 md:grid-cols-2">
               <Card className="p-5">
@@ -584,8 +609,10 @@ export default function WatchRoom() {
             <TriviaPanel
               isHost={!isGuest}
               schedule={triviaSchedule}
+              leaderboard={triviaLeaderboard}
               getCurrentMs={getPositionMs}
               onSchedule={scheduleTrivia}
+              onUpdate={updateTrivia}
               onDelete={deleteTrivia}
               error={socialError?.code ?? null}
             />

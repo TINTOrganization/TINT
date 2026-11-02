@@ -8,7 +8,7 @@ class FakeSocket {
   readyState = 0; // CONNECTING
   onopen: ((e: unknown) => void) | null = null;
   onmessage: ((e: { data: string }) => void) | null = null;
-  onclose: (() => void) | null = null;
+  onclose: ((e: { code: number }) => void) | null = null;
   onerror: (() => void) | null = null;
   sent: string[] = [];
   closed = false;
@@ -27,10 +27,10 @@ class FakeSocket {
   send(data: string) {
     this.sent.push(data);
   }
-  close() {
+  close(code = 1006) {
     this.readyState = 3;
     this.closed = true;
-    this.onclose?.();
+    this.onclose?.({ code });
   }
   fail() {
     this.onerror?.();
@@ -176,6 +176,47 @@ describe('useSocialSocket', () => {
       vi.advanceTimersByTime(1000);
     });
     expect(FakeSocket.instances).toHaveLength(3);
+  });
+
+  describe('cierres terminales (el host retiró o bloqueó al participante)', () => {
+    const create = (url: string) => new FakeSocket(url) as unknown as WebSocket;
+
+    it('4001: marca revoked, borra el guest token, queda closed y no vuelve a reconectar', () => {
+      localStorage.setItem('tint_guest_token', 'guest-jwt');
+      const { result } = renderHook(() =>
+        useSocialSocket('r1', { createSocket: create, role: 'guest', reconnectBaseMs: 500, reconnectMaxMs: 8000 }),
+      );
+      act(() => lastSocket().open());
+      expect(result.current.revoked).toBe(false);
+      act(() => lastSocket().close(4001));
+      expect(result.current.revoked).toBe(true);
+      expect(result.current.status).toBe('closed');
+      expect(localStorage.getItem('tint_guest_token')).toBeNull();
+      act(() => vi.advanceTimersByTime(60_000));
+      expect(FakeSocket.instances).toHaveLength(1);
+    });
+
+    it('4003 de un invitado: marca expired y no reconecta (no puede renovar su token)', () => {
+      localStorage.setItem('tint_guest_token', 'guest-jwt');
+      const { result } = renderHook(() => useSocialSocket('r1', { createSocket: create, role: 'guest' }));
+      act(() => lastSocket().open());
+      act(() => lastSocket().close(4003));
+      expect(result.current.expired).toBe(true);
+      expect(result.current.revoked).toBe(false);
+      expect(result.current.status).toBe('closed');
+      act(() => vi.advanceTimersByTime(60_000));
+      expect(FakeSocket.instances).toHaveLength(1);
+    });
+
+    it('un corte normal sigue reconectando y no marca nada', () => {
+      const { result } = renderHook(() => useSocialSocket('r1', { createSocket: create, role: 'guest' }));
+      act(() => lastSocket().open());
+      act(() => lastSocket().close(1006));
+      act(() => vi.advanceTimersByTime(500));
+      expect(FakeSocket.instances).toHaveLength(2);
+      expect(result.current.revoked).toBe(false);
+      expect(result.current.expired).toBe(false);
+    });
   });
 
   it('ignora mensajes desconocidos y queda closed sin room', () => {
