@@ -196,7 +196,9 @@ TEST_F(ServerTest, HealthzAnswersOk) {
   http::response<http::string_body> res;
   http::read(stream, buffer, res);
   EXPECT_EQ(res.result(), http::status::ok);
-  EXPECT_EQ(json::parse(res.body())["status"], "ok");
+  const auto body = json::parse(res.body());
+  EXPECT_EQ(body["status"], "ok");
+  EXPECT_EQ(body["service"], "voice-core");
 }
 
 TEST_F(ServerTest, UnknownHttpPathIs404) {

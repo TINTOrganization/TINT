@@ -59,6 +59,19 @@ Cómo funciona el servicio por dentro (consumo de `media:uploads`, pipeline, Amb
 9. **Reintentos y huérfanos (`consumer.py`):** un fallo del handler reencola el evento con `attempt + 1` y lo confirma; a los `MAX_ATTEMPTS` (3) `jobs.mark_exhausted` deja el vídeo en `failed` (`processing_failed`, sin ampliar el contrato de `failure_reason`) y publica `media_processed`. Nunca marca `failed` un vídeo ya publicado. Los eventos de un worker muerto se reclaman con `XAUTOCLAIM` pasados `CLAIM_IDLE_MS` (15 min). El log de cada fallo lleva el id del vídeo, el intento y el motivo.
 10. **TDD:** Escribe primero pruebas unitarias con `pytest` mockeando ejecuciones de FFmpeg. Cobertura obligatoria **≥ 85 %**.
 
+## Variables de Entorno
+
+| Variable | Defecto | Descripción |
+| :--- | :--- | :--- |
+| `DATABASE_URL` | — (**obligatoria**) | PostgreSQL para consultar y actualizar `videos`. |
+| `REDIS_URL` | `redis://localhost:6379` | Redis Stream para consumir `media:uploads` y publicar `analytics:events`. |
+| `S3_ENDPOINT_URL` | `http://localhost:9000` | Endpoint de MinIO / S3. |
+| `S3_ACCESS_KEY` / `S3_SECRET_KEY` | `tintadmin` / `tintadmin123` | Credenciales de S3. |
+| `MINIO_BUCKET` | `tint-media` | Bucket de medios. |
+| `MEDIA_WORKER_PORT` | `8088` | Puerto del servidor HTTP interno de liveness (`/healthz`). |
+| `MEDIA_WORKER_HEARTBEAT_MAX_AGE_S` | `30` | Segundos máximos sin latido antes de que `/healthz` responda 503. |
+| `LOG_LEVEL` | `info` | Nivel mínimo de log (`debug`, `info`, `warn`, `error`). Logs JSON a stdout (ADR 0021). |
+
 ## Comandos
 
 ```bash

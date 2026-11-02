@@ -1,4 +1,5 @@
 import { Request, Response, NextFunction } from 'express';
+import { logger } from '../logging.js';
 
 type HttpError = Error & { status?: number; statusCode?: number; expose?: boolean };
 
@@ -13,13 +14,9 @@ export function errorHandler(err: HttpError, req: Request, res: Response, next: 
   if (err.expose && status && status >= 400 && status < 500) {
     return res.status(status).json({ error: err.message });
   }
-  console.error(
-    JSON.stringify({
-      level: 'error',
-      message: 'unhandled_error',
-      correlation_id: correlationId,
-      error: err.stack ?? err.message,
-    }),
-  );
+  logger.error('unhandled_error', {
+    correlation_id: correlationId,
+    error: err.stack ?? err.message,
+  });
   res.status(500).json({ error: 'Internal error' });
 }

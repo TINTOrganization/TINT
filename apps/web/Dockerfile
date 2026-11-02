@@ -28,7 +28,10 @@ ENV VITE_IDENTITY_API_URL=$VITE_IDENTITY_API_URL \
 RUN npm run build
 
 FROM nginx:1.27-alpine
-COPY nginx.conf /etc/nginx/conf.d/default.conf
+# Plantilla procesada por el entrypoint oficial: solo se sustituye NGINX_ERROR_LOG_LEVEL,
+# para que `$uri`, `$host` y el resto de variables de nginx lleguen intactas (ADR 0021).
+ENV NGINX_ENVSUBST_FILTER=NGINX_ERROR_LOG_LEVEL
+COPY nginx.conf /etc/nginx/templates/default.conf.template
 COPY --from=build /app/dist /usr/share/nginx/html
 EXPOSE 80
-HEALTHCHECK --interval=10s --timeout=3s CMD wget --spider --quiet http://127.0.0.1/ || exit 1
+HEALTHCHECK --interval=10s --timeout=3s CMD wget --spider --quiet http://127.0.0.1/healthz || exit 1

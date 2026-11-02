@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { NextFunction, Request, Response } from 'express';
+import { logger } from '../logging.js';
 
 export const CORRELATION_HEADER = 'X-Correlation-ID';
 
@@ -29,16 +30,12 @@ export function correlationMiddleware(req: Request, res: Response, next: NextFun
     return json(body);
   };
   res.on('finish', () => {
-    console.log(
-      JSON.stringify({
-        level: 'info',
-        message: 'http_request',
-        correlation_id: id,
-        method: req.method,
-        path: req.path,
-        status: res.statusCode,
-      }),
-    );
+    logger.info('http_request', {
+      correlation_id: id,
+      method: req.method,
+      path: req.path,
+      status: res.statusCode,
+    });
   });
   next();
 }

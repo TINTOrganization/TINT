@@ -1,6 +1,7 @@
 import { Router, type Response } from 'express';
 import { z } from 'zod';
 import { env } from '../config/env.js';
+import { logger } from '../logging.js';
 import { validate } from '../middlewares/validate.js';
 import { requireAuthHost } from '../middlewares/auth.js';
 import { centralTokenCheck } from '../middlewares/centralAuth.js';
@@ -89,7 +90,10 @@ router.post('/events/start', requireAuthHost, validate(startEventSchema), async 
     res.json(result);
   } catch (error) {
     if (error instanceof EventStartError) {
-      console.error(`[event-start] ${error.service}:`, (error.cause as Error)?.message ?? String(error.cause));
+      logger.error('event-start: fallo al iniciar un servicio', {
+        service: error.service,
+        error: (error.cause as Error)?.message ?? String(error.cause),
+      });
       return res.status(503).json({ error: 'No se pudo iniciar el evento' });
     }
     throw error;
@@ -191,7 +195,9 @@ async function revokeActiveGuestSessions(roomId: string) {
       }),
     );
   } catch (err) {
-    console.error('[rooms] no se pudieron revocar las sesiones de la sala borrada:', (err as Error).message);
+    logger.error('rooms: no se pudieron revocar las sesiones de la sala borrada', {
+      error: (err as Error).message,
+    });
     return false;
   }
   await setGuestSessionsRevoked(sessions.map((s) => s.jti));
@@ -407,7 +413,9 @@ async function discardUploadObject(storageKey: string) {
   try {
     await getMediaStore().remove(storageKey);
   } catch (err) {
-    console.error('[uploads] no se pudo borrar el objeto de una subida descartada:', (err as Error).message);
+    logger.error('uploads: no se pudo borrar el objeto de una subida descartada', {
+      error: (err as Error).message,
+    });
   }
 }
 
@@ -422,7 +430,9 @@ async function cleanupStaleUploads(roomId: string) {
     const stale = await removeStalePendingVideos(roomId, cutoff);
     await Promise.all(stale.map((v) => discardUploadObject(v.storageKey)));
   } catch (err) {
-    console.error('[uploads] no se pudieron limpiar las subidas abandonadas:', (err as Error).message);
+    logger.error('uploads: no se pudieron limpiar las subidas abandonadas', {
+      error: (err as Error).message,
+    });
   }
 }
 
@@ -518,7 +528,9 @@ router.post('/rooms/:id/media/uploads/:videoId/complete', requireAuthHost, requi
     try {
       await store.remove(video.storageKey);
     } catch (err) {
-      console.error('[uploads] no se pudo borrar un objeto que supera el tamaño:', (err as Error).message);
+      logger.error('uploads: no se pudo borrar un objeto que supera el tamaño', {
+        error: (err as Error).message,
+      });
     }
     return tooLarge(res);
   }
@@ -531,7 +543,9 @@ router.post('/rooms/:id/media/uploads/:videoId/complete', requireAuthHost, requi
   try {
     await enqueueMediaUpload(video.id);
   } catch (err) {
-    console.error('[uploads] no se pudo encolar media:uploads:', (err as Error).message);
+    logger.error('uploads: no se pudo encolar media:uploads', {
+      error: (err as Error).message,
+    });
     // Vuelve a pending para que el reintento pueda encolar.
     await transitionVideoStatus(video.id, 'processing', 'pending');
     return res.status(503).json({ error: 'Service unavailable' });
@@ -701,7 +715,9 @@ router.post('/rooms/:id/bans', requireAuthHost, requireRoomOwner, validate(creat
       await publishRevoked(roomId, s.jti);
     }
   } catch (err) {
-    console.error('[bans] no se pudieron revocar las sesiones del invitado bloqueado:', (err as Error).message);
+    logger.error('bans: no se pudieron revocar las sesiones del invitado bloqueado', {
+      error: (err as Error).message,
+    });
     return res.status(503).json({ error: 'Service unavailable' });
   }
   for (const s of live) {

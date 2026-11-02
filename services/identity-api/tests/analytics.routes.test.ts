@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { logger } from '../src/logging.js';
 import request from 'supertest';
 import jwt from 'jsonwebtoken';
 
@@ -115,7 +116,7 @@ describe('eventos de analítica emitidos por las rutas', () => {
   });
 
   it('POST /rooms no publica nada si la creación falla', async () => {
-    vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.spyOn(logger, 'error').mockImplementation(() => {});
     vi.mocked(createRoomWithInvitation).mockRejectedValueOnce(new Error('db down'));
     const res = await request(app).post('/api/v1/rooms').send({ title: 'Sala' });
     expect(res.status).toBe(500);
@@ -139,7 +140,7 @@ describe('eventos de analítica emitidos por las rutas', () => {
   });
 
   it('DELETE /rooms/:id no publica room_closed si la revocación falla (503)', async () => {
-    vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.spyOn(logger, 'error').mockImplementation(() => {});
     vi.mocked(softRemoveById).mockResolvedValueOnce(deletedRoom as any);
     vi.mocked(listActiveByRoom).mockResolvedValueOnce([
       { jti: '77777777-7777-4777-8777-777777777777', roomId: ROOM_ID, expiresAt: new Date(Date.now() + 60_000), revoked: false },
@@ -178,7 +179,7 @@ describe('eventos de analítica emitidos por las rutas', () => {
 
     for (const [name, arrange] of Object.entries(failures)) {
       it(`${name}: verify, crear, borrar y canjear responden igual`, async () => {
-        const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+        const log = vi.spyOn(logger, 'error').mockImplementation(() => {});
         arrange();
 
         const verify = await request(app).post('/api/v1/auth/verify').send({});

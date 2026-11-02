@@ -68,7 +68,7 @@ def kpis_path(room=ROOM):
 
 def test_healthz_needs_no_token():
     response = get(make_api(), "/healthz")
-    assert (response.status, response.body) == (200, {"status": "ok"})
+    assert (response.status, response.body) == (200, {"status": "ok", "service": "analytics"})
 
 
 def test_correlation_id_is_preserved_in_headers_and_error_body():

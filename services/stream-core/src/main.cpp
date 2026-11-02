@@ -9,6 +9,7 @@
 #include "config.hpp"
 #include "http/handler.hpp"
 #include "identity/identity_client.hpp"
+#include "log/log.hpp"
 #include "net/http_server.hpp"
 #include "redis/stores.hpp"
 #include "rtc/peer_factory.hpp"
@@ -24,25 +25,28 @@ std::int64_t wall_ms() {
       .count();
 }
 
-void log(const std::string& msg) {
-  std::cout << R"({"service":"stream-core","msg":")" << msg << "\"}" << std::endl;
-}
-
 }  // namespace
 
 int main() {
+  const char* raw_level = std::getenv("LOG_LEVEL");
+  auto level = logging::parse_level(raw_level == nullptr ? "" : raw_level);
+  if (!level) {
+    std::cerr << "stream-core: " << level.error() << std::endl;
+    return 2;
+  }
+  logging::configure("stream-core", *level);
   auto config = load_config([](std::string_view key) -> std::optional<std::string> {
     if (const char* v = std::getenv(std::string(key).c_str())) return std::string(v);
     return std::nullopt;
   });
   if (!config) {
-    std::cerr << "configuración inválida: " << config.error() << std::endl;
+    logging::error("configuración inválida: " + config.error());
     return 2;
   }
   auto endpoint = redis::parse_redis_url(config->redis_url);
   auto identity_target = identity::parse_http_url(config->identity_api_url);
   if (!endpoint || !identity_target) {
-    std::cerr << "REDIS_URL o IDENTITY_API_URL inválidas" << std::endl;
+    logging::error("REDIS_URL o IDENTITY_API_URL inválidas");
     return 2;
   }
 
@@ -75,7 +79,7 @@ int main() {
 
   net::HttpServer server(io, workers, [&handler](const http::Request& r) { return handler.handle(r); });
   if (!server.listen(config->host, config->port)) {
-    std::cerr << "no se pudo escuchar en " << config->host << ":" << config->port << std::endl;
+    logging::error("no se pudo escuchar en " + config->host + ":" + std::to_string(config->port));
     return 1;
   }
 
@@ -103,13 +107,14 @@ int main() {
 
   boost::asio::signal_set signals(io, SIGINT, SIGTERM);
   signals.async_wait([&](auto, int) {
-    log("apagando");
+    logging::info("apagando");
     timer.cancel();
     server.stop();
     io.stop();
   });
 
-  log("escuchando en :" + std::to_string(server.port()) + " (UDP " + std::to_string(config->udp_port) + ")");
+  logging::info("escuchando en :" + std::to_string(server.port()) + " (UDP " +
+                std::to_string(config->udp_port) + ")");
   std::thread second([&io] { io.run(); });
   io.run();
   second.join();

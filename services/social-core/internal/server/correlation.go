@@ -2,7 +2,7 @@ package server
 
 import (
 	"encoding/json"
-	"log"
+	"log/slog"
 	"net/http"
 	"regexp"
 	"time"
@@ -25,7 +25,12 @@ func withCorrelation(next http.Handler) http.Handler {
 		w.Header().Set(correlationHeader, id)
 		start := time.Now()
 		next.ServeHTTP(w, r)
-		log.Printf(`{"level":"info","message":"http_request","correlation_id":%q,"method":%q,"path":%q,"duration_ms":%d}`, id, r.Method, r.URL.Path, time.Since(start).Milliseconds())
+		slog.Info("http_request",
+			"correlation_id", id,
+			"method", r.Method,
+			"path", r.URL.Path,
+			"duration_ms", time.Since(start).Milliseconds(),
+		)
 	})
 }
 

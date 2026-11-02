@@ -2,6 +2,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { getRedisClient } from '../tokens/revocation.js';
 import { publishAnalyticsEvent } from '../analytics/analytics.events.js';
 import { disableById, findById } from './rooms.repo.js';
+import { logger } from '../../logging.js';
 
 /** `reason` de cierre (dominio-transmision §6.1): el mismo en ROOM_CLOSED y en analítica. */
 export type CloseReason = 'host_ended' | 'grace_expired';
@@ -42,7 +43,7 @@ export async function closeLiveRoom(roomId: string, reason: CloseReason, userId?
   } catch (err) {
     // 22P02: el id no es un uuid válido → no existe esa sala. Cualquier otro error: BD caída.
     if ((err as { code?: string }).code === '22P02') return NOT_FOUND;
-    console.error('[rooms] no se pudo leer la sala a deshabilitar:', (err as Error).message);
+    logger.error('rooms: no se pudo leer la sala a deshabilitar', { error: (err as Error).message });
     return UNAVAILABLE;
   }
   const blocked = precondition(room);
@@ -59,7 +60,7 @@ export async function closeLiveRoom(roomId: string, reason: CloseReason, userId?
     );
     disabled = await disableById(roomId);
   } catch (err) {
-    console.error('[rooms] no se pudo deshabilitar la sala:', (err as Error).message);
+    logger.error('rooms: no se pudo deshabilitar la sala', { error: (err as Error).message });
     return UNAVAILABLE;
   }
   if (!disabled) {

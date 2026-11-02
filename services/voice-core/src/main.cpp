@@ -13,6 +13,7 @@
 #include "config.hpp"
 #include "hub/hub.hpp"
 #include "ice/ice_servers.hpp"
+#include "log/log.hpp"
 #include "net/server.hpp"
 #include "redis/mute_store.hpp"
 #include "redis/redis_url.hpp"
@@ -23,17 +24,24 @@
 
 int main() {
   using namespace voice;
+  const char* raw_level = std::getenv("LOG_LEVEL");
+  auto level = logging::parse_level(raw_level == nullptr ? "" : raw_level);
+  if (!level) {
+    std::cerr << "voice-core: " << level.error() << "\n";
+    return 2;
+  }
+  logging::configure("voice-core", *level);
   auto config = load_config([](std::string_view key) -> std::optional<std::string> {
     const char* value = std::getenv(std::string(key).c_str());
     return value ? std::optional<std::string>(value) : std::nullopt;
   });
   if (!config) {
-    std::cerr << "voice-core: configuración inválida: " << config.error() << "\n";
+    logging::error("configuración inválida: " + config.error());
     return 2;
   }
   auto endpoint = redis::parse_redis_url(config->redis_url);
   if (!endpoint) {
-    std::cerr << "voice-core: " << endpoint.error() << "\n";
+    logging::error(endpoint.error());
     return 2;
   }
 
@@ -89,8 +97,7 @@ int main() {
     ioc.stop();
   });
 
-  std::cout << "voice-core escuchando en " << config->host << ":" << port << " (/ws/voice, /healthz)"
-            << std::endl;
+  logging::info("escuchando en " + config->host + ":" + std::to_string(port) + " (/ws/voice, /healthz)");
   const unsigned threads = std::max(2u, std::thread::hardware_concurrency());
   std::vector<std::thread> workers;
   for (unsigned i = 1; i < threads; ++i) workers.emplace_back([&ioc] { ioc.run(); });

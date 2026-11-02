@@ -1,7 +1,13 @@
 import { z } from 'zod';
+import { LOG_LEVELS } from '../logging.js';
 
 const envSchema = z.object({
   IDENTITY_API_PORT: z.string().default('8081'),
+  // Nivel de los logs JSON (ADR 0021). Un valor inválido impide el arranque.
+  LOG_LEVEL: z.preprocess(
+    (v) => (typeof v === 'string' ? v.toLowerCase() : v),
+    z.enum(LOG_LEVELS).default('info'),
+  ),
   SYNC_CORE_URL: z.string().url().default('http://localhost:8083'),
   SOCIAL_CORE_URL: z.string().url().default('http://localhost:8082'),
   ANALYTICS_URL: z.string().url().default('http://localhost:8084'),

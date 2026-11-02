@@ -18,8 +18,6 @@ RUN npm ci --omit=dev
 FROM node:22-alpine
 WORKDIR /app
 COPY --from=deps-prod /app/node_modules ./node_modules
-COPY --from=build /app/node_modules/drizzle-kit ./node_modules/drizzle-kit
-COPY --from=build /app/node_modules/.bin/drizzle-kit ./node_modules/.bin/drizzle-kit
 COPY --from=build /app/dist ./dist
 COPY --from=build /app/migrations ./migrations
 COPY --from=build /app/drizzle.config.ts ./drizzle.config.ts

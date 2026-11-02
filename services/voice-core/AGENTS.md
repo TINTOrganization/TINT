@@ -181,6 +181,7 @@ Sanitizers: `-DVOICE_SANITIZE=address` o `-DVOICE_SANITIZE=thread`. Cobertura: `
 | `VOICE_MAX_MEMBERS` | `8` | Cupo de la voz por sala (2–16). |
 | `STUN_URLS` | vacío | Se envían en `ice_servers`. |
 | `TURN_URLS` / `TURN_SECRET` / `TURN_TTL_SECONDS` | vacío / vacío / `3600` | TURN con credencial efímera por usuario: `username = <ahora+TTL>:<sub>`, `credential = base64(HMAC-SHA1(TURN_SECRET, username))` (REST API de TURN). `TURN_SECRET` debe ser el `static-auth-secret` de coturn. |
+| `LOG_LEVEL` | `info` | Nivel mínimo de log (`debug`, `info`, `warn`, `error`). Logs JSON a stdout (ADR 0021). |
 
 ## Limitaciones conocidas
 - **Una réplica:** la membresía vive en memoria. Varias réplicas necesitarían un registro compartido en Redis (ZSET + Pub/Sub `room:{id}:voice`). Con mesh de ≤ 8 personas la carga por sala es baja.

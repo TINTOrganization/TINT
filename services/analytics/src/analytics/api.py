@@ -188,7 +188,7 @@ class AnalyticsApi:
             self._authorize_admin(headers.get("authorization", ""))
             return 200, self._overview()
         if match is None:
-            return 200, {"status": "ok"}
+            return 200, {"status": "ok", "service": "analytics"}
         room_id = match["room_id"]
         self._authorize(headers.get("authorization", ""), room_id)
         query = parse_qs(url.query, keep_blank_values=True)

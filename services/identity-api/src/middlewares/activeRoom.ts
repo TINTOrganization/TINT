@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import { findById, type Room } from '../modules/rooms/rooms.repo.js';
+import { logger } from '../logging.js';
 
 declare module 'express-serve-static-core' {
   interface Request {
@@ -25,7 +26,7 @@ function roomGuard(allowed: ReadonlySet<string>) {
     try {
       room = await findById(roomId);
     } catch (err) {
-      console.error('[activeRoom] no se pudo leer la sala:', (err as Error).message);
+      logger.error('activeRoom: no se pudo leer la sala', { error: (err as Error).message });
       return res.status(500).json({ error: 'Internal error' });
     }
     if (!room) {

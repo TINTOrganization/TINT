@@ -1,5 +1,6 @@
 import { v4 as uuidv4 } from 'uuid';
 import { getRedisClient } from '../tokens/revocation.js';
+import { logger } from '../../logging.js';
 
 /**
  * Stream que consume Analítica (grupo `analytics-workers`). Contrato en
@@ -16,7 +17,9 @@ const COMMON_FIELDS = new Set(['event_id', 'type', 'source', 'occurred_at', 'rec
 
 function logFailure(type: string, err: unknown) {
   // Solo el tipo y el mensaje: nunca los campos del evento.
-  console.error(`[analytics] no se pudo publicar ${type}:`, (err as Error)?.message ?? String(err));
+  logger.error(`analytics: no se pudo publicar ${type}`, {
+    error: (err as Error)?.message ?? String(err),
+  });
 }
 
 /**

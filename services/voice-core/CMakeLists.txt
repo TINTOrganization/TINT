@@ -41,6 +41,7 @@ add_library(voice_core_lib
   src/domain/voice_room.cpp
   src/hub/hub.cpp
   src/ice/ice_servers.cpp
+  src/log/log.cpp
   src/net/handshake.cpp
   src/net/mute_api.cpp
   src/net/server.cpp
@@ -73,6 +74,7 @@ if(VOICE_BUILD_TESTS)
     tests/messages_test.cpp
     tests/hub_test.cpp
     tests/ice_servers_test.cpp
+    tests/log_test.cpp
     tests/handshake_test.cpp
     tests/mute_api_test.cpp
     tests/mute_store_test.cpp

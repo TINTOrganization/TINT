@@ -5,7 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"log"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -61,7 +61,7 @@ func Run(getenv func(string) string) error {
 	if deps.analytics != nil {
 		go deps.analytics.Run(context.Background())
 	}
-	log.Printf("social-core escuchando en %s", addr)
+	slog.Info("social-core escuchando", "addr", addr)
 	return http.ListenAndServe(addr, NewRouterWithDeps(deps))
 }
 
