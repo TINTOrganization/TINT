@@ -280,15 +280,54 @@ jobs:
         if: always()
         run: docker logs --tail 50 voice-core || true
 
+  # Humo del spike S2 (dominio-transmision §9): publicador VP8 simulcast + 20 viewers WHEP con
+  # libdatachannel contra la imagen de runtime. Cupo 20 para comprobar el 409 del viewer 21.
+  stream-load-smoke:
+    name: Carga · stream-core (20 viewers)
+    needs: cpp-stream
+    runs-on: ubuntu-24.04
+    services:
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping" --health-interval 2s --health-timeout 2s --health-retries 15
+    env:
+      JWT_SECRET: ci-load-secret
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Imagen dev (caché de cpp-stream)
+        uses: docker/build-push-action@v6
+        with:
+          context: services/stream-core
+          target: dev
+          tags: tint-stream-dev
+          load: true
+          cache-from: type=gha,scope=stream-dev
+      - name: Arrancar stream-core (imagen de runtime)
+        run: |
+          docker build -q -t stream-core:ci services/stream-core
+          docker run -d --name stream-core --network host \
+            -e JWT_SECRET -e REDIS_URL=redis://localhost:6379 -e STREAM_PUBLIC_IP=127.0.0.1 -e STREAM_MAX_VIEWERS=20 \
+            -e IDENTITY_API_URL=http://localhost:8081 -e INTERNAL_API_SECRET=ci stream-core:ci
+          for i in $(seq 1 50); do curl -fs localhost:8086/healthz && exit 0; sleep 0.2; done
+          docker logs stream-core; exit 1
+      - name: Bots (TTFF p95 < 2 s, 0 fallos, 409 al viewer 21)
+        run: VIEWERS=20 DURATION=15 STREAM_CONTAINER=stream-core services/stream-core/loadtest/run.sh
+      - name: Logs de stream-core
+        if: always()
+        run: docker logs --tail 50 stream-core || true
+
   ci-gate:
     name: CI Gate
     if: always()
-    needs: [go, python, web, identity-api, cpp, cpp-stream, sync-load-smoke, voice-load-smoke, compose-lint]
+    needs: [go, python, web, identity-api, cpp, cpp-stream, sync-load-smoke, voice-load-smoke, stream-load-smoke, compose-lint]
     runs-on: ubuntu-latest
     steps:
       - name: Verificar resultado de todos los jobs
         run: |
-          echo "go=${{ needs.go.result }} python=${{ needs.python.result }} web=${{ needs.web.result }} identity-api=${{ needs.identity-api.result }} cpp=${{ needs.cpp.result }} cpp-stream=${{ needs.cpp-stream.result }} load=${{ needs.sync-load-smoke.result }} voice-load=${{ needs.voice-load-smoke.result }} compose-lint=${{ needs.compose-lint.result }}"
+          echo "go=${{ needs.go.result }} python=${{ needs.python.result }} web=${{ needs.web.result }} identity-api=${{ needs.identity-api.result }} cpp=${{ needs.cpp.result }} cpp-stream=${{ needs.cpp-stream.result }} load=${{ needs.sync-load-smoke.result }} voice-load=${{ needs.voice-load-smoke.result }} stream-load=${{ needs.stream-load-smoke.result }} compose-lint=${{ needs.compose-lint.result }}"
           if [ "${{ needs.go.result }}" != "success" ] || \
              [ "${{ needs.python.result }}" != "success" ] || \
              [ "${{ needs.web.result }}" != "success" ] || \
@@ -297,6 +336,7 @@ jobs:
              [ "${{ needs.cpp-stream.result }}" != "success" ] || \
              [ "${{ needs.sync-load-smoke.result }}" != "success" ] || \
              [ "${{ needs.voice-load-smoke.result }}" != "success" ] || \
+             [ "${{ needs.stream-load-smoke.result }}" != "success" ] || \
              [ "${{ needs.compose-lint.result }}" != "success" ]; then
             echo "::error::Pruebas o cobertura (≥ ${COVERAGE_MIN}%) no superadas. Merge bloqueado."
             exit 1

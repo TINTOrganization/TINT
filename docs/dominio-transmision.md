@@ -215,9 +215,14 @@ En una sala `live`, una trivia programada con `at_ms` se abre en `started_at_ms 
 | Camino caliente del SFU (demux + buffer NACK + reescritura por viewer), **sin SRTP** | **261 ns por paquete saliente** con 50 viewers; 4.3 µs por paquete del host repartido a 50. A la tasa real (~370 paquetes/s del host) es **0.16 % de un núcleo** | `stream_core_bench 50 20000` (Release, 4 vCPU, `loadtest/forward_bench.cpp`) |
 | Imagen de runtime | 148 MB | `docker images` |
 | Señalización contra el servicio real | `/healthz` 200; smoke 13/13 (401/403/404/410/415/400/201/DELETE) | `scripts/smoke.py` |
-| Pendiente (S2) | TTFF p95 y CPU con SRTP y 50 PeerConnections reales | bots con libdatachannel |
+| **S2: TTFF** con 50 viewers que entran a la vez (WHEP + ICE + DTLS + PLI → keyframe) | **p50 1159 ms · p95 1163 ms · máx 1166 ms** (< 2 s). Señalización WHEP p50 48 ms, p95 72 ms | `make load-stream` (`loadtest/loadbot.cpp`, 4 vCPU, contenedor de compose, 30 s) |
+| S2: errores y cupo | 50/50 viewers con vídeo, audio y DataChannel; 0 fallos; el viewer 51 recibe `409 ROOM_FULL` | ídem |
+| S2: CPU con SRTP y 50 PeerConnections reales | Contenedor: media 14.7 %, máx 18.4–22.9 % de **un** núcleo (`docker stats`). Hilo más cargado (mux UDP de libdatachannel): **4.4 %** (< 70 %, `top -H`). Memoria ~26 MiB | ídem |
+| S2: tráfico | Subida del host 3.8 Mbps constante (VP8 l/m/h 250k/800k/2.5M + Opus); egreso medio 89 Mbps con los viewers subiendo de `l` a `h` por REMB (régimen en `h` ≈ 130 Mbps) | ídem |
 
-Conclusión: el reenvío en sí no es el cuello de botella. El costo dominante será el cifrado SRTP (en libdatachannel) y el egreso de red, y eso es lo que mide S2.
+Conclusión: ni el reenvío ni el cifrado SRTP son el cuello de botella con 50 viewers; queda el egreso de red. Con `STREAM_PUBLIC_IP=127.0.0.1` el UDP pasa por `docker-proxy`, cuya CPU no cuenta en el contenedor; en el humo de CI (`--network host`, 20 viewers) el contenedor usa ~4 %.
+
+El TTFF es casi constante (~1.1 s) y no depende del número de viewers. Causa probable: el PLI que el SFU envía en `add_viewer` llega antes de que el DTLS del viewer termine, así que ese keyframe no le llega; el siguiente PLI del viewer (los bots lo repiten cada 500 ms, como un navegador) cae en el límite de 1 PLI por capa y por segundo (`PliThrottle`). Mejora posible: pedir el keyframe cuando la pista del viewer se abre. Los bots no fuerzan keyframes periódicos útiles (cada 10 s), así que la cifra no depende de eso.
 
 ## 8. Plan de pruebas (TDD)
 
@@ -225,7 +230,7 @@ Las pruebas unitarias (GoogleTest) cubren el código puro, sin libdatachannel: `
 
 Las demás pruebas:
 - **Integración:** `rtc_loopback_test` (dos peers de libdatachannel en el mismo proceso).
-- **Carga** (`make load-stream`): bots en C++, un publicador VP8 sintético y 50 viewers. Exige TTFF p95 < 2 s, 0 fallos, `409` para el viewer 51 y una subida del host constante.
+- **Carga** (`make load-stream`, `loadtest/run.sh`): bots en C++ con libdatachannel, un publicador VP8 simulcast sintético (3 `rid`, keyframe al recibir PLI) y 50 viewers WHEP que piden keyframe y envían REMB. Exige TTFF p95 < 2 s, 0 fallos, `409` para el viewer 51 y el hilo más cargado < 70 %. En CI, `stream-load-smoke` lo corre con 20 viewers durante 15 s.
 - **E2E** (`make e2e-stream`, local): Chromium como host y dos viewers. Mide glass-to-glass p95 < 500 ms y prueba el modo `relay`, la gracia y el aviso de fin.
 
 ## 9. Fase 0: spikes
@@ -233,7 +238,7 @@ Las demás pruebas:
 | Spike | Se sigue si… | Si no, la alternativa | Dónde corre |
 | :--- | :--- | :--- | :--- |
 | S1 Simulcast: Chrome y Firefox publican 3 `rid` a libdatachannel | Se aprenden 3 SSRC y las 3 capas están activas en < 10 s | transport-cc o 2 capas | Navegador real |
-| S2 Fan-out: 1 publicador + 50 viewers bot en un puerto mux, con 4 vCPU | Hilo mux < 70 %, TTFF p95 < 2 s, 0 errores SRTP | Rango de puertos sin mux | Docker (CI/local) |
+| S2 Fan-out: 1 publicador + 50 viewers bot en un puerto mux, con 4 vCPU | Hilo mux < 70 %, TTFF p95 < 2 s, 0 errores SRTP | Rango de puertos sin mux | Docker (CI/local). **Pasó** (2026-11-01): ver §7.1 |
 | S3 Docker: bridge + UDP publicado + reescritura del candidato | Conexión directa desde la LAN; `relay` por coturn | `network_mode: host` | Navegador real |
 | S4 Build en `debian:trixie-slim` y `ubuntu-24.04` | Release, ASan y TSan enlazan | Imagen dev precompilada | Docker |
 | S5 Audio del PC: Chrome/Edge/Firefox × Windows/Linux/macOS, pantalla vs pestaña | Matriz documentada; música estéreo sin eco en Chrome+Windows y en pestaña de Chrome | Solo audio de pestaña + aviso | Equipos del equipo |

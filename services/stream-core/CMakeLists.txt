@@ -59,6 +59,16 @@ if(STREAM_BUILD_RTC)
     target_compile_options(stream-core PRIVATE ${STREAM_WARNINGS})
     target_link_libraries(stream-core PRIVATE stream_core_rtc)
   endif()
+
+  # Spike S2 (make load-stream): bots WHIP/WHEP con libdatachannel. No es una prueba ni cuenta en la
+  # cobertura (gcovr filtra src/).
+  option(STREAM_BUILD_LOADBOT "Compilar el bot de carga (loadtest/loadbot.cpp)" OFF)
+  if(STREAM_BUILD_LOADBOT)
+    add_executable(stream_core_loadbot loadtest/loadbot.cpp)
+    target_include_directories(stream_core_loadbot PRIVATE tests)
+    target_compile_options(stream_core_loadbot PRIVATE ${STREAM_WARNINGS} -Wno-missing-field-initializers)
+    target_link_libraries(stream_core_loadbot PRIVATE stream_core_lib LibDataChannel::LibDataChannel)
+  endif()
 endif()
 
 if(STREAM_BUILD_TESTS)

@@ -5,7 +5,7 @@ COVERAGE_MIN := 85
 NODE_SERVICES := services/identity-api
 CPP_SERVICES := services/voice-core
 
-.PHONY: up down test-all test-go test-python test-web test-node test-cpp test-stream smoke-stream load-voice e2e-voice
+.PHONY: up down test-all test-go test-python test-web test-node test-cpp test-stream smoke-stream load-stream load-voice e2e-voice
 
 up:
 	docker compose up -d
@@ -62,6 +62,11 @@ test-stream:
 # Prueba rápida contra stream-core levantado (docker compose up -d stream-core).
 smoke-stream:
 	python3 -I services/stream-core/scripts/smoke.py --url http://localhost:8086 --secret $${JWT_SECRET:-dev-secret-change-in-prod}
+
+# Spike S2: publicador VP8 simulcast + VIEWERS bots WHEP (libdatachannel) contra stream-core en :8086.
+# Si no está arriba, levanta redis + stream-core con compose y los baja al terminar. VIEWERS=50 DURATION=30.
+load-stream:
+	services/stream-core/loadtest/run.sh
 
 # Carga de la señalización de voz (k6 en Docker contra voice-core en :8085).
 load-voice:

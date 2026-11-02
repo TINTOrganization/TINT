@@ -94,6 +94,10 @@ docker run --rm --user "$(id -u):$(id -g)" -v "$PWD/services/stream-core:/src" -
 
 # Servicio y prueba rápida
 docker compose up -d redis stream-core && make smoke-stream
+
+# Carga S2: 1 publicador simulcast + 50 viewers WHEP (bots libdatachannel, target CMake opcional
+# STREAM_BUILD_LOADBOT=ON, fuera de la cobertura). Levanta redis + stream-core si no están y los baja.
+make load-stream                          # VIEWERS=50 DURATION=30 por defecto
 ```
 
 ## Variables de Entorno
@@ -115,5 +119,5 @@ docker compose up -d redis stream-core && make smoke-stream
 - **El host necesita dos sesiones WHIP** (vídeo y audio): libdatachannel solo enruta el simulcast por `rid` si la PeerConnection tiene una pista (ADR 0018).
 - **No hay ICE restart por `PATCH`** (`405`): el cliente hace un POST nuevo.
 - **Spikes pendientes en navegador real** (S1 simulcast, S3 Docker/LAN, S5 audio del PC): ver [dominio-transmision §9](../../docs/dominio-transmision.md#9-fase-0-spikes). Hasta que pasen, ADR 0018 sigue como *Propuesta*.
-- **Carga de 50 viewers (S2)** y E2E de latencia: *previstos* (bots en C++ en `loadtest/`, Puppeteer en `e2e/`).
+- **Carga de 50 viewers (S2): pasó** (TTFF p95 1.16 s, 0 fallos, 409 al 51, hilo más cargado 4.4 %; [§7.1](../../docs/dominio-transmision.md#71-medido-2026-11-01)). El TTFF está acotado por `PliThrottle` (~1 s). E2E de latencia en navegador: *previsto* (Puppeteer en `e2e/`).
 - **Imagen de runtime: ~148 MB** (Debian slim + libssl/hiredis/libsrtp2 + libdatachannel sin símbolos). La etapa `dev` conserva los símbolos para depurar.
