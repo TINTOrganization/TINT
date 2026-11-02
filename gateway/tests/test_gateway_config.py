@@ -5,6 +5,7 @@ import yaml
 
 CONFIG = Path(__file__).parents[1] / "Caddyfile"
 COMPOSE = Path(__file__).parents[2] / "docker-compose.yml"
+PRODUCTION_COMPOSE = Path(__file__).parents[2] / "docker-compose.production.yml"
 
 
 class GatewayConfigTests(unittest.TestCase):
@@ -17,6 +18,12 @@ class GatewayConfigTests(unittest.TestCase):
         self.assertIn("@health path /healthz", caddyfile)
         self.assertIn("@frontend not path /api/* /ws/*", caddyfile)
         self.assertIn("reverse_proxy @frontend web:80", caddyfile)
+
+    def test_gateway_redirects_plain_http_to_https_with_308(self):
+        """OPS-03/AC3: redirige HTTP plano a HTTPS con código 308 conservando host y URI."""
+        caddyfile = CONFIG.read_text(encoding="utf-8")
+        self.assertIn("http://{$GATEWAY_HOST:localhost}", caddyfile)
+        self.assertIn("redir https://{host}:{$GATEWAY_HTTPS_PORT:443}{uri} 308", caddyfile)
 
     def test_gateway_routes_all_public_service_connectors(self):
         caddyfile = CONFIG.read_text(encoding="utf-8")
@@ -69,6 +76,7 @@ class GatewayConfigTests(unittest.TestCase):
         self.assertIn('"${GATEWAY_HTTP_PORT:-80}:80"', compose)
         self.assertIn('"${GATEWAY_HTTPS_PORT:-443}:443"', compose)
         self.assertIn("restart: unless-stopped", compose)
+        self.assertIn("- gateway-data:/data", compose)
 
     def test_gateway_preserves_or_generates_correlation_id(self):
         caddyfile = CONFIG.read_text(encoding="utf-8")
@@ -81,6 +89,33 @@ class GatewayConfigTests(unittest.TestCase):
 
 
 class ComposeStructureTests(unittest.TestCase):
+    def test_production_override_keeps_gateway_as_the_only_public_web_api_ws_entry(self):
+        """OPS-03/AC1: en producción web, API y WS no se publican fuera del gateway."""
+        compose = COMPOSE.read_text(encoding="utf-8")
+        production = PRODUCTION_COMPOSE.read_text(encoding="utf-8")
+
+        self.assertIn('"${GATEWAY_HTTP_PORT:-80}:80"', compose)
+        self.assertIn('"${GATEWAY_HTTPS_PORT:-443}:443"', compose)
+        self.assertNotIn("  gateway:\n    ports: !reset []", production)
+        for service in ("web", "identity-api", "sync-core", "social-core", "analytics", "voice-core"):
+            self.assertIn(
+                f"  {service}:\n    ports: !reset []",
+                production,
+                msg=f"{service} debe dejar de publicar puertos en producción",
+            )
+
+    def test_gateway_persists_certificates_and_restarts_on_failure(self):
+        """OPS-03/AC2: Caddy conserva certificados en gateway-data y se reinicia automáticamente."""
+        data = yaml.safe_load(COMPOSE.read_text(encoding="utf-8"))
+        gateway = data.get("services", {}).get("gateway", {})
+        self.assertEqual(gateway.get("restart"), "unless-stopped")
+        volumes = gateway.get("volumes", [])
+        self.assertTrue(
+            any("gateway-data:/data" in str(v) for v in volumes),
+            "El gateway debe montar gateway-data en /data para preservar certificados",
+        )
+        self.assertIn("gateway-data", data.get("volumes", {}))
+
     def test_compose_lists_all_required_services(self):
         """OPS-02/AC1: gateway, web, servicios, bases de datos, MongoDB y coturn en el Compose."""
         compose = COMPOSE.read_text(encoding="utf-8")
