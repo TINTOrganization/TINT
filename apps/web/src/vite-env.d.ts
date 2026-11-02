@@ -12,6 +12,8 @@ interface ImportMetaEnv {
   readonly VITE_DEMO_VIDEO_URL?: string;
   /** API de lectura de analytics (p. ej. http://localhost:8084/api/v1). */
   readonly VITE_ANALYTICS_API_URL?: string;
+  /** Origen de stream-core o del gateway (WHIP/WHEP en /api/v1/stream; p. ej. http://localhost:8086). */
+  readonly VITE_STREAM_API_URL?: string;
 }
 
 interface ImportMeta {

@@ -312,3 +312,45 @@ describe('TriviaPopup', () => {
     expect(screen.getByRole('alert')).toHaveTextContent('Ya respondiste esta pregunta.');
   });
 });
+
+describe('TriviaPanel — sala live', () => {
+  it('el host lanza ya una pregunta pendiente', () => {
+    const onLaunchNow = vi.fn(() => true);
+    render(
+      <TriviaPanel
+        isHost
+        live
+        schedule={schedule}
+        leaderboard={noBoard}
+        getCurrentMs={() => 0}
+        onSchedule={() => true}
+        onUpdate={() => true}
+        onDelete={() => true}
+        onLaunchNow={onLaunchNow}
+        error={null}
+      />,
+    );
+    expect(screen.getByText(/minuto de la transmisión/)).toBeInTheDocument();
+    // Solo las pendientes (t2 y la que no trae estado) se pueden lanzar.
+    expect(screen.getAllByRole('button', { name: /lanzar ahora/i })).toHaveLength(2);
+    fireEvent.click(screen.getByRole('button', { name: 'Lanzar ahora la pregunta de 02:05' }));
+    expect(onLaunchNow).toHaveBeenCalledWith('t2');
+  });
+
+  it('el invitado ve el texto de la transmisión', () => {
+    render(
+      <TriviaPanel
+        isHost={false}
+        live
+        schedule={[]}
+        leaderboard={noBoard}
+        getCurrentMs={() => 0}
+        onSchedule={() => true}
+        onUpdate={() => true}
+        onDelete={() => true}
+        error={null}
+      />,
+    );
+    expect(screen.getByText(/durante la transmisión/i)).toBeInTheDocument();
+  });
+});
