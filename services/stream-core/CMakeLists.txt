@@ -81,4 +81,10 @@ if(STREAM_BUILD_TESTS)
     target_link_libraries(stream_core_rtc_tests PRIVATE stream_core_rtc GTest::gtest GTest::gtest_main)
     gtest_discover_tests(stream_core_rtc_tests DISCOVERY_TIMEOUT 30)
   endif()
+
+  # Microbenchmark del camino caliente (no es una prueba; ver loadtest/README en AGENTS.md).
+  add_executable(stream_core_bench loadtest/forward_bench.cpp)
+  target_include_directories(stream_core_bench PRIVATE tests)
+  target_compile_options(stream_core_bench PRIVATE ${STREAM_WARNINGS} -Wno-missing-field-initializers)
+  target_link_libraries(stream_core_bench PRIVATE stream_core_lib)
 endif()

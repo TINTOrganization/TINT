@@ -209,6 +209,16 @@ En una sala `live`, una trivia programada con `at_ms` se abre en `started_at_ms 
 | Camino caliente | `atomic<shared_ptr<const vector>>` de viewers; un escritor por reescritor; capa deseada atómica | Sin mutex por paquete (TSan) |
 | Señalización | Decisión pura → Redis (500 ms) → `setRemoteDescription` → recolección ≤ 1.5 s | < 5 s (timeout de Caddy) |
 
+### 7.1 Medido (2026-11-01)
+| Medición | Resultado | Cómo |
+| :--- | :--- | :--- |
+| Camino caliente del SFU (demux + buffer NACK + reescritura por viewer), **sin SRTP** | **261 ns por paquete saliente** con 50 viewers; 4.3 µs por paquete del host repartido a 50. A la tasa real (~370 paquetes/s del host) es **0.16 % de un núcleo** | `stream_core_bench 50 20000` (Release, 4 vCPU, `loadtest/forward_bench.cpp`) |
+| Imagen de runtime | 148 MB | `docker images` |
+| Señalización contra el servicio real | `/healthz` 200; smoke 13/13 (401/403/404/410/415/400/201/DELETE) | `scripts/smoke.py` |
+| Pendiente (S2) | TTFF p95 y CPU con SRTP y 50 PeerConnections reales | bots con libdatachannel |
+
+Conclusión: el reenvío en sí no es el cuello de botella. El costo dominante será el cifrado SRTP (en libdatachannel) y el egreso de red, y eso es lo que mide S2.
+
 ## 8. Plan de pruebas (TDD)
 
 Las pruebas unitarias (GoogleTest) cubren el código puro, sin libdatachannel: `request_decision`, `stream_state`, `room`, `layer_selector`, `rtp_rewriter`, `vp8`, `rtp_packet`, `rtcp`, `simulcast_demux`, `nack_buffer`, `pli_throttle`, `sdp_munge`, `ice_servers`, `internal_api`, `sync_listener`, `room_store`, `identity_client`, `config` y `server`. La lista de casos está en [stream-core/AGENTS.md](../services/stream-core/AGENTS.md#pruebas).
