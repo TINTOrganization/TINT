@@ -1,5 +1,5 @@
 import { eq, and, ne } from 'drizzle-orm';
-import { db } from '../../db/client.js';
+import { db, type DbExecutor } from '../../db/client.js';
 import { rooms } from '../../db/schema.js';
 
 export type Room = typeof rooms.$inferSelect;
@@ -7,8 +7,8 @@ export type NewRoom = typeof rooms.$inferInsert;
 
 export const ACTIVE_STATUSES = ['active'] as const;
 
-export async function create(room: NewRoom) {
-  const result = await db.insert(rooms).values(room).returning();
+export async function create(room: NewRoom, executor: DbExecutor = db) {
+  const result = await executor.insert(rooms).values(room).returning();
   return result[0];
 }
 

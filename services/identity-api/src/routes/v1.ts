@@ -8,7 +8,8 @@ import { requireRoomOwner } from '../middlewares/requireRoomOwner.js';
 import { upsertByProvider } from '../modules/users/users.repo.js';
 import { requireRoomHostOrGuest } from '../middlewares/guestAuth.js';
 import { requireActiveRoom } from '../middlewares/activeRoom.js';
-import { create as createRoom, listByHost, findById, softRemoveById, updateTitle, setMedia } from '../modules/rooms/rooms.repo.js';
+import { createRoomWithInvitation } from '../modules/rooms/rooms.create.js';
+import { listByHost, findById, softRemoveById, updateTitle, setMedia } from '../modules/rooms/rooms.repo.js';
 import { create as createInvitation, findByCode, setRevoked, listByRoom, listLatestActiveByRooms } from '../modules/invitations/invitations.repo.js';
 import { issueGuestToken, generateHostTicket } from '../modules/auth/auth.service.js';
 import { publishAnalyticsEvent } from '../modules/analytics/analytics.events.js';
@@ -96,15 +97,12 @@ const createRoomSchema = z.object({
 });
 router.post('/rooms', requireAuthHost, validate(createRoomSchema), async (req, res) => {
   const { title } = req.body;
-  const room = await createRoom({ title, hostId: req.user!.id });
   const ttlHours = parseInt(env.INVITATION_DEFAULT_TTL_HOURS, 10);
   const expiresAt = new Date(Date.now() + ttlHours * 60 * 60 * 1000);
-  const invitation = await createInvitation({
-    roomId: room.id,
-    createdBy: req.user!.id,
-    expiresAt,
-    revoked: false,
-  });
+  const { room, invitation } = await createRoomWithInvitation(
+    { title, hostId: req.user!.id },
+    { createdBy: req.user!.id, expiresAt, revoked: false },
+  );
   res.json({
     room,
     invitation: {
