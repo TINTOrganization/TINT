@@ -501,6 +501,44 @@ describe('rutas v1', () => {
     });
   });
 
+  it('GET /invitations/:code 404 si la invitación no existe', async () => {
+    vi.mocked(findByCode).mockResolvedValueOnce(null as any);
+    const res = await request(app).get('/api/v1/invitations/nope');
+    expect(res.status).toBe(404);
+  });
+
+  it('GET /invitations/:code 409 si la invitación está revocada', async () => {
+    vi.mocked(findByCode).mockResolvedValueOnce({ ...invitation, revoked: true } as any);
+    const res = await request(app).get('/api/v1/invitations/abc');
+    expect(res.status).toBe(409);
+  });
+
+  it('GET /invitations/:code 410 si la invitación expiró', async () => {
+    vi.mocked(findByCode).mockResolvedValueOnce({ ...invitation, expiresAt: new Date(Date.now() - 1000) } as any);
+    const res = await request(app).get('/api/v1/invitations/abc');
+    expect(res.status).toBe(410);
+  });
+
+  it('GET /invitations/:code 410 si la sala está eliminada', async () => {
+    vi.mocked(findByCode).mockResolvedValueOnce({ ...invitation } as any);
+    vi.mocked(findById).mockResolvedValueOnce(deletedRoom as any);
+    const res = await request(app).get('/api/v1/invitations/abc');
+    expect(res.status).toBe(410);
+  });
+
+  it('GET /invitations/:code 200 devuelve detalles de la sala', async () => {
+    vi.mocked(findByCode).mockResolvedValueOnce({ ...invitation } as any);
+    vi.mocked(findById).mockResolvedValueOnce(room as any);
+    const res = await request(app).get('/api/v1/invitations/abc');
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({
+      code: invitation.code,
+      roomId: 'room-1',
+      roomTitle: 'Noche de cine',
+      expiresAt: invitation.expiresAt.toISOString(),
+    });
+  });
+
   it('POST /rooms/:id/invitations 410 si la sala está eliminada', async () => {
     vi.mocked(isOwner).mockResolvedValueOnce(true);
     vi.mocked(findById).mockResolvedValueOnce(deletedRoom as any);

@@ -12,12 +12,12 @@ export async function create(invitation: Omit<NewInvitation, 'code' | 'id'>) {
   return result[0];
 }
 
-export async function findByCode(code: string) {
+export async function findByCode(code: string): Promise<Invitation | null> {
   const result = await db.select().from(invitations).where(eq(invitations.code, code));
   return result[0] || null;
 }
 
-export async function setRevoked(id: string, revoked = true) {
+export async function setRevoked(id: string, revoked = true): Promise<Invitation | null> {
   const result = await db.update(invitations).set({ revoked }).where(eq(invitations.id, id)).returning();
   return result[0] || null;
 }

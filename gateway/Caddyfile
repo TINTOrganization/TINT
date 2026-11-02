@@ -16,9 +16,9 @@ https://{$GATEWAY_HOST:localhost} {
         respond @upstream_unavailable `{"error":"service_unavailable","message":"The requested service is temporarily unavailable."}` 503
     }
 
-    @public path / /healthz /api/v1/healthz /api/v1/invitations/claim
+    @public path / /healthz /api/v1/healthz /api/v1/invitations/claim /api/v1/invitations/*
     @protected {
-        not path / /healthz /api/v1/healthz /api/v1/invitations/claim
+        not path / /healthz /api/v1/healthz /api/v1/invitations/claim /api/v1/invitations/*
     }
 
     forward_auth @protected {$IDENTITY_API_UPSTREAM:host.docker.internal:8081} {
