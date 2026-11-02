@@ -291,7 +291,7 @@ describe('POST /rooms/:id/end (HU-LIVE-05)', () => {
   });
 
   it('ADR 0019: si la sala desaparece tras la autorización responde 404', async () => {
-    vi.mocked(findById).mockResolvedValue(null);
+    vi.mocked(findById).mockResolvedValue(null as any);
 
     const res = await request(app).post('/api/v1/rooms/room-1/end').send({});
 

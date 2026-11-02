@@ -18,7 +18,10 @@ export const rooms = pgTable('rooms', {
   id: uuid('id').primaryKey().defaultRandom(),
   hostId: uuid('host_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
   title: varchar('title', { length: 150 }).notNull(),
+  // active → deleted (borrado lógico) | disabled (sala live terminada, ADR 0019; terminal).
   status: varchar('status', { length: 20 }).notNull().default('active'),
+  // watch: vídeo sincronizado (sync-core) · live: transmisión del host (stream-core). ADR 0019.
+  kind: varchar('kind', { length: 10, enum: ['watch', 'live'] }).notNull().default('watch'),
   // Vídeo asignado (F3): id estable que viaja en LOAD/STATE y key del objeto en MINIO_BUCKET.
   mediaId: uuid('media_id'),
   mediaKey: text('media_key'),

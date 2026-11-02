@@ -64,6 +64,13 @@
       "when": 1793570668517,
       "tag": "0008_video_failure_reason",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1793592437553,
+      "tag": "0009_room_kind",
+      "breakpoints": true
     }
   ]
 }
