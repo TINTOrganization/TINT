@@ -29,6 +29,7 @@ Cada ADR de esta carpeta se escribió a partir de evidencia del repositorio (có
 | [0019](0019-salas-live-y-cierre-room-closed.md) | Salas `live` y cierre de sala `ROOM_CLOSED` en todos los servicios | Propuesta | 2026-11-01 | identity-api, stream-core, sync-core, social-core, voice-core, web |
 | [0020](0020-entrada-unica-https-y-topologia-produccion.md) | Entrada única HTTPS y topología de producción Compose | Aceptada | 2026-11-02 | Infraestructura, web |
 | [0021](0021-observabilidad-salud-y-logs.md) | Salud y logs uniformes para operar los contenedores | Aceptada | 2026-11-02 | Todos los servicios, web, infraestructura |
+| [0022](0022-secretos-por-variables-de-entorno.md) | Secretos exclusivamente por variables de entorno | Aceptada | 2026-11-02 | Infraestructura, CI/CD, todos |
 
 ```mermaid
 flowchart LR
@@ -54,6 +55,7 @@ flowchart LR
     A17 --> A20["0020 entrada única HTTPS y topología prod"]
     A5 --> A20
     A17 --> A21["0021 salud y logs uniformes"]
+    A17 --> A22["0022 secretos por variables de entorno"]
 ```
 
 ## Formato
