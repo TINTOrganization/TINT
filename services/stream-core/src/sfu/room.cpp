@@ -49,9 +49,11 @@ bool Room::add_viewer(std::shared_ptr<Viewer> viewer, std::int64_t /*now_ms*/) {
     next->push_back(viewer);
     viewers_.store(std::move(next), std::memory_order_release);
   }
-  // Entra en la capa baja (primer frame rápido). El keyframe se pide con su primer RTCP: uno pedido
-  // ahora (o al abrir la pista del lado del SFU) llega antes de que el viewer tenga las claves SRTP,
-  // se pierde y el siguiente cae en la ventana de PliThrottle (spike S2: TTFF 1.2 s -> 0.17 s).
+  // Entra en la capa baja (primer frame rápido). El keyframe se pide cuando abre su DataChannel o con
+  // su primer RTCP (lo que llegue antes): uno pedido ahora (o al abrir la pista del lado del SFU) llega
+  // antes de que el viewer tenga las claves SRTP, se pierde y el siguiente cae en la ventana de
+  // PliThrottle (spike S2: TTFF 1.2 s -> 0.17 s). Chrome manda su primer RTCP ~2.5 s después de
+  // conectar; su DataChannel abre enseguida (E2E R7).
   return true;
 }
 
@@ -126,6 +128,9 @@ Room::Ingest Room::on_host_video(rtp::ByteView packet, std::int64_t now_ms) {
     v->video_.set_target(v->desired_layer());
     if (auto out = v->video_.rewrite(packet, *view, *layer, keyframe, now_ms))
       v->sink().send_video(std::move(*out));
+    const int forwarding = v->video_.current().value_or(-1);
+    if (forwarding != v->forwarding_.load(std::memory_order_relaxed))
+      v->forwarding_.store(forwarding, std::memory_order_relaxed);
   }
   return {layer, keyframe};
 }
@@ -195,6 +200,13 @@ HostStats Room::host_stats(std::int64_t now_ms) {
   return out;
 }
 
+void Room::on_viewer_ready(const std::string& viewer_id, std::int64_t now_ms) {
+  auto list = viewers();
+  auto it = std::ranges::find_if(*list, [&](const auto& v) { return v->id() == viewer_id; });
+  if (it == list->end()) return;
+  if (!(*it)->ready_.exchange(true)) request_keyframe((*it)->desired_layer(), now_ms);
+}
+
 void Room::on_viewer_rtcp(const std::string& viewer_id, rtp::ByteView packet, std::int64_t now_ms) {
   auto list = viewers();
   auto it = std::ranges::find_if(*list, [&](const auto& v) { return v->id() == viewer_id; });
@@ -214,8 +226,8 @@ void Room::on_viewer_rtcp(const std::string& viewer_id, rtp::ByteView packet, st
       if (auto rtx = v.video_.retransmission(*stored, out_seq)) v.sink().send_video(std::move(*rtx));
     }
   }
-  const bool first_rtcp = !v.rtcp_seen_.exchange(true);
-  if (first_rtcp || !info->keyframe_requests.empty()) request_keyframe(v.desired_layer(), now_ms);
+  const bool first_signal = !v.ready_.exchange(true);
+  if (first_signal || !info->keyframe_requests.empty()) request_keyframe(v.desired_layer(), now_ms);
 
   std::lock_guard lock(v.selector_mu_);
   int layer = v.selector_.layer();
@@ -233,8 +245,15 @@ void Room::tick(std::int64_t now_ms) {
   const auto snapshot = viewers();
 
   for (const auto& v : *snapshot) {
-    std::lock_guard lock(v->selector_mu_);
-    apply_layer(*v, v->selector_.on_tick(active, now_ms), now_ms);
+    {
+      std::lock_guard lock(v->selector_mu_);
+      apply_layer(*v, v->selector_.on_tick(active, now_ms), now_ms);
+    }
+    // Un pedido de keyframe que PliThrottle descartó no se pierde: mientras un viewer listo no reciba
+    // su capa, se vuelve a pedir (sigue limitado a 1 PLI por capa y por segundo).
+    const int desired = v->desired_layer();
+    if (v->ready_.load() && v->forwarding_.load(std::memory_order_relaxed) != desired)
+      request_keyframe(desired, now_ms);
   }
 }
 

@@ -40,6 +40,7 @@ struct PeerCallbacks {
   std::function<void(rtp::ByteView)> on_rtcp;          // RTCP del viewer
   std::function<void(const std::string&)> on_message;  // DataChannel (escena del host)
   std::function<void()> on_closed;                     // Disconnected/Failed/Closed
+  std::function<void()> on_open;                       // DataChannel abierto (DTLS listo)
 };
 
 class PeerFactory {

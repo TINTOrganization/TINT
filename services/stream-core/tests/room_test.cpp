@@ -110,6 +110,44 @@ TEST_F(RoomTest, KeyframeRequestedOnFirstViewerRtcpNotOnJoin) {
   EXPECT_EQ(host->plis().size(), 1u) << "solo el primer RTCP sin PLI pide keyframe";
 }
 
+TEST_F(RoomTest, KeyframeRequestedWhenViewerDataChannelOpens) {
+  // E2E con Chrome: su primer RTCP llega ~2.5 s después de conectar (TTFF p50 2.6 s). El DataChannel
+  // del viewer abre en cuanto termina su DTLS (SCTP viaja cifrado): ya puede descifrar el keyframe.
+  prime();
+  host->rtcp.clear();
+  auto v = make_viewer("v");
+  room.add_viewer(v.viewer, 5'000);
+  room.on_viewer_ready("v", 5'050);
+  EXPECT_EQ(host->plis(), (std::vector<std::uint32_t>{kSsrcL}));
+  room.on_viewer_rtcp("v", empty_rr(0xC000), 7'000);
+  EXPECT_EQ(host->plis().size(), 1u) << "el primer RTCP ya no pide otro";
+  room.on_viewer_ready("nadie", 7'100);
+  EXPECT_EQ(host->plis().size(), 1u);
+}
+
+TEST_F(RoomTest, ThrottledKeyframeRequestIsRetriedUntilViewerGetsOne) {
+  // E2E: el segundo viewer entra dentro de la ventana de PliThrottle del primero y, si su pedido se
+  // descarta, Chrome nunca manda PLI (no recibió nada): se quedaba sin vídeo. El tick lo reintenta.
+  prime();
+  host->rtcp.clear();
+  auto a = make_viewer("a", 0xA000);
+  auto b = make_viewer("b", 0xB000);
+  room.add_viewer(a.viewer, 5'000);
+  room.on_viewer_ready("a", 5'000);
+  room.on_host_video(host_video(0, 2, true), 5'100);
+  room.add_viewer(b.viewer, 5'200);
+  room.on_viewer_ready("b", 5'200);
+  EXPECT_EQ(host->plis().size(), 1u) << "limitado: 1 PLI por capa y por segundo";
+  room.tick(5'500);
+  EXPECT_EQ(host->plis().size(), 1u);
+  room.tick(6'100);
+  EXPECT_EQ(host->plis().size(), 2u) << "b sigue sin keyframe: se pide otra vez";
+  room.on_host_video(host_video(0, 3, true), 6'200);
+  EXPECT_EQ(b.sink->video_count(), 1u);
+  room.tick(7'300);
+  EXPECT_EQ(host->plis().size(), 2u) << "todos reciben su capa: no hay más PLI";
+}
+
 TEST_F(RoomTest, HostUploadIndependentOfViewerCount) {
   // HU-LIVE-02 AC2 / HU-LIVE-04 AC1: 50 entradas no multiplican lo que se pide al host.
   prime();

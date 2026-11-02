@@ -166,7 +166,8 @@ std::expected<SessionAnswer, http::Problem> StreamService::publish(const http::W
                                   on_host_closed(e, session_id);
                                 else
                                   remove_session(session_id);
-                              }};
+                              },
+                          .on_open = {}};
 
   auto peer = peers_.create({role, session_id, cmd.sdp, {}}, std::move(callbacks));
   if (!peer) return std::unexpected(peer.error());
@@ -244,7 +245,11 @@ std::expected<SessionAnswer, http::Problem> StreamService::watch(const http::Whe
                                 if (auto e = weak.lock()) e->room.on_viewer_rtcp(session_id, p, clock_());
                               },
                           .on_message = {},
-                          .on_closed = [this, session_id] { remove_session(session_id); }};
+                          .on_closed = [this, session_id] { remove_session(session_id); },
+                          .on_open =
+                              [this, weak, session_id] {
+                                if (auto e = weak.lock()) e->room.on_viewer_ready(session_id, clock_());
+                              }};
   auto peer = peers_.create({PeerRole::Viewer, session_id, cmd.sdp, options}, std::move(callbacks));
   if (!peer) return std::unexpected(peer.error());
 

@@ -313,3 +313,13 @@ TEST_F(StreamServiceTest, HostReceivesHostStatsOncePerSecond) {
   EXPECT_EQ(count(), 2);
   EXPECT_FALSE(peer(v.session_id).peer->has_event("host_stats")) << "los viewers no la reciben";
 }
+
+TEST_F(StreamServiceTest, ViewerDataChannelOpenRequestsKeyframe) {
+  auto h = publish_host();
+  host_sends_keyframe(h.session_id);
+  auto v = watch("ana");
+  ASSERT_TRUE(peer(v.session_id).callbacks.on_open);
+  peer(h.session_id).peer->rtcp.clear();
+  peer(v.session_id).callbacks.on_open();
+  EXPECT_EQ(peer(h.session_id).peer->rtcp.size(), 1u) << "PLI al host: TTFF sin esperar el RTCP del viewer";
+}

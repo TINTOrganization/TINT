@@ -64,7 +64,10 @@ class Viewer {
   std::shared_ptr<ViewerSink> sink_;
   std::atomic<int> desired_layer_{0};
   std::atomic<bool> closed_{false};
-  std::atomic<bool> rtcp_seen_{false};  // su primer SRTCP: ya tiene claves y puede recibir un keyframe
+  // Su DataChannel abrió o llegó su primer SRTCP: ya tiene claves y puede recibir un keyframe.
+  std::atomic<bool> ready_{false};
+  // Capa que recibe de verdad (-1: esperando keyframe). La escribe la ingesta y la lee tick().
+  std::atomic<int> forwarding_{-1};
   // Solo el hilo de ingesta de cada medio toca su reescritor.
   RtpRewriter video_;
   RtpRewriter audio_;
@@ -109,6 +112,8 @@ class Room {
   void on_host_audio(rtp::ByteView packet, std::int64_t now_ms);
   // El primer RTCP del viewer (o cualquier PLI/FIR) pide un keyframe de su capa (limitado).
   void on_viewer_rtcp(const std::string& viewer_id, rtp::ByteView packet, std::int64_t now_ms);
+  // Su DataChannel abrió (terminó su DTLS): pide el keyframe sin esperar al primer RTCP.
+  void on_viewer_ready(const std::string& viewer_id, std::int64_t now_ms);
   void tick(std::int64_t now_ms);  // evalúa capas de todos los viewers
 
   void broadcast_event(const std::string& json);
