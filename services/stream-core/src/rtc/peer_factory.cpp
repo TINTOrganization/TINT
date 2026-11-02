@@ -229,6 +229,7 @@ std::expected<std::shared_ptr<service::Peer>, http::Problem> LibDataChannelPeerF
     if (request.role == PeerRole::HostVideo) {
       answer = sdp::fix_simulcast_answer(answer);
       answer = sdp::add_start_bitrate(answer, config_.start_bitrate_kbps);
+      answer = sdp::add_goog_remb(answer);  // el SFU le envía REMB (§7.1)
     } else {
       answer = sdp::opus_stereo(answer);
     }

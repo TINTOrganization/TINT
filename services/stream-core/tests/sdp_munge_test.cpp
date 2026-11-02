@@ -96,3 +96,18 @@ TEST(SdpMunge, OpusAnswerKeepsStereo128k) {
   EXPECT_TRUE(has(opus_stereo(bare), "a=fmtp:109 stereo=1;sprop-stereo=1;maxaveragebitrate=128000\r\n"));
   EXPECT_EQ(opus_stereo(out), out) << "idempotente";
 }
+
+TEST(SdpMunge, AnswerAdvertisesGoogRembForVp8) {
+  // Chrome solo usa el REMB del SFU como límite de su estimación si el feedback está negociado.
+  const std::string answer =
+      "m=video 9 UDP/TLS/RTP/SAVPF 96\r\na=rtpmap:96 VP8/90000\r\na=rtcp-fb:96 nack\r\n"
+      "a=rtcp-fb:96 nack pli\r\na=rid:h recv\r\n";
+  auto out = add_goog_remb(answer);
+  EXPECT_TRUE(has(out, "a=rtcp-fb:96 nack pli\r\na=rtcp-fb:96 goog-remb\r\na=rid:h recv\r\n"));
+  EXPECT_EQ(count(out, "goog-remb"), 1);
+  EXPECT_EQ(add_goog_remb(out), out) << "idempotente";
+  const std::string bare = "m=video 9 UDP/TLS/RTP/SAVPF 97\r\na=rtpmap:97 VP8/90000\r\na=sendonly\r\n";
+  EXPECT_TRUE(has(add_goog_remb(bare), "a=rtpmap:97 VP8/90000\r\na=rtcp-fb:97 goog-remb\r\na=sendonly\r\n"));
+  const std::string audio = "m=audio 9 UDP/TLS/RTP/SAVPF 111\r\na=rtpmap:111 opus/48000/2\r\n";
+  EXPECT_EQ(add_goog_remb(audio), audio) << "solo vídeo";
+}

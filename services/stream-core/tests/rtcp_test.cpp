@@ -125,6 +125,49 @@ TEST(Rtcp, BuildsRembForLargeBitrateWithinMantissaPrecision) {
   EXPECT_GT(info->remb->bitrate_bps, 299'000'000u);
 }
 
+TEST(Rtcp, BuildsRembWireFormatForTheHost) {
+  // draft-alvestrand-rmcat-remb: PSFB (206) FMT=15, media SSRC 0, "REMB", Num SSRC, Exp(6)/Mantissa(18).
+  // 4.26 Mbps = 133125 × 2^5 (exacto en 18 bits de mantisa).
+  std::vector<std::uint32_t> ssrcs{0x10, 0x20, 0x30};
+  auto b = build_remb(0xABCD, 4'260'000, ssrcs);
+  const Bytes expected{0x8F,
+                       206,
+                       0x00,
+                       0x07,  // V=2 FMT=15, 8 palabras
+                       0x00,
+                       0x00,
+                       0xAB,
+                       0xCD,
+                       0x00,
+                       0x00,
+                       0x00,
+                       0x00,  // emisor, medio = 0
+                       'R',
+                       'E',
+                       'M',
+                       'B',
+                       0x03,  // 3 SSRC
+                       (5 << 2) | 0x02,
+                       0x08,
+                       0x05,  // exp 5, mantisa 0x20805
+                       0x00,
+                       0x00,
+                       0x00,
+                       0x10,
+                       0x00,
+                       0x00,
+                       0x00,
+                       0x20,
+                       0x00,
+                       0x00,
+                       0x00,
+                       0x30};
+  EXPECT_EQ(b, expected);
+  auto info = parse_rtcp(b);
+  ASSERT_TRUE(info && info->remb);
+  EXPECT_EQ(info->remb->bitrate_bps, 4'260'000u);
+}
+
 TEST(Rtcp, BuildsNackRoundTrip) {
   std::vector<std::uint16_t> seqs{10, 11, 26, 27, 100};
   auto info = parse_rtcp(build_nack(1, 0x99, seqs));

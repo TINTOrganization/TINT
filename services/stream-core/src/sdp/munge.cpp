@@ -1,5 +1,6 @@
 #include "sdp/munge.hpp"
 
+#include <map>
 #include <set>
 #include <sstream>
 #include <vector>
@@ -149,6 +150,32 @@ std::string add_start_bitrate(std::string_view answer, int kbps) {
     if (l.starts_with("a=rtpmap:"))
       if (auto pt = attribute_pt(l); pt && vp8.contains(*pt) && !has_fmtp.contains(*pt))
         out.push_back("a=fmtp:" + std::to_string(*pt) + " " + param);
+  }
+  return join(out);
+}
+
+std::string add_goog_remb(std::string_view answer) {
+  auto lines = lines_of(answer);
+  std::set<int> vp8;
+  std::set<int> has_remb;
+  for (const auto& l : lines) {
+    if (l.starts_with("a=rtpmap:") &&
+        (l.find(" VP8/") != std::string::npos || l.find(" vp8/") != std::string::npos))
+      if (auto pt = attribute_pt(l)) vp8.insert(*pt);
+    if (l.starts_with("a=rtcp-fb:") && l.ends_with(" goog-remb"))
+      if (auto pt = attribute_pt(l)) has_remb.insert(*pt);
+  }
+  // Va tras la última línea rtpmap/rtcp-fb de su payload type (o tras el rtpmap si no hay feedback).
+  std::map<int, std::size_t> last_line;
+  for (std::size_t i = 0; i < lines.size(); ++i)
+    if (lines[i].starts_with("a=rtpmap:") || lines[i].starts_with("a=rtcp-fb:"))
+      if (auto pt = attribute_pt(lines[i]); pt && vp8.contains(*pt) && !has_remb.contains(*pt))
+        last_line[*pt] = i;
+  std::vector<std::string> out;
+  for (std::size_t i = 0; i < lines.size(); ++i) {
+    out.push_back(lines[i]);
+    for (const auto& [pt, at] : last_line)
+      if (at == i) out.push_back("a=rtcp-fb:" + std::to_string(pt) + " goog-remb");
   }
   return join(out);
 }

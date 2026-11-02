@@ -57,6 +57,14 @@ class FakeHostSink : public sfu::HostSink {
         out.insert(out.end(), info->keyframe_requests.begin(), info->keyframe_requests.end());
     return out;
   }
+  // REMB recibidos (bitrate y SSRC).
+  std::vector<rtp::Remb> rembs() {
+    std::lock_guard l(mu);
+    std::vector<rtp::Remb> out;
+    for (const auto& p : rtcp)
+      if (auto info = rtp::parse_rtcp(p); info && info->remb) out.push_back(*info->remb);
+    return out;
+  }
   std::mutex mu;
   std::vector<rtp::Bytes> rtcp;
 };

@@ -5,6 +5,7 @@
 
 #include <algorithm>
 
+#include "rtp/rtcp.hpp"
 #include "support/rtp_builder.hpp"
 #include "support/sdp_fixtures.hpp"
 #include "support/service_fakes.hpp"
@@ -322,5 +323,12 @@ TEST_F(StreamServiceTest, ViewerDataChannelOpenRequestsKeyframe) {
   peer(h.session_id).peer->rtcp.clear();
   peer(v.session_id).callbacks.on_open();
   svc.tick();
-  EXPECT_EQ(peer(h.session_id).peer->rtcp.size(), 1u) << "PLI al host: TTFF sin esperar el RTCP del viewer";
+  const auto& sent = peer(h.session_id).peer->rtcp;
+  EXPECT_EQ(std::ranges::count_if(sent,
+                                  [](const auto& p) {
+                                    auto info = rtp::parse_rtcp(p);
+                                    return info && !info->keyframe_requests.empty();
+                                  }),
+            1)
+      << "PLI al host: TTFF sin esperar el RTCP del viewer";
 }
