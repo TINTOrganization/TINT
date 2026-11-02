@@ -577,6 +577,9 @@ func handleSocial(w http.ResponseWriter, r *http.Request, d *Deps) {
 		case socialevent.TypeTriviaList:
 			d.handleTriviaList(ctx, c, roomID, claims, raw)
 			continue
+		case socialevent.TypeTriviaLaunchNow:
+			d.handleTriviaLaunchNow(ctx, c, roomID, claims, raw)
+			continue
 		case socialevent.TypeTriviaAnswer:
 			d.handleTriviaAnswer(ctx, c, roomID, claims, raw, actionLimiter)
 			continue

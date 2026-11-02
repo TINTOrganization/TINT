@@ -550,3 +550,44 @@ func (d *Deps) deliverRemoteResult(roomID string, payload []byte) {
 	defer cancel()
 	d.deliverTriviaResult(ctx, roomID, res)
 }
+
+// handleTriviaLaunchNow abre ya una trivia programada que aún no salió
+// ("lanzar ahora", sobre todo en salas live). Usa el mismo Launch (HSETNX
+// launched) que el disparo programado: entre réplicas y frente al timer
+// solo una llamada la abre; quien pierde recibe TRIVIA_CLOSED.
+func (d *Deps) handleTriviaLaunchNow(ctx context.Context, c *websocket.Conn, roomID string, claims auth.Claims, raw []byte) {
+	var in socialevent.TriviaLaunchNow
+	if err := json.Unmarshal(raw, &in); err != nil {
+		writeError(ctx, c, "INVALID_PAYLOAD", "")
+		return
+	}
+	if !isModerator(claims, roomID) {
+		writeError(ctx, c, "FORBIDDEN", in.EventID)
+		return
+	}
+	if d.Trivia == nil {
+		writeError(ctx, c, "UNAVAILABLE", in.EventID)
+		return
+	}
+	if err := in.Validate(); err != nil || (in.RoomID != "" && in.RoomID != roomID) {
+		writeError(ctx, c, "INVALID_PAYLOAD", in.EventID)
+		return
+	}
+	st, won, err := d.Trivia.Launch(ctx, roomID, in.TriviaID, d.now().UnixMilli())
+	if err != nil {
+		writeError(ctx, c, triviaErrorCode(err), in.EventID)
+		return
+	}
+	if !won {
+		writeError(ctx, c, "TRIVIA_CLOSED", in.EventID)
+		return
+	}
+	q, _, ok, err := d.Trivia.Get(ctx, roomID, in.TriviaID)
+	if err == nil && ok {
+		out := d.triviaQuestion(roomID, q, st)
+		d.emitRoom(ctx, roomID, out.EventID, out)
+	}
+	d.observeTriviaClose(roomID, in.TriviaID, st.ClosesAtMS)
+	d.sendScheduleState(ctx, c, roomID, in.EventID)
+	d.armTrivia(roomID)
+}
