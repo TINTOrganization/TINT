@@ -83,12 +83,31 @@ TEST_F(RoomTest, ForwardsOnlySelectedLayerToEachViewer) {
   for (auto& p : b.sink->video_snapshot()) EXPECT_EQ(parse_rtp(p)->ssrc, 0xB000u);
 }
 
-TEST_F(RoomTest, JoinRequestsKeyframeForStartLayer) {
+// RTCP Receiver Report vacío (sin bloques), como el primero que manda un navegador.
+rtp::Bytes empty_rr(std::uint32_t sender) {
+  return {0x80,
+          201,
+          0x00,
+          0x01,
+          static_cast<std::uint8_t>(sender >> 24),
+          static_cast<std::uint8_t>(sender >> 16),
+          static_cast<std::uint8_t>(sender >> 8),
+          static_cast<std::uint8_t>(sender)};
+}
+
+TEST_F(RoomTest, KeyframeRequestedOnFirstViewerRtcpNotOnJoin) {
+  // S2: un keyframe pedido al entrar (o al abrir la pista del lado del SFU) llega antes de que el
+  // viewer tenga las claves SRTP y se pierde; el siguiente cae en la ventana de PliThrottle (~1.2 s
+  // de TTFF). El primer RTCP del viewer prueba que ya descifra.
   prime();
   host->rtcp.clear();
   auto v = make_viewer("v");
   room.add_viewer(v.viewer, 5'000);
+  EXPECT_TRUE(host->plis().empty()) << "todavía no puede recibirlo";
+  room.on_viewer_rtcp("v", empty_rr(0xC000), 5'100);
   EXPECT_EQ(host->plis(), (std::vector<std::uint32_t>{kSsrcL})) << "entra en la capa baja: TTFF rápido";
+  room.on_viewer_rtcp("v", empty_rr(0xC000), 7'000);
+  EXPECT_EQ(host->plis().size(), 1u) << "solo el primer RTCP sin PLI pide keyframe";
 }
 
 TEST_F(RoomTest, HostUploadIndependentOfViewerCount) {
@@ -97,6 +116,7 @@ TEST_F(RoomTest, HostUploadIndependentOfViewerCount) {
   host->rtcp.clear();
   for (int i = 0; i < 50; ++i)
     ASSERT_TRUE(room.add_viewer(make_viewer("v" + std::to_string(i)).viewer, 10'000));
+  for (int i = 0; i < 50; ++i) room.on_viewer_rtcp("v" + std::to_string(i), empty_rr(0xC000), 10'000 + i);
   EXPECT_EQ(host->plis().size(), 1u) << "un PLI compartido por capa y por segundo";
   EXPECT_EQ(room.viewer_count(), 50);
 }

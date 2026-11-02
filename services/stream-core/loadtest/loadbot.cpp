@@ -385,6 +385,8 @@ class Publisher {
 
 struct ViewerShared {
   std::atomic<std::int64_t> first_keyframe_us{-1};
+  std::atomic<std::int64_t> connected_us{-1};     // PeerConnection Connected (ICE + DTLS)
+  std::atomic<std::int64_t> first_packet_us{-1};  // primer RTP de vídeo, keyframe o no
   std::atomic<std::uint32_t> video_ssrc{0};
   std::atomic<std::uint64_t> video_packets{0};
   std::atomic<std::uint64_t> video_bytes{0};
@@ -399,6 +401,8 @@ struct ViewerResult {
   std::string error;
   std::int64_t signaling_ms = -1;
   std::int64_t ttff_ms = -1;
+  std::int64_t connected_ms = -1;
+  std::int64_t first_packet_ms = -1;
   std::uint64_t video_packets = 0, video_bytes = 0, audio_packets = 0, events = 0;
 };
 
@@ -430,6 +434,10 @@ class Viewer {
       ++st->video_packets;
       st->video_bytes += b->size();
       st->video_ssrc.store(rtp->ssrc);
+      if (st->first_packet_us.load() < 0) {
+        std::int64_t none = -1;
+        st->first_packet_us.compare_exchange_strong(none, now_us());
+      }
       if (st->first_keyframe_us.load() >= 0) return;
       auto vp8 = stream::rtp::parse_vp8(view.subspan(rtp->payload_offset, rtp->payload_size));
       if (vp8 && vp8->keyframe) {
@@ -445,7 +453,11 @@ class Viewer {
     });
     pc_->onStateChange([st](rtc::PeerConnection::State s) {
       using S = rtc::PeerConnection::State;
-      if (s == S::Connected) st->connected.store(true);
+      if (s == S::Connected) {
+        st->connected.store(true);
+        std::int64_t none = -1;
+        st->connected_us.compare_exchange_strong(none, now_us());
+      }
       if (s == S::Failed || (s == S::Disconnected && st->connected.load())) st->failed.store(true);
     });
 
@@ -488,6 +500,8 @@ class Viewer {
     ViewerResult r = result_;
     const auto kf = shared_->first_keyframe_us.load();
     if (kf >= 0) r.ttff_ms = (kf - start_us_) / 1000;
+    if (const auto c = shared_->connected_us.load(); c >= 0) r.connected_ms = (c - start_us_) / 1000;
+    if (const auto f = shared_->first_packet_us.load(); f >= 0) r.first_packet_ms = (f - start_us_) / 1000;
     r.video_packets = shared_->video_packets.load();
     r.video_bytes = shared_->video_bytes.load();
     r.audio_packets = shared_->audio_packets.load();
@@ -611,7 +625,7 @@ int main(int argc, char** argv) {
   publisher.stop();
   http_call(o, bhttp::verb::delete_, "/internal/events/start/" + o.room, "", "", "");
 
-  std::vector<std::int64_t> ttff, signaling;
+  std::vector<std::int64_t> ttff, signaling, connected, first_packet;
   int failures = 0;
   std::uint64_t packets = 0, bytes = 0, audio = 0;
   for (std::size_t i = 0; i < results.size(); ++i) {
@@ -620,6 +634,8 @@ int main(int argc, char** argv) {
     bytes += r.video_bytes;
     audio += r.audio_packets;
     if (r.signaling_ms >= 0) signaling.push_back(r.signaling_ms);
+    if (r.connected_ms >= 0) connected.push_back(r.connected_ms);
+    if (r.first_packet_ms >= 0) first_packet.push_back(r.first_packet_ms);
     std::string why;
     if (r.status != 201)
       why = "WHEP " + std::to_string(r.status) + " " + r.error;
@@ -642,10 +658,19 @@ int main(int argc, char** argv) {
   std::printf("\n== Resumen S2 ==\n");
   std::printf("viewers conectados: %zu/%d  fallos: %d  publicador: %s (PLI recibidos: %llu)\n", ttff.size(),
               o.viewers, failures, publisher_failed ? "FALLÓ" : "ok", static_cast<unsigned long long>(plis));
+  std::printf("TTFF > 500 ms: %lld de %zu viewers\n",
+              static_cast<long long>(std::count_if(ttff.begin(), ttff.end(), [](auto t) { return t > 500; })),
+              ttff.size());
   std::printf("TTFF ms: p50=%lld p95=%lld max=%lld (umbral p95 < %d)\n", static_cast<long long>(p50),
               static_cast<long long>(p95), static_cast<long long>(max), o.ttff_max_ms);
   std::printf("señalización WHEP ms: p50=%lld p95=%lld\n", static_cast<long long>(percentile(signaling, 0.5)),
               static_cast<long long>(percentile(signaling, 0.95)));
+  std::printf("fases ms (p50/p95): Connected %lld/%lld · primer RTP %lld/%lld · primer keyframe %lld/%lld\n",
+              static_cast<long long>(percentile(connected, 0.5)),
+              static_cast<long long>(percentile(connected, 0.95)),
+              static_cast<long long>(percentile(first_packet, 0.5)),
+              static_cast<long long>(percentile(first_packet, 0.95)), static_cast<long long>(p50),
+              static_cast<long long>(p95));
   std::printf("recibido por los viewers: %llu paquetes de vídeo (%.1f MB), %llu de audio\n",
               static_cast<unsigned long long>(packets), bytes / 1e6, static_cast<unsigned long long>(audio));
   std::printf("egreso medio del SFU (vídeo) ≈ %.1f Mbps; subida del host ≈ %.2f Mbps (%llu paquetes)\n",

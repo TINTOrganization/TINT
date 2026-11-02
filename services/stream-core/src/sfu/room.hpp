@@ -63,6 +63,7 @@ class Viewer {
   std::shared_ptr<ViewerSink> sink_;
   std::atomic<int> desired_layer_{0};
   std::atomic<bool> closed_{false};
+  std::atomic<bool> rtcp_seen_{false};  // su primer SRTCP: ya tiene claves y puede recibir un keyframe
   // Solo el hilo de ingesta de cada medio toca su reescritor.
   RtpRewriter video_;
   RtpRewriter audio_;
@@ -105,6 +106,7 @@ class Room {
   };
   Ingest on_host_video(rtp::ByteView packet, std::int64_t now_ms);
   void on_host_audio(rtp::ByteView packet, std::int64_t now_ms);
+  // El primer RTCP del viewer (o cualquier PLI/FIR) pide un keyframe de su capa (limitado).
   void on_viewer_rtcp(const std::string& viewer_id, rtp::ByteView packet, std::int64_t now_ms);
   void tick(std::int64_t now_ms);  // evalúa capas de todos los viewers
 

@@ -39,7 +39,7 @@ Room::Room(std::string id, RoomConfig config)
 
 // --- Plano de control ----------------------------------------------------------------------
 
-bool Room::add_viewer(std::shared_ptr<Viewer> viewer, std::int64_t now_ms) {
+bool Room::add_viewer(std::shared_ptr<Viewer> viewer, std::int64_t /*now_ms*/) {
   {
     std::lock_guard lock(control_mu_);
     if (ended_.load()) return false;
@@ -49,8 +49,9 @@ bool Room::add_viewer(std::shared_ptr<Viewer> viewer, std::int64_t now_ms) {
     next->push_back(viewer);
     viewers_.store(std::move(next), std::memory_order_release);
   }
-  // Entra en la capa baja (primer frame rápido); pide un keyframe compartido (limitado).
-  request_keyframe(viewer->desired_layer(), now_ms);
+  // Entra en la capa baja (primer frame rápido). El keyframe se pide con su primer RTCP: uno pedido
+  // ahora (o al abrir la pista del lado del SFU) llega antes de que el viewer tenga las claves SRTP,
+  // se pierde y el siguiente cae en la ventana de PliThrottle (spike S2: TTFF 1.2 s -> 0.17 s).
   return true;
 }
 
@@ -187,7 +188,8 @@ void Room::on_viewer_rtcp(const std::string& viewer_id, rtp::ByteView packet, st
       if (auto rtx = v.video_.retransmission(*stored, out_seq)) v.sink().send_video(std::move(*rtx));
     }
   }
-  if (!info->keyframe_requests.empty()) request_keyframe(v.desired_layer(), now_ms);
+  const bool first_rtcp = !v.rtcp_seen_.exchange(true);
+  if (first_rtcp || !info->keyframe_requests.empty()) request_keyframe(v.desired_layer(), now_ms);
 
   std::lock_guard lock(v.selector_mu_);
   int layer = v.selector_.layer();
