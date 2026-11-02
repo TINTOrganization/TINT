@@ -93,7 +93,7 @@ flowchart LR
 | :--- | :--- | :--- |
 | Arranque | Lee `Settings` y `TriggerSettings`, conecta Redis, S3 y PostgreSQL (`autocommit`), instala SIGTERM/SIGINT y lanza el consumidor | `src/media_worker/__main__.py` |
 | Configuración del núcleo | `DATABASE_URL` y credenciales S3 obligatorias; sin secretos por defecto (`ConfigError` → salida 2) | `src/media_worker/config.py` |
-| Consumidor | `XGROUP CREATE ... MKSTREAM`, recupera pendientes, `XREADGROUP` en lotes de 10, `XACK` tras procesar, reintento cada 5 s | `src/media_worker/consumer.py` |
+| Consumidor | `XGROUP CREATE ... MKSTREAM`, recupera pendientes propios y reclama los huérfanos (`XAUTOCLAIM`), `XREADGROUP` en lotes de 10, `XACK` tras procesar, hasta 3 intentos por evento | `src/media_worker/consumer.py` |
 | Adaptador de la subida | Filtra eventos que no procesan nada, comprueba la extensión antes de descargar, descarga a un temporal, llama al pipeline y publica la analítica | `src/media_worker/jobs.py` |
 | Pipeline | Orquesta `processing → ready \| failed`; publica solo si todo el preprocesamiento salió bien | `src/media_worker/pipeline.py` |
 | Inspección | Una sola llamada a `ffprobe` (`format=duration:stream=height` del primer vídeo) | `src/media_worker/probe.py` |
@@ -142,20 +142,21 @@ identity-api publica `XADD media:uploads * video_id <uuid>` al confirmar una sub
 
 1. **Crea el grupo** `media-workers` desde el principio del stream (`id="0"`, `mkstream=True`); si ya existe (`BUSYGROUP`) sigue.
 2. **Recupera sus pendientes**: lee con `XREADGROUP ... 0` los mensajes entregados a este consumidor que nunca se confirmaron (por ejemplo, si el contenedor se reinició a mitad de un vídeo). Por eso `MEDIA_WORKER_CONSUMER` debe ser un nombre **estable** por réplica.
-3. **Bucle normal**: `XREADGROUP ... >` con `COUNT 10` y `BLOCK 5000` ms.
-4. Por cada mensaje: si `video_id` falta o no es un id plano (`[A-Za-z0-9][A-Za-z0-9_-]{0,127}`) se registra un aviso y se descarta; si no, se llama a `handle_upload`. En los dos casos se hace **`XACK`**.
-5. Si el handler **lanza** (fallo de PostgreSQL o MinIO) el mensaje **no** se confirma: el consumidor registra la excepción, espera `RETRY_DELAY_S` (5 s) y vuelve a procesar sus pendientes. No avanza a mensajes nuevos hasta que los pendientes salen bien, y nunca se cae por un fallo de infraestructura.
+3. **Reclama los huérfanos** (`claim_stale`): `XAUTOCLAIM` de los mensajes que otro consumidor recibió y lleva `CLAIM_IDLE_MS` (15 min) sin confirmar, porque ese worker murió y su contenedor volvió con otro nombre. Corre al arrancar y luego cada `CLAIM_INTERVAL_S` (60 s) cuando la cola está vacía. El umbral supera con holgura lo que tarda el vídeo más largo; si se reclamara uno que sigue en curso solo se reprocesaría (es idempotente).
+4. **Bucle normal**: `XREADGROUP ... >` con `COUNT 10` y `BLOCK 5000` ms. En reposo el proceso está bloqueado en Redis (≈ 0 % de CPU).
+5. Por cada mensaje: si `video_id` falta o no es un id plano (`[A-Za-z0-9][A-Za-z0-9_-]{0,127}`) se registra un aviso y se descarta; si no, se llama a `handle_upload`. En los dos casos se hace **`XACK`**.
+6. Si el handler **lanza** (fallo de PostgreSQL, MinIO o FFmpeg) el consumidor registra el motivo con el id del vídeo y el intento (`intento 1/3`), **vuelve a publicar** el evento al final del stream con `attempt + 1`, lo confirma y espera `RETRY_DELAY_S` (5 s). Así un vídeo que siempre falla no bloquea a los demás y el contador sobrevive a un reinicio. Al llegar a `MAX_ATTEMPTS` (3) llama a `jobs.mark_exhausted`: el vídeo pasa a `failed` con `failure_reason = processing_failed`, se publica `media_processed` (`failed`) y el evento se confirma. Se reencola antes de confirmar: si Redis cae entre ambos pasos el evento se duplica en lugar de perderse. Si Redis o `mark_exhausted` fallan, el evento queda pendiente y `run` espera 5 s y lo recupera; el worker nunca se cae por un fallo de infraestructura.
 
 ```mermaid
 stateDiagram-v2
     direction LR
     [*] --> Recuperar: arranque
-    Recuperar --> Leer: pendientes procesados
+    Recuperar --> Reclamar: pendientes propios procesados
+    Reclamar --> Leer: huérfanos procesados
     Leer --> Leer: mensaje procesado y XACK
-    Leer --> Esperar: el handler lanza
-    Esperar --> Reintentar: 5 s
-    Reintentar --> Leer: pendientes OK
-    Reintentar --> Esperar: vuelve a fallar
+    Leer --> Leer: el handler lanza (intento menor que 3): reencola con attempt + 1
+    Leer --> Leer: el handler lanza (intento 3): failed y XACK
+    Leer --> Reclamar: cada 60 s con la cola vacía
     Leer --> [*]: SIGTERM o SIGINT
 ```
 
@@ -169,7 +170,7 @@ stateDiagram-v2
 | La extensión de la clave no es `.mp4`, `.mov`, `.mkv` ni `.webm` | `failed` **sin descargar** el archivo | Sí | Sí (`failed`) |
 | El original no está en el bucket | `failed` | Sí | Sí (`failed`) |
 | Se procesa | `ready` o `failed` según el pipeline | Sí | Sí |
-| PostgreSQL o MinIO fallan | La excepción se propaga | **No** (queda pendiente) | No |
+| PostgreSQL, MinIO o FFmpeg lanzan | Se reencola con `attempt + 1`; al tercer intento `failed` (`processing_failed`) | Sí (tras reencolar) | Solo en el intento final (`failed`) |
 
 > identity-api acepta también `.m4v` y `.ogv` al firmar el PUT; el worker no los admite y los deja en `failed` sin descargarlos (ver "Siguiente prototipo" en [STATUS.md](STATUS.md)).
 
@@ -250,7 +251,7 @@ Las alturas publicadas se guardan en `videos.renditions` en orden descendente (`
 | :--- | :--- | :--- |
 | **Del vídeo** (reintentar no lo arregla) | Archivo corrupto, duración no positiva, FFmpeg falla o excede el tiempo en normalización o Ambilight, extensión no admitida, original ausente | `UPDATE videos SET status = 'failed'`, no se publica nada nuevo, `XACK` y `media_processed` con `status=failed`. El motivo solo va al log |
 | **De una calidad** | FFmpeg no logra generar 720p o 360p | Se omite esa calidad; el vídeo sigue hacia `ready` |
-| **De infraestructura** | PostgreSQL o MinIO caídos, error S3 distinto de 404 | La excepción se propaga **sin** marcar `failed`; el mensaje queda pendiente y se reintenta cada 5 s |
+| **De infraestructura** | PostgreSQL o MinIO caídos, error S3 distinto de 404 | La excepción **no** marca `failed` de inmediato: el evento se reencola con `attempt + 1` y se reintenta tras 5 s. Si falla 3 veces seguidas pasa a `failed` con `processing_failed` y el motivo (tipo y mensaje de la excepción) queda en el log, junto al id del vídeo y el número de intento |
 | **Evento inválido** | Sin `video_id`, id no plano o no UUID, fila inexistente | Se descarta con un aviso y `XACK` |
 
 **Idempotencia.** Las claves son deterministas (`{id}/source.mp4`, `{id}/ambilight.json`, `{id}/{H}p.mp4`) y se sobrescriben; los `UPDATE` son idempotentes. Reprocesar el mismo vídeo da el mismo resultado sin duplicar artefactos.

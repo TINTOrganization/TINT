@@ -24,7 +24,7 @@ import redis
 from media_worker.config import ConfigError, Settings
 from media_worker.consumer import StreamConsumer
 from media_worker.events import redis_publisher
-from media_worker.jobs import handle_upload
+from media_worker.jobs import handle_upload, mark_exhausted
 from media_worker.repository import VideoRepository
 from media_worker.storage import S3BlobStore
 
@@ -61,18 +61,22 @@ def build_consumer(
         aws_secret_access_key=settings.s3_secret_key,
     )
     client = redis_factory(trigger.redis_url, decode_responses=True)
+    repo = VideoRepository(connect(settings.database_url, autocommit=True))
+    publish = redis_publisher(client)
     handler = functools.partial(
-        _handle,
-        repo=VideoRepository(connect(settings.database_url, autocommit=True)),
-        blobs=S3BlobStore(s3, settings.bucket),
-        publish=redis_publisher(client),
+        _handle, repo=repo, blobs=S3BlobStore(s3, settings.bucket), publish=publish
     )
-    return StreamConsumer(client, handler, trigger.consumer)
+    on_exhausted = functools.partial(_exhausted, repo=repo, publish=publish)
+    return StreamConsumer(client, handler, trigger.consumer, on_exhausted=on_exhausted)
 
 
 def _handle(video_id: str, repo, blobs, publish):
     # Se resuelve en cada llamada para poder sustituirlo en las pruebas.
     return handle_upload(video_id, repo, blobs, publish=publish)
+
+
+def _exhausted(video_id: str, repo, publish):
+    return mark_exhausted(video_id, repo, publish=publish)
 
 
 def main(env: Mapping[str, str] | None = None) -> int:

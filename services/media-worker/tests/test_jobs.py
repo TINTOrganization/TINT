@@ -5,7 +5,7 @@ from unittest.mock import Mock
 import pytest
 from fakes import FakeBlobStore, FakeRepository
 
-from media_worker.jobs import INCOMING_PREFIX, handle_upload
+from media_worker.jobs import INCOMING_PREFIX, handle_upload, mark_exhausted
 from media_worker.pipeline import VideoNotFoundError
 from media_worker.probe import FailureReason, VideoStatus
 from media_worker.repository import VideoRow
@@ -293,3 +293,51 @@ def test_publish_errors_are_logged_and_do_not_change_the_outcome(caplog):
         )
     assert status is VideoStatus.READY
     assert "media_processed" in caplog.text
+
+
+def test_exhausted_retries_mark_the_video_failed_and_emit_the_outcome():
+    repo = FakeRepository([VIDEO_ID], uploaders={VIDEO_ID: "sub-1"})
+    publish = Mock()
+    mark_exhausted(VIDEO_ID, repo, publish=publish)
+    assert repo.statuses[VIDEO_ID] == "failed"
+    assert repo.reasons[VIDEO_ID] is FailureReason.PROCESSING_FAILED
+    (event,) = (call.args[0] for call in publish.call_args_list)
+    assert (event["type"], event["status"], event["user_id"]) == (
+        "media_processed",
+        "failed",
+        "sub-1",
+    )
+    assert event["duration_ms"] == ""
+
+
+def test_exhausted_retries_work_without_analytics():
+    repo = FakeRepository([VIDEO_ID])
+    mark_exhausted(VIDEO_ID, repo)
+    assert repo.statuses[VIDEO_ID] == "failed"
+
+
+@pytest.mark.parametrize("video_id", ["abc", "x" * 36], ids=["not-a-uuid", "long-not-a-uuid"])
+def test_exhausted_retries_skip_ids_that_are_not_uuids(video_id):
+    repo = Mock()
+    mark_exhausted(video_id, repo)
+    repo.get_video.assert_not_called()
+    repo.mark_failed.assert_not_called()
+
+
+def test_exhausted_retries_skip_unknown_and_already_published_videos():
+    repo = FakeRepository([VIDEO_ID])
+    publish = Mock()
+    mark_exhausted("11111111-1111-4111-8111-111111111111", repo, publish=publish)
+    repo.statuses[VIDEO_ID] = "ready"
+    repo.storage_keys[VIDEO_ID] = f"{VIDEO_ID}/source.mp4"
+    mark_exhausted(VIDEO_ID, repo, publish=publish)
+    assert repo.statuses[VIDEO_ID] == "ready"
+    assert repo.reasons == {}
+    publish.assert_not_called()
+
+
+def test_exhausted_retries_log_the_reason(caplog):
+    repo = FakeRepository([VIDEO_ID])
+    with caplog.at_level(logging.WARNING, logger="media_worker.jobs"):
+        mark_exhausted(VIDEO_ID, repo)
+    assert VIDEO_ID in caplog.text and "reintentos agotados" in caplog.text
