@@ -24,7 +24,9 @@ import redis
 from media_worker.config import ConfigError, Settings
 from media_worker.consumer import StreamConsumer
 from media_worker.events import redis_publisher
+from media_worker.health import HealthServer, HealthSettings, HealthState
 from media_worker.jobs import handle_upload, mark_exhausted
+from media_worker.logging_config import LogLevelError, install_logging
 from media_worker.repository import VideoRepository
 from media_worker.storage import S3BlobStore
 
@@ -79,19 +81,34 @@ def _exhausted(video_id: str, repo, publish):
     return mark_exhausted(video_id, repo, publish=publish)
 
 
-def main(env: Mapping[str, str] | None = None) -> int:
+def main(env: Mapping[str, str] | None = None, health_factory=None) -> int:
     env = os.environ if env is None else env
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
     try:
+        install_logging("media-worker", env)
+        health_settings = HealthSettings.from_env(env)
         consumer = build_consumer(env)
+    except LogLevelError as exc:
+        print(f"media-worker: {exc}", file=sys.stderr)
+        return 2
     except ConfigError as exc:
         print(f"media-worker: {exc}", file=sys.stderr)
         return 2
     stop = threading.Event()
     for sig in (signal.SIGTERM, signal.SIGINT):
         signal.signal(sig, lambda *_: stop.set())
-    logger.info("media-worker consumiendo media:uploads")
-    consumer.run(stop)
+    state = HealthState(max_age_s=health_settings.max_age_s)
+    state.touch()
+    server = (health_factory or HealthServer)(state, port=health_settings.port)
+    server.start()
+    logger.info(
+        "media-worker consumiendo media:uploads; salud en :%d (latido máximo %.0f s)",
+        server.port,
+        health_settings.max_age_s,
+    )
+    try:
+        consumer.run(stop)
+    finally:
+        server.stop()
     return 0
 
 
