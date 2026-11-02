@@ -321,6 +321,7 @@ func NewRouterWithDeps(d *Deps) http.Handler {
 	mux.HandleFunc("POST /internal/events/start", startEvent)
 	mux.HandleFunc("POST /internal/events/start/{roomID}", startEvent)
 	mux.HandleFunc("DELETE /internal/events/start/{roomID}", stopEvent)
+	mux.HandleFunc("GET /api/v1/social/rooms/{roomID}/chat", d.handleChatHistory)
 	MountSocial(mux, d)
 	return withCorrelation(mux)
 }

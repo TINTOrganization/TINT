@@ -71,7 +71,9 @@ func DefaultDeps(getenv func(string) string) *Deps {
 	var history chat.Store = chat.NewMemoryStore(0)
 	var store *chat.RedisStore
 	if url := getenv("REDIS_URL"); url != "" {
-		if rs, err := chat.NewRedisStore(url, 0, 0); err == nil {
+		// Redis guarda ChatRESTLimit mensajes (GET …/chat); el WebSocket
+		// sigue enviando los HistoryLimit más recientes.
+		if rs, err := chat.NewRedisStore(url, ChatRESTLimit, 0); err == nil {
 			history = rs
 			store = rs
 		}
