@@ -10,8 +10,8 @@
 | :--- | :--- | :--- |
 | **HU-LIVE-01** Iniciar la transmisión (host) | **AC1** `POST /api/v1/stream/rooms/{id}/whip` con un ticket de host y un SDP válido devuelve `201`, `Content-Type: application/sdp`, `Location: /api/v1/stream/sessions/{sid}` y `Link rel="ice-server"`. · **AC2** Con un token `participant`: `403 {error:"FORBIDDEN_ROLE"}`. · **AC3** Si el host niega o cancela la **pantalla**, ve un error claro y no se hace POST. La **cámara es opcional**: por defecto se transmite solo la pantalla y la cámara se activa o desactiva en vivo. Si se niega la cámara o el micrófono, aparece un aviso que no bloquea y el stream sigue. | ✅ Implementada |
 | **HU-LIVE-01b** Transmitir el audio del PC | **AC1** Se transmite el audio del sistema o de la pestaña (`getDisplayMedia({audio:true, systemAudio:'include'})`). · **AC2** Mezclador con ganancia, silencio y vúmetro **por fuente** (PC, micrófono, escenario). · **AC3** El audio del PC va sin AEC, NS ni AGC, en Opus **estéreo a 128 kbps**. · **AC4** Si el navegador o el sistema no entrega pista de audio, aparece un aviso claro y el stream sigue con el micrófono. · **AC5** Sin eco ni audio duplicado (`suppressLocalAudioPlayback`/`restrictOwnAudio`; si no existen, se sugieren auriculares). | 🟡 Implementada; falta verificar en navegador (S5) |
-| **HU-LIVE-02** Ver con muy poca latencia | **AC1** El primer frame decodificado llega en p95 < **2 s** (el máximo es 5 s). · **AC2** Lo que sube el host varía como mucho ±10 % entre 1 y 50 viewers. · **AC3** Si un viewer pierde ancho de banda, en < 3 s baja a `m`/`l` sin congelarse más de 1 s, y los demás siguen en `h`. | 🟡 Implementada; falta verificar en navegador (E2E glass-to-glass; S2 medido) |
-| **HU-LIVE-03** Redes restrictivas | **AC1** Con `iceTransportPolicy:'relay'` el par elegido es `relay` y el vídeo llega. · **AC2** Con coturn detenido, la ruta directa funciona. · **AC3** Cada WHIP/WHEP o `GET …/ice-servers` entrega credenciales TURN nuevas. | 🟡 Implementada; falta verificar en navegador (E2E `relay` y S3) |
+| **HU-LIVE-02** Ver con muy poca latencia | **AC1** El primer frame decodificado llega en p95 < **2 s** (el máximo es 5 s). · **AC2** Lo que sube el host varía como mucho ±10 % entre 1 y 50 viewers. · **AC3** Si un viewer pierde ancho de banda, en < 3 s baja a `m`/`l` sin congelarse más de 1 s, y los demás siguen en `h`. | 🟡 Implementada. AC1 verificado en Chrome (E2E: TTFF p95 1.06–1.28 s, glass-to-glass p95 ~140 ms) y AC2 en S2. Falta AC3 con la red limitada |
+| **HU-LIVE-03** Redes restrictivas | **AC1** Con `iceTransportPolicy:'relay'` el par elegido es `relay` y el vídeo llega. · **AC2** Con coturn detenido, la ruta directa funciona. · **AC3** Cada WHIP/WHEP o `GET …/ice-servers` entrega credenciales TURN nuevas. | 🟡 Implementada. AC1 verificado en Chrome (E2E `relay`). Faltan AC2 (coturn detenido) y S3 (LAN) |
 | **HU-LIVE-04** Un solo upload (operador) | **AC1** Con 10 viewers, el host tiene 1 PeerConnection de vídeo con 3 SSRC salientes. · **AC2** Un `DELETE` o la caída de un viewer libera su sesión y su lugar en el cupo. · **AC3** El viewer 51 recibe `409 {error:"ROOM_FULL"}`. | ✅ Implementada |
 | **HU-LIVE-05** Terminar y deshabilitar | **AC1** `POST /rooms/{id}/end` devuelve `200`, la sala queda en `disabled` y se publica `ROOM_CLOSED`. · **AC2** Si el host no vuelve en **60 s**, la sala se deshabilita sola. · **AC3** Si vuelve antes, los viewers conservan su sesión y la sala sigue `active`. · **AC4** Sobre una sala deshabilitada, WHIP/WHEP responde `410 ROOM_DISABLED` y reactivar responde `409`. | ✅ Implementada |
 | **HU-LIVE-06** Señalización HTTP por el gateway | **AC1** Una oferta que pasa por Caddy recibe su respuesta. · **AC2** Sin token: `401`. · **AC3** Si el SDP no es válido: `400 {error:"INVALID_SDP", message}`. Si el `Content-Type` es incorrecto: `415`. | ✅ Implementada |
@@ -89,7 +89,7 @@ Se negocia `negotiated:true, id:0`, y el cliente lo crea antes de `createOffer`.
 | `stream_state` | `state` ∈ `waiting`, `live`, `reconnecting`, `ended`; `reason?` ∈ `host_ended`, `grace_expired` (solo con `ended`); `grace_deadline_ms?` (solo con `reconnecting`) | todos |
 | `viewer_count` | `count` (1 Hz, solo si cambia) | todos |
 | `scene` | `name` ∈ `live`, `starting_soon`, `brb` | todos |
-| `host_stats` | por capa: `bitrate_bps` y `active`; `viewers_per_layer`; `nacks`; `plis` (1 Hz) | host |
+| `host_stats` | `layers[]` con `rid`, `bitrate_bps` (último segundo, lo que recibe el SFU, padding incluido), `active` y `viewers`; `nacks` y `plis` (acumulados) (1 Hz) | host |
 
 El host envía `scene` al servidor (C → S) por su DataChannel de vídeo, y el servidor lo reenvía a todos.
 
@@ -231,9 +231,32 @@ Orden del handshake de voz: revocado (`4001`) → sala cerrada (`4010`) → fuer
 | S2: CPU con SRTP y 50 PeerConnections reales | Contenedor: media 14.7 %, máx 18.4–22.9 % de **un** núcleo (`docker stats`). Hilo más cargado (mux UDP de libdatachannel): **4.4 %** (< 70 %, `top -H`). Memoria ~26 MiB | ídem |
 | S2: tráfico | Subida del host 3.8 Mbps constante (VP8 l/m/h 250k/800k/2.5M + Opus); egreso medio 89 Mbps con los viewers subiendo de `l` a `h` por REMB (régimen en `h` ≈ 130 Mbps) | ídem |
 
+**E2E en navegador** (`make e2e-stream`, 2026-11-02). Chromium headless de `minlag/mermaid-cli:11.4.2`, 4 vCPU, todo en la misma máquina (`--network host`, candidato del SFU en la IP de la LAN). Host y viewers usan la web real (`/live/:id`). La pantalla es un canvas que dibuja `Date.now()` en binario; ver §8.
+
+| Medición (E2E) | Ruta libre | Solo TURN (`relay`) | Meta |
+| :--- | :--- | :--- | :--- |
+| **S1:** Chrome publica `l`/`m`/`h` y el SFU aprende las 3 capas activas (`host_stats`) | **1426 ms** desde el WHIP. Chrome: 640×360 a 15 fps, 1280×720 y 1920×1080 a 30 fps, `qualityLimitationReason: none` | 1489 ms | < 10 s |
+| **TTFF** (POST WHEP → `framesDecoded > 0`), 10 conexiones (2 viewers × 5 recargas) | p50 645 ms · **p95 1061 ms** · máx 1061 ms. `connected` a los 26–64 ms | p50 637 ms · **p95 1279 ms** | < 5 s siempre; p95 < 2 s |
+| **Glass-to-glass** (código de barras de `Date.now()`, mismo reloj) | 52 muestras · **p50 103 ms · p95 142 ms** · máx 186 ms | 45 muestras · p50 102 ms · p95 141 ms | p95 < 500 ms |
+| Capa del viewer | `l` (640 px) → `m` a los ~6 s → `h` (1920 px) a los ~11 s | igual | — |
+| **Audio** | Opus, 2 canales, ~128 kbps por viewer | igual | bytes > 0 |
+| **Rutas** | `host->host` en los 4 pares | `relay->host` en los 4 pares; vídeo llega (≥ 446 frames) | `relay` |
+| **Gracia** (`STREAM_HOST_GRACE_S=10`) | `reconnecting` (con `grace_deadline_ms`) a los 18 ms de cerrar la pestaña; `ended`/`grace_expired` a los 10.16 s; `POST …/disable` con `X-Internal-Token`; aviso "El evento terminó…" | 32 ms · 10.15 s | — |
+| Subida del host en régimen (~40 s) | Medios: `l` 192 + `m` 443 + `h` 951 kbps + Opus 131 kbps. Además, **~1 Mbps de padding** en el SSRC de `l` (`headerBytesSent`); `availableOutgoingBitrate` 300 kbps | igual | §7: ≈ 3.7 Mbps |
+
+Antes de los arreglos que encontró el E2E, el TTFF era p50 2604 ms y p95 2662 ms, y los viewers no salían de `l`. Ver el análisis abajo.
+
 Conclusión: ni el reenvío ni el cifrado SRTP son el cuello de botella con 50 viewers; queda el egreso de red. Con `STREAM_PUBLIC_IP=127.0.0.1` el UDP pasa por `docker-proxy`, cuya CPU no cuenta en el contenedor; en el humo de CI (`--network host`, 20 viewers) el contenedor usa ~4 %.
 
 **TTFF.** Con el keyframe pedido al entrar, el TTFF era casi constante (~1.16 s). Las fases (`loadbot` imprime Connected, primer RTP y primer keyframe) muestran la causa: el viewer queda Connected a los ~190 ms y recibe deltas a los ~200 ms, pero su primer keyframe llega a ~1.2 s. El keyframe pedido al entrar, o al abrir la pista del lado del SFU (se probó y no mejoró), sale antes de que el viewer tenga sus claves SRTP, porque el DTLS termina antes en el SFU. Ese keyframe se pierde, y el PLI siguiente del viewer cae en la ventana de 1 s de `PliThrottle`. Ahora el SFU pide el keyframe con el **primer RTCP del viewer** (sea RR o PLI), que prueba que ya descifra. Con eso el p50 baja a ~165 ms. El p95 sigue en ~1.2 s porque, con 50 entradas simultáneas, los viewers cuyas claves llegan después del keyframe compartido esperan a la siguiente ventana. Bajarlo exige cambiar `PliThrottle` (más keyframes del host) o reenviar el último keyframe guardado en el `NackBuffer` al viewer que entra. Ninguna de las dos se hizo: el p95 ya cumple la meta de < 2 s. Los bots fuerzan un keyframe solo cada 10 s, así que esa cadencia no influye en las cifras.
+
+**TTFF con Chrome (E2E).** Esperar el primer RTCP funcionaba con los bots, pero con Chrome no: Chrome manda su primer RTCP unos **2.5 s** después de conectar. El TTFF era ~2.6 s en todas las conexiones. Las fases lo mostraban: `connected` a los ~40 ms, el PLI llegaba al host a los ~2.5 s y el keyframe ~70 ms después. Ahora el viewer queda listo con **lo primero que ocurra**: que abra su DataChannel (SCTP viaja sobre su DTLS, así que ya descifra) o que llegue su primer RTCP. Ahí se pide su keyframe.
+
+Ese arreglo destapó otro bug. Un segundo viewer que entraba dentro de la ventana de 1 s de `PliThrottle` perdía su pedido. Como Chrome no envía PLI si no recibió nada, se quedaba sin vídeo. Ahora `Room::tick` vuelve a pedir el keyframe (con el mismo límite) mientras un viewer listo no reciba su capa. Cubre también un cambio de capa cuyo PLI se limitó. El p50 depende de si la entrada cae en la ventana de otra: 140–270 ms si no cae y hasta ~1.1 s si cae.
+
+**Capas con Chrome (E2E).** Chrome negocia REMB porque el SFU quita transport-cc. Su REMB es una estimación del receptor que no pasa de ~1.5 veces lo que recibe, y el SFU no sondea. El E2E lo midió subiendo de 161k a ~330k mientras el viewer recibía `l` a ~210 kbps, y ahí se estancaba. El selector exigía un REMB ≥ 1.3 × 800k para subir a `m`, así que **ningún viewer salía de 360p**. Ahora el REMB solo cuenta **cuando cae**: por debajo del 90 % de su máximo desde el último cambio indica congestión, y si la capa actual ya no cabe baja a la que cabe. Para subir basta con 5 s sin pérdida en los RR ni caída del REMB. La pérdida sigue bajando una capa tras 2 informes > 10 %, con 8 s de espera antes de volver a subir. Sin red limitada no se midió cuánto tarda en bajar (HU-LIVE-02 AC3).
+
+**Padding del host.** El SFU no le da al host ninguna señal de ancho de banda: quita transport-cc y libdatachannel no genera REMB. Chrome se queda con `availableOutgoingBitrate` = 300 kbps y manda ~1 Mbps de padding en el SSRC de `l`. Igual publica las tres capas sin limitación (`qualityLimitationReason: none`). El SFU no reenvía ese padding, pero es subida desperdiciada. `host_stats` lo cuenta en el bitrate de `l`. La capa `h` rondó ~0.95 Mbps porque el contenido sintético es simple, no 2.5 Mbps. Con una pantalla real en movimiento falta medir si Chrome llega a 2.5 Mbps sin realimentación. Mejora posible: que el SFU envíe REMB al host.
 
 ## 8. Plan de pruebas (TDD)
 
@@ -242,13 +265,17 @@ Las pruebas unitarias (GoogleTest) cubren el código puro, sin libdatachannel: `
 Las demás pruebas:
 - **Integración:** `rtc_loopback_test` (dos peers de libdatachannel en el mismo proceso).
 - **Carga** (`make load-stream`, `loadtest/run.sh`): bots en C++ con libdatachannel, un publicador VP8 simulcast sintético (3 `rid`, keyframe al recibir PLI) y 50 viewers WHEP que piden keyframe y envían REMB. Exige TTFF p95 < 2 s, 0 fallos, `409` para el viewer 51 y el hilo más cargado < 70 %. En CI, `stream-load-smoke` lo corre con 20 viewers durante 15 s.
-- **E2E** (`make e2e-stream`, local): Chromium como host y dos viewers. Mide glass-to-glass p95 < 500 ms y prueba el modo `relay`, la gracia y el aviso de fin.
+- **E2E** (`make e2e-stream`, local, fuera de CI; `services/stream-core/e2e/`): Chromium (`minlag/mermaid-cli`) como host y dos viewers, en modo `normal` y `relay`.
+  - **Entorno propio y aislado** (`--network host`): Redis en `:16390`, stream-core de este árbol en `:18086` (UDP `:18087`, `STREAM_HOST_GRACE_S=10`, candidato en la IP de la LAN), la web compilada contra él en `:15173` y coturn (si no hay uno en `:3478`). Al terminar borra sus contenedores.
+  - **Web real:** host y viewers usan `/live/:id` y el hook `useLiveStream`: 2 WHIP, simulcast `l`/`m`/`h`, DataChannel `negotiated:true,id:0`, compositor, mezclador y WHEP. Lo único que se sustituye es la fuente: `getDisplayMedia` devuelve un canvas con `Date.now()` codificado en bloques blanco y negro (y su complemento, para descartar lecturas corruptas) y un tono como audio del PC.
+  - **identity-api es un stub HTTP** del script. Responde a la web: sala `live` y un sync-ticket de host firmado con `JWT_SECRET`, sin Firebase. También registra el `POST …/internal/rooms/{id}/disable` de stream-core.
+  - **Qué comprueba:** S1 (3 `outbound-rtp` en Chrome y 3 capas activas en `host_stats` en < 10 s), TTFF < 5 s y p95 < 2 s, glass-to-glass p95 < 500 ms con ≥ 30 muestras, audio Opus, pares `relay` y la gracia (`reconnecting` → `ended`/`grace_expired`, llamada a identity-api y aviso de fin).
 
 ## 9. Fase 0: spikes
 
 | Spike | Se sigue si… | Si no, la alternativa | Dónde corre |
 | :--- | :--- | :--- | :--- |
-| S1 Simulcast: Chrome y Firefox publican 3 `rid` a libdatachannel | Se aprenden 3 SSRC y las 3 capas están activas en < 10 s | transport-cc o 2 capas | Navegador real |
+| S1 Simulcast: Chrome y Firefox publican 3 `rid` a libdatachannel | Se aprenden 3 SSRC y las 3 capas están activas en < 10 s | transport-cc o 2 capas | Navegador real. **Chrome: pasó** (2026-11-02, `make e2e-stream`). Las 3 capas activas en `host_stats` a los ~1.4 s del WHIP, en ruta libre y en `relay`. Ver §7.1. Firefox: pendiente (el E2E solo trae Chromium) |
 | S2 Fan-out: 1 publicador + 50 viewers bot en un puerto mux, con 4 vCPU | Hilo mux < 70 %, TTFF p95 < 2 s, 0 errores SRTP | Rango de puertos sin mux | Docker (CI/local). **Pasó** (2026-11-01): ver §7.1 |
 | S3 Docker: bridge + UDP publicado + reescritura del candidato | Conexión directa desde la LAN; `relay` por coturn | `network_mode: host` | Navegador real |
 | S4 Build en `debian:trixie-slim` y `ubuntu-24.04` | Release, ASan y TSan enlazan | Imagen dev precompilada | Docker |
@@ -259,3 +286,5 @@ Las demás pruebas:
 - Máximo 50 viewers por sala.
 - El historial de chat de una sala deshabilitada se puede leer durante 12 h (TTL de Redis).
 - El audio del sistema depende del navegador y del sistema operativo (S5). Firefox y Safari no lo entregan.
+- Sin transport-cc ni REMB hacia el host, Chrome no tiene estimación de subida (300 kbps) y manda ~1 Mbps de padding en `l` (§7.1).
+- La subida de capa del viewer no se basa en ancho de banda medido: sube tras 5 s sin pérdida y baja por pérdida o caída del REMB. En un enlace justo puede alternar entre subir y bajar, con 8 s de espera entre intentos.
