@@ -22,7 +22,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"log"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -296,7 +296,7 @@ func (h *Hub) sweepAll(ctx context.Context) {
 	for room, b := range beats {
 		rctx, cancel := context.WithTimeout(ctx, ioTimeout)
 		if _, err := h.sweep(rctx, room, h.now().UnixMilli(), b.hosts, b.members); err != nil {
-			log.Printf("hub: barrido sala %s: %v", room, err)
+			slog.Error("hub: barrido de sala", "room_id", room, "error", err)
 		}
 		cancel()
 	}
@@ -358,7 +358,7 @@ func (h *Hub) swapDelegate(ctx context.Context, room, sub string) error {
 	ev := baseEvent(syncevent.Control, room, h.now())
 	ev.Holder = sub
 	if err := h.bus.Publish(ctx, room, mustJSON(ev)); err != nil {
-		log.Printf("hub: CONTROL sala %s: %v", room, err)
+		slog.Error("hub: CONTROL de sala", "room_id", room, "error", err)
 	}
 	return nil
 }
@@ -481,7 +481,7 @@ func (h *Hub) Connect(parent context.Context, claims auth.Claims, opts ...ConnOp
 	c.enqueueEvent(ev)
 	h.release(c)
 	if _, err := h.sweep(ctx, room, nowMs, nil, nil); err != nil {
-		log.Printf("hub: barrido sala %s: %v", room, err)
+		slog.Error("hub: barrido de sala", "room_id", room, "error", err)
 	}
 	return c, nil
 }
@@ -513,11 +513,11 @@ func (h *Hub) Disconnect(c *Client) {
 	}
 	if reevaluate {
 		if _, err := h.sweep(ctx, room, nowMs, nil, nil); err != nil {
-			log.Printf("hub: barrido sala %s: %v", room, err)
+			slog.Error("hub: barrido de sala", "room_id", room, "error", err)
 		}
 	}
 	if err := h.store.Touch(ctx, room); err != nil {
-		log.Printf("hub: touch sala %s: %v", room, err)
+		slog.Error("hub: touch de sala", "room_id", room, "error", err)
 	}
 }
 
@@ -657,7 +657,7 @@ func (h *Hub) handleCommand(ctx context.Context, c *Client, ev syncevent.Event, 
 			errors.Is(err, syncevent.ErrInvalidVolume) || errors.Is(err, syncevent.ErrInvalidQuality) {
 			code, result = syncevent.CodeInvalid, "invalid"
 		} else {
-			log.Printf("hub: comando %s en sala %s: %v", ev.Type, room, err)
+			slog.Error("hub: comando", "type", ev.Type, "room_id", room, "error", err)
 		}
 		h.m.commands.With(result).Inc()
 		c.enqueueEvent(errorEvent(room, ev.EventID, code, now))
@@ -833,7 +833,7 @@ func (h *Hub) unsubscribeIfEmpty(room string) {
 	ctx, cancel := context.WithTimeout(context.Background(), ioTimeout)
 	defer cancel()
 	if err := h.bus.Unsubscribe(ctx, room); err != nil {
-		log.Printf("hub: unsubscribe sala %s: %v", room, err)
+		slog.Error("hub: unsubscribe de sala", "room_id", room, "error", err)
 	}
 }
 
@@ -928,7 +928,7 @@ func (h *Hub) publishHostStatus(ctx context.Context, room string, online bool) {
 	ev := baseEvent(syncevent.HostStatus, room, h.now())
 	ev.Online = syncevent.Bool(online)
 	if err := h.bus.Publish(ctx, room, mustJSON(ev)); err != nil {
-		log.Printf("hub: HOST_STATUS sala %s: %v", room, err)
+		slog.Error("hub: HOST_STATUS", "room_id", room, "error", err)
 	}
 }
 

@@ -11,7 +11,7 @@ package telemetry
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"sync/atomic"
 	"time"
 
@@ -152,7 +152,7 @@ func (e *Emitter) Run(ctx context.Context) {
 			err := e.rdb.XAdd(ctx, &redis.XAddArgs{Stream: StreamKey, MaxLen: maxLen, Approx: true, Values: ev}).Err()
 			if err != nil {
 				e.failed.Add(1)
-				log.Printf("telemetry: XADD falló: %v", err)
+				slog.Error("telemetry: XADD falló", "error", err)
 			}
 		}
 	}
