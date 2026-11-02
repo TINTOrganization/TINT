@@ -8,8 +8,18 @@ declare module 'express-serve-static-core' {
 }
 
 /**
- * Carga la sala `:id` y corta si no existe (404) o tiene borrado lógico (410),
- * con las mismas respuestas que el resto de rutas de salas. Deja la sala en `req.room`.
+ * Respuesta para una sala que ya no admite operaciones: borrado lógico → `410 Deleted`;
+ * sala live terminada (ADR 0019) → `410 Disabled`. null si la sala está activa.
+ * Falla cerrado: cualquier otro estado se trata como deshabilitada.
+ */
+export function inactiveRoomError(room: Pick<Room, 'status'>): { error: 'Deleted' | 'Disabled' } | null {
+  if (room.status === 'active') return null;
+  return { error: room.status === 'deleted' ? 'Deleted' : 'Disabled' };
+}
+
+/**
+ * Carga la sala `:id` y corta si no existe (404), tiene borrado lógico (410 Deleted)
+ * o fue deshabilitada (410 Disabled). Deja la sala en `req.room`.
  * Va después de la autorización: así un tercero no puede sondear qué salas existen.
  */
 export async function requireActiveRoom(req: Request, res: Response, next: NextFunction) {
@@ -25,8 +35,9 @@ export async function requireActiveRoom(req: Request, res: Response, next: NextF
   if (!room) {
     return res.status(404).json({ error: 'Not found' });
   }
-  if (room.status === 'deleted') {
-    return res.status(410).json({ error: 'Deleted' });
+  const inactive = inactiveRoomError(room);
+  if (inactive) {
+    return res.status(410).json(inactive);
   }
   req.room = room;
   next();

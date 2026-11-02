@@ -7,7 +7,7 @@ import { centralTokenCheck } from '../middlewares/centralAuth.js';
 import { requireRoomOwner } from '../middlewares/requireRoomOwner.js';
 import { upsertByProvider } from '../modules/users/users.repo.js';
 import { requireRoomHostOrGuest } from '../middlewares/guestAuth.js';
-import { requireActiveRoom } from '../middlewares/activeRoom.js';
+import { requireActiveRoom, inactiveRoomError } from '../middlewares/activeRoom.js';
 import { createRoomWithInvitation } from '../modules/rooms/rooms.create.js';
 import { listByHost, findById, softRemoveById, updateTitle, setMedia } from '../modules/rooms/rooms.repo.js';
 import { create as createInvitation, findByCode, setRevoked, listByRoom, listLatestActiveByRooms } from '../modules/invitations/invitations.repo.js';
@@ -727,8 +727,9 @@ router.post('/invitations/claim', validate(claimSchema), async (req, res) => {
     return res.status(410).json({ error: 'Expired' });
   }
   const room = await findById(invitation.roomId);
-  if (room && room.status === 'deleted') {
-    return res.status(410).json({ error: 'Deleted' });
+  const inactive = room && inactiveRoomError(room);
+  if (inactive) {
+    return res.status(410).json(inactive);
   }
   if (deviceId && (await findBanByDevice(invitation.roomId, deviceId))) {
     return res.status(403).json({ error: 'BANNED' });
