@@ -195,13 +195,37 @@ TEST(LayerSelector, UpgradesWhenRembExceedsNextLayerTimes1_3For5s) {
   EXPECT_EQ(s.on_tick(kAll, 10'000), 2);
 }
 
-TEST(LayerSelector, DoesNotUpgradeWithInsufficientRemb) {
+TEST(LayerSelector, RembCappedByWhatTheViewerReceivesDoesNotBlockUpgrade) {
+  // E2E con Chrome: su REMB es una estimación del receptor que no pasa de ~1.5× lo que recibe
+  // (161k → 331k recibiendo l a ~210 kbps). Sin sondeo del SFU nunca llega a 1.3 × 800k: exigirlo
+  // dejaba a todos los viewers en 360p para siempre. Un REMB que sube no frena la subida.
   LayerSelector s;
-  s.on_remb(1'000'000, 0);  // < 1.3 × 0.8 Mbps
-  EXPECT_EQ(s.on_tick(kAll, 60'000), 0);
+  for (std::int64_t t = 0; t <= 5'000; t += 500) {
+    s.on_remb(180'000 + static_cast<std::uint64_t>(t) * 30, t);
+    if (t % 1'000 == 0) s.on_loss(0, t);
+  }
+  EXPECT_EQ(s.on_tick(kAll, 5'000), 1);
 }
 
-TEST(LayerSelector, DowngradesImmediatelyWhenRembBelowCurrentBitrate) {
+TEST(LayerSelector, RampingRembAfterUpgradeDoesNotDowngrade) {
+  LayerSelector s;
+  s.on_remb(330'000, 0);
+  ASSERT_EQ(s.on_tick(kAll, 5'000), 1);
+  EXPECT_EQ(s.on_remb(340'000, 5'500), 1) << "por debajo de 800k, pero sube: no es congestión";
+  EXPECT_EQ(s.on_remb(370'000, 6'000), 1);
+  EXPECT_EQ(s.on_remb(355'000, 6'500), 1) << "una variación pequeña tampoco";
+}
+
+TEST(LayerSelector, RembDropResetsUpgradeHold) {
+  LayerSelector s;
+  s.on_remb(400'000, 0);
+  s.on_remb(300'000, 3'000);  // cae 25 %: congestión aunque ya esté en la capa baja
+  EXPECT_EQ(s.on_tick(kAll, 5'000), 0);
+  s.on_remb(310'000, 3'500);
+  EXPECT_EQ(s.on_tick(kAll, 8'500), 1);
+}
+
+TEST(LayerSelector, DowngradesImmediatelyWhenRembFallsBelowCurrentBitrate) {
   LayerSelector s;
   s.on_remb(10'000'000, 0);
   s.on_tick(kAll, 5'000);

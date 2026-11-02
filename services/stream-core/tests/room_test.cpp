@@ -95,19 +95,64 @@ rtp::Bytes empty_rr(std::uint32_t sender) {
           static_cast<std::uint8_t>(sender)};
 }
 
-TEST_F(RoomTest, KeyframeRequestedOnFirstViewerRtcpNotOnJoin) {
+TEST_F(RoomTest, KeyframeRequestedOnTickOnceViewerIsReadyNotOnJoin) {
   // S2: un keyframe pedido al entrar (o al abrir la pista del lado del SFU) llega antes de que el
-  // viewer tenga las claves SRTP y se pierde; el siguiente cae en la ventana de PliThrottle (~1.2 s
-  // de TTFF). El primer RTCP del viewer prueba que ya descifra.
+  // viewer tenga las claves SRTP y se pierde. Su primer RTCP prueba que ya descifra; el pedido sale en
+  // el siguiente tick (250 ms) para que las entradas simultáneas compartan un keyframe.
   prime();
   host->rtcp.clear();
   auto v = make_viewer("v");
   room.add_viewer(v.viewer, 5'000);
+  room.on_host_video(host_video(0, 2, false), 5'000);
+  room.tick(5'000);
   EXPECT_TRUE(host->plis().empty()) << "todavía no puede recibirlo";
   room.on_viewer_rtcp("v", empty_rr(0xC000), 5'100);
+  EXPECT_TRUE(host->plis().empty()) << "se agrupa en el siguiente tick";
+  room.tick(5'250);
   EXPECT_EQ(host->plis(), (std::vector<std::uint32_t>{kSsrcL})) << "entra en la capa baja: TTFF rápido";
-  room.on_viewer_rtcp("v", empty_rr(0xC000), 7'000);
-  EXPECT_EQ(host->plis().size(), 1u) << "solo el primer RTCP sin PLI pide keyframe";
+  room.on_host_video(host_video(0, 3, true), 5'300);
+  room.on_viewer_rtcp("v", empty_rr(0xC000), 6'500);
+  room.tick(6'500);
+  EXPECT_EQ(host->plis().size(), 1u) << "ya recibe su capa: no pide más";
+}
+
+TEST_F(RoomTest, KeyframeRequestedWhenViewerDataChannelOpens) {
+  // E2E con Chrome: su primer RTCP llega ~2.5 s después de conectar (TTFF p50 2.6 s). El DataChannel
+  // del viewer abre en cuanto termina su DTLS (SCTP viaja cifrado): ya puede descifrar el keyframe.
+  prime();
+  host->rtcp.clear();
+  auto v = make_viewer("v");
+  room.add_viewer(v.viewer, 5'000);
+  room.on_host_video(host_video(0, 2, false), 5'000);
+  room.on_viewer_ready("v");
+  room.on_viewer_ready("nadie");
+  room.tick(5'250);
+  EXPECT_EQ(host->plis(), (std::vector<std::uint32_t>{kSsrcL}));
+}
+
+TEST_F(RoomTest, ThrottledKeyframeRequestIsRetriedUntilViewerGetsOne) {
+  // E2E: el segundo viewer entra dentro de la ventana de PliThrottle del primero y, si su pedido se
+  // descarta, Chrome nunca manda PLI (no recibió nada): se quedaba sin vídeo. El tick lo reintenta.
+  prime();
+  host->rtcp.clear();
+  auto a = make_viewer("a", 0xA000);
+  auto b = make_viewer("b", 0xB000);
+  room.add_viewer(a.viewer, 5'000);
+  room.on_viewer_ready("a");
+  room.on_host_video(host_video(0, 2, false), 5'000);
+  room.tick(5'000);
+  room.on_host_video(host_video(0, 3, true), 5'100);
+  room.add_viewer(b.viewer, 5'200);
+  room.on_viewer_ready("b");
+  room.tick(5'250);
+  EXPECT_EQ(host->plis().size(), 1u) << "limitado: 1 PLI por capa y por segundo";
+  room.on_host_video(host_video(0, 4, false), 6'000);
+  room.tick(6'000);
+  EXPECT_EQ(host->plis().size(), 2u) << "b sigue sin keyframe: se pide otra vez";
+  room.on_host_video(host_video(0, 5, true), 6'100);
+  EXPECT_EQ(b.sink->video_count(), 1u);
+  room.tick(7'000);
+  EXPECT_EQ(host->plis().size(), 2u) << "todos reciben su capa: no hay más PLI";
 }
 
 TEST_F(RoomTest, HostUploadIndependentOfViewerCount) {
@@ -116,7 +161,9 @@ TEST_F(RoomTest, HostUploadIndependentOfViewerCount) {
   host->rtcp.clear();
   for (int i = 0; i < 50; ++i)
     ASSERT_TRUE(room.add_viewer(make_viewer("v" + std::to_string(i)).viewer, 10'000));
+  room.on_host_video(host_video(0, 2, false), 10'000);
   for (int i = 0; i < 50; ++i) room.on_viewer_rtcp("v" + std::to_string(i), empty_rr(0xC000), 10'000 + i);
+  room.tick(10'100);
   EXPECT_EQ(host->plis().size(), 1u) << "un PLI compartido por capa y por segundo";
   EXPECT_EQ(room.viewer_count(), 50);
 }
@@ -182,6 +229,38 @@ TEST_F(RoomTest, RembFromViewerChangesItsLayerOnly) {
   EXPECT_EQ(b.viewer->desired_layer(), 0) << "sin REMB ni informes no sube";
   room.on_viewer_rtcp("a", build_remb(0xA000, 300'000, ssrc), 12'100);
   EXPECT_EQ(a.viewer->desired_layer(), 0) << "HU-LIVE-02 AC3: baja la calidad en lugar de congelar";
+}
+
+TEST_F(RoomTest, HostStatsReportBitrateActivityViewersAndFeedback) {
+  // §4 host_stats: bitrate y actividad por capa que aprendió el SFU, viewers por capa, NACK y PLI.
+  prime(0);
+  auto a = make_viewer("a", 0xA000);
+  auto b = make_viewer("b", 0xB000);
+  room.add_viewer(a.viewer, 0);
+  room.add_viewer(b.viewer, 0);
+  b.viewer->set_desired_layer(2);
+  (void)room.host_stats(0);  // referencia de la primera ventana
+  std::uint64_t bytes = 0;
+  for (std::uint16_t seq = 2; seq < 12; ++seq) {
+    auto p = host_video(0, seq, false);
+    bytes += p.size();
+    room.on_host_video(p, 100 * seq);
+  }
+  room.on_viewer_rtcp("a", build_pli(1, 0xA000), 1'200);
+  std::vector<std::uint16_t> lost{3, 4};
+  room.on_viewer_rtcp("a", build_nack(0xA000, 0xA000, lost), 1'200);
+  auto st = room.host_stats(2'000);
+  EXPECT_EQ(st.bitrate_bps[0], bytes * 8 * 1000 / 2'000);
+  EXPECT_EQ(st.bitrate_bps[1], 0u);
+  EXPECT_EQ(st.bitrate_bps[2], 0u);
+  EXPECT_TRUE(st.active[0]);
+  EXPECT_FALSE(st.active[1]) << "sin paquetes de m en más de 1 s";
+  EXPECT_EQ(st.viewers_per_layer, (std::array<int, kLayers>{1, 0, 1}));
+  EXPECT_EQ(st.plis, 1u);
+  EXPECT_EQ(st.nacks, 2u);
+  auto next = room.host_stats(3'000);
+  EXPECT_EQ(next.bitrate_bps[0], 0u) << "el bitrate es de la última ventana";
+  EXPECT_EQ(next.plis, 1u) << "NACK y PLI son acumulados";
 }
 
 TEST_F(RoomTest, HostReplaceKeepsViewersAndContinuity) {

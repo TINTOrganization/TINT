@@ -40,6 +40,7 @@ struct PeerCallbacks {
   std::function<void(rtp::ByteView)> on_rtcp;          // RTCP del viewer
   std::function<void(const std::string&)> on_message;  // DataChannel (escena del host)
   std::function<void()> on_closed;                     // Disconnected/Failed/Closed
+  std::function<void()> on_open;                       // DataChannel abierto (DTLS listo)
 };
 
 class PeerFactory {
@@ -127,6 +128,7 @@ class StreamService : public http::SessionLookup {
     std::string host_audio_session;
     std::atomic<std::int64_t> last_state_rtp_ms{0};
     int last_viewer_count = -1;
+    std::int64_t last_host_stats_ms = INT64_MIN / 2;  // solo lo toca tick()
     std::string scene = "live";
   };
 

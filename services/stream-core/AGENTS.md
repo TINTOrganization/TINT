@@ -98,6 +98,10 @@ docker compose up -d redis stream-core && make smoke-stream
 # Carga S2: 1 publicador simulcast + 50 viewers WHEP (bots libdatachannel, target CMake opcional
 # STREAM_BUILD_LOADBOT=ON, fuera de la cobertura). Levanta redis + stream-core si no están y los baja.
 make load-stream                          # VIEWERS=50 DURATION=30 por defecto
+
+# E2E con Chromium real (S1, TTFF, glass-to-glass, audio, relay y gracia). Local, fuera de CI: levanta su
+# propio entorno en puertos 1xxxx (web real + stub de identity-api) y lo borra. MODES=normal|relay.
+make e2e-stream
 ```
 
 ## Variables de Entorno
@@ -119,6 +123,8 @@ make load-stream                          # VIEWERS=50 DURATION=30 por defecto
 - **Una réplica.** Salas y sesiones viven en memoria.
 - **El host necesita dos sesiones WHIP** (vídeo y audio): libdatachannel solo enruta el simulcast por `rid` si la PeerConnection tiene una pista (ADR 0018).
 - **No hay ICE restart por `PATCH`** (`405`): el cliente hace un POST nuevo.
-- **Spikes pendientes en navegador real** (S1 simulcast, S3 Docker/LAN, S5 audio del PC): ver [dominio-transmision §9](../../docs/dominio-transmision.md#9-fase-0-spikes). Hasta que pasen, ADR 0018 sigue como *Propuesta*.
-- **Carga de 50 viewers (S2): pasó** (TTFF p50 ~0.17 s, p95 ~1.2 s, 0 fallos, 409 al 51, hilo más cargado 4.7 %; [§7.1](../../docs/dominio-transmision.md#71-medido-2026-11-01)). El keyframe de un viewer nuevo se pide con su **primer RTCP**, no al entrar ni al abrir su pista (ese keyframe llega antes de sus claves SRTP y se pierde). El p95 sigue acotado por la ventana de 1 s de `PliThrottle` cuando entran muchos viewers a la vez. E2E de latencia en navegador: *previsto* (Puppeteer en `e2e/`).
+- **S1 (simulcast) pasó en Chrome** con `make e2e-stream`. Siguen pendientes en navegador real: S1 en Firefox, S3 Docker/LAN y S5 audio del PC. Ver [dominio-transmision §9](../../docs/dominio-transmision.md#9-fase-0-spikes). Hasta que pasen, ADR 0018 sigue como *Propuesta*.
+- **Carga de 50 viewers (S2): pasó** (TTFF p50 ~0.17 s, p95 ~1.2 s, 0 fallos, 409 al 51, hilo más cargado 4.7 %; [§7.1](../../docs/dominio-transmision.md#71-medido-2026-11-01)). Un viewer nuevo queda listo cuando **abre su DataChannel o llega su primer RTCP**, lo que ocurra antes. Su keyframe lo pide el siguiente `tick`, que agrupa las entradas simultáneas. No se pide al entrar ni al abrir su pista: ese keyframe llega antes de sus claves SRTP y se pierde. Con Chrome, el primer RTCP tarda ~2.5 s. `Room::tick` repite el pedido (limitado) mientras un viewer listo no reciba su capa. El p95 sigue acotado por la ventana de 1 s de `PliThrottle` cuando entran muchos viewers a la vez.
+- **E2E en navegador** (`make e2e-stream`, Chromium real, 2026-11-02). Ruta libre: TTFF p95 0.99 s y glass-to-glass p95 142 ms. En `relay`: TTFF p95 0.86 s y glass-to-glass p95 146 ms. La gracia termina en `grace_expired` ([§7.1](../../docs/dominio-transmision.md#71-medido-2026-11-01)).
+- **Capas:** el REMB de Chrome no pasa de ~1.5 veces lo que recibe, así que **no sirve para subir**. El selector sube tras 5 s sin pérdida ni caída del REMB y baja por pérdida o cuando el REMB cae. Al host no le llega ninguna señal de ancho de banda (sin transport-cc ni REMB): Chrome envía ~1 Mbps de padding en `l`.
 - **Imagen de runtime: ~148 MB** (Debian slim + libssl/hiredis/libsrtp2 + libdatachannel sin símbolos). La etapa `dev` conserva los símbolos para depurar.

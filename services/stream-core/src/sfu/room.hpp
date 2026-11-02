@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -63,7 +64,10 @@ class Viewer {
   std::shared_ptr<ViewerSink> sink_;
   std::atomic<int> desired_layer_{0};
   std::atomic<bool> closed_{false};
-  std::atomic<bool> rtcp_seen_{false};  // su primer SRTCP: ya tiene claves y puede recibir un keyframe
+  // Su DataChannel abrió o llegó su primer SRTCP: ya tiene claves y puede recibir un keyframe.
+  std::atomic<bool> ready_{false};
+  // Capa que recibe de verdad (-1: esperando keyframe). La escribe la ingesta y la lee tick().
+  std::atomic<int> forwarding_{-1};
   // Solo el hilo de ingesta de cada medio toca su reescritor.
   RtpRewriter video_;
   RtpRewriter audio_;
@@ -106,8 +110,10 @@ class Room {
   };
   Ingest on_host_video(rtp::ByteView packet, std::int64_t now_ms);
   void on_host_audio(rtp::ByteView packet, std::int64_t now_ms);
-  // El primer RTCP del viewer (o cualquier PLI/FIR) pide un keyframe de su capa (limitado).
+  // El primer RTCP marca al viewer listo (keyframe en el tick); un PLI/FIR pide uno ya (limitado).
   void on_viewer_rtcp(const std::string& viewer_id, rtp::ByteView packet, std::int64_t now_ms);
+  // Su DataChannel abrió (terminó su DTLS): el próximo tick pide su keyframe sin esperar al primer RTCP.
+  void on_viewer_ready(const std::string& viewer_id);
   void tick(std::int64_t now_ms);  // evalúa capas de todos los viewers
 
   void broadcast_event(const std::string& json);
@@ -116,6 +122,8 @@ class Room {
   bool ended() const { return ended_.load(); }
 
   std::array<bool, kLayers> active_layers(std::int64_t now_ms) const;
+  // host_stats (1 Hz, plano de control): bitrate por capa desde la llamada anterior. Thread-safe.
+  HostStats host_stats(std::int64_t now_ms);
 
  private:
   using ViewerList = std::vector<std::shared_ptr<Viewer>>;
@@ -148,6 +156,14 @@ class Room {
   std::array<std::atomic<std::uint32_t>, kLayers> host_ssrc_{};
   std::array<std::atomic<std::int64_t>, kLayers> layer_seen_ms_{};
   std::array<std::atomic<bool>, kLayers> layer_seen_{};
+
+  // Contadores de host_stats (relaxed: solo se leen para mostrarlos).
+  std::array<std::atomic<std::uint64_t>, kLayers> layer_bytes_{};
+  std::atomic<std::uint64_t> nacks_{0};
+  std::atomic<std::uint64_t> plis_{0};
+  std::mutex stats_mu_;
+  std::array<std::uint64_t, kLayers> stats_bytes_{};
+  std::optional<std::int64_t> stats_ms_;
 };
 
 }  // namespace stream::sfu

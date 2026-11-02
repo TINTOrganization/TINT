@@ -16,6 +16,15 @@ namespace stream::sfu {
 // Capas de simulcast: 0 = l (360p15), 1 = m (720p30), 2 = h (1080p30).
 inline constexpr int kLayers = 3;
 
+// Estadísticas para el host (DataChannel host_stats, dominio-transmision §4).
+struct HostStats {
+  std::array<std::uint64_t, kLayers> bitrate_bps{};  // de la última ventana
+  std::array<bool, kLayers> active{};
+  std::array<int, kLayers> viewers_per_layer{};
+  std::uint64_t nacks = 0;  // secuencias pedidas por los viewers (acumulado)
+  std::uint64_t plis = 0;   // PLI enviados al host (acumulado)
+};
+
 // rid -> capa: "l"/"m"/"h"; cualquier otro nombre se ordena por su posición en la oferta
 // (la primera codificación es la de más calidad, como en sendEncodings).
 std::optional<int> layer_for_rid(const std::string& rid, const std::vector<std::string>& offered_rids);
@@ -81,7 +90,9 @@ class NackBuffer {
 
 struct LayerSelectorConfig {
   std::array<std::uint64_t, kLayers> bitrate_bps{250'000, 800'000, 2'500'000};
-  double upgrade_margin = 1.3;
+  // El REMB de Chrome no pasa de ~1.5× lo que el viewer recibe (el SFU no sondea): no sirve para
+  // decidir subir. Sí marca congestión cuando CAE: un 10 % por debajo del máximo desde el último cambio.
+  double remb_drop_ratio = 0.9;
   std::int64_t upgrade_hold_ms = 5000;
   std::uint8_t loss_threshold = 26;  // 10 % en fracción /256
   int loss_reports_to_downgrade = 2;
@@ -105,7 +116,7 @@ class LayerSelector {
 
   LayerSelectorConfig config_;
   int layer_ = 0;
-  std::optional<std::uint64_t> remb_bps_;
+  std::uint64_t remb_peak_bps_ = 0;  // máximo REMB desde el último cambio de capa
   int lossy_reports_ = 0;
   std::int64_t good_since_ms_ = -1;
   std::int64_t last_downgrade_ms_ = INT64_MIN / 2;

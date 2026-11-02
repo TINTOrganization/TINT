@@ -212,8 +212,10 @@ std::expected<std::shared_ptr<service::Peer>, http::Problem> LibDataChannelPeerF
       init.id = 0;
       peer->dc = pc.createDataChannel("stream-events", init);
       auto on_message = std::move(callbacks.on_message);
-      peer->dc->onOpen([weak] {
+      auto on_open = std::move(callbacks.on_open);
+      peer->dc->onOpen([weak, on_open] {
         if (auto p = weak.lock()) p->flush_events();
+        if (on_open) on_open();
       });
       peer->dc->onMessage([on_message](rtc::message_variant m) {
         if (auto* s = std::get_if<std::string>(&m); s && on_message) on_message(*s);

@@ -113,7 +113,10 @@ void LayerSelector::move_to(int layer, std::int64_t now_ms, bool downgrade) {
   layer_ = std::clamp(layer, 0, kLayers - 1);
   good_since_ms_ = downgrade ? -1 : now_ms;
   lossy_reports_ = 0;
-  if (downgrade) last_downgrade_ms_ = now_ms;
+  if (downgrade) {
+    last_downgrade_ms_ = now_ms;
+    remb_peak_bps_ = 0;  // tras bajar, el REMB vuelve a tomar referencia (no baja dos veces)
+  }
 }
 
 std::optional<int> LayerSelector::next_active_above(const std::array<bool, kLayers>& active) const {
@@ -123,8 +126,17 @@ std::optional<int> LayerSelector::next_active_above(const std::array<bool, kLaye
 }
 
 int LayerSelector::on_remb(std::uint64_t bitrate_bps, std::int64_t now_ms) {
-  remb_bps_ = bitrate_bps;
-  if (bitrate_bps < config_.bitrate_bps[layer_] && layer_ > 0) {
+  const bool fell = remb_peak_bps_ > 0 && static_cast<double>(bitrate_bps) <
+                                              config_.remb_drop_ratio * static_cast<double>(remb_peak_bps_);
+  remb_peak_bps_ = std::max(remb_peak_bps_, bitrate_bps);
+  if (!fell) {
+    // Sube o se mantiene: sin congestión. Que esté por debajo de la capa siguiente no dice nada.
+    if (good_since_ms_ < 0 && lossy_reports_ == 0) good_since_ms_ = now_ms;
+    return layer_;
+  }
+  // Cayó: congestión. Si ya no cabe la capa actual, salta a la que cabe; si cabe, no sube por ahora.
+  good_since_ms_ = -1;
+  if (layer_ > 0 && bitrate_bps < config_.bitrate_bps[layer_]) {
     int fit = 0;
     for (int l = layer_ - 1; l >= 0; --l)
       if (config_.bitrate_bps[l] <= bitrate_bps) {
@@ -132,14 +144,8 @@ int LayerSelector::on_remb(std::uint64_t bitrate_bps, std::int64_t now_ms) {
         break;
       }
     move_to(fit, now_ms, /*downgrade=*/true);
-    return layer_;
   }
-  const bool enough_for_next =
-      layer_ + 1 >= kLayers || bitrate_bps >= config_.upgrade_margin * config_.bitrate_bps[layer_ + 1];
-  if (!enough_for_next)
-    good_since_ms_ = -1;
-  else if (good_since_ms_ < 0 && lossy_reports_ == 0)
-    good_since_ms_ = now_ms;
+  remb_peak_bps_ = bitrate_bps;
   return layer_;
 }
 
@@ -151,9 +157,7 @@ int LayerSelector::on_loss(std::uint8_t fraction_lost, std::int64_t now_ms) {
     return layer_;
   }
   lossy_reports_ = 0;
-  const bool remb_ok = !remb_bps_ || layer_ + 1 >= kLayers ||
-                       *remb_bps_ >= config_.upgrade_margin * config_.bitrate_bps[layer_ + 1];
-  if (good_since_ms_ < 0 && remb_ok) good_since_ms_ = now_ms;
+  if (good_since_ms_ < 0) good_since_ms_ = now_ms;
   return layer_;
 }
 
@@ -178,10 +182,9 @@ int LayerSelector::on_tick(const std::array<bool, kLayers>& active, std::int64_t
     if (good_since_ms_ >= 0) good_since_ms_ = now_ms;
     return layer_;
   }
-  const bool remb_ok = !remb_bps_ || *remb_bps_ >= config_.upgrade_margin * config_.bitrate_bps[*next];
   const bool held = good_since_ms_ >= 0 && now_ms - good_since_ms_ >= config_.upgrade_hold_ms;
   const bool dwell_over = now_ms - last_downgrade_ms_ >= config_.dwell_after_downgrade_ms;
-  if (remb_ok && held && dwell_over) move_to(*next, now_ms, /*downgrade=*/false);
+  if (held && dwell_over) move_to(*next, now_ms, /*downgrade=*/false);
   return layer_;
 }
 

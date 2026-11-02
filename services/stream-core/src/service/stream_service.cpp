@@ -166,7 +166,8 @@ std::expected<SessionAnswer, http::Problem> StreamService::publish(const http::W
                                   on_host_closed(e, session_id);
                                 else
                                   remove_session(session_id);
-                              }};
+                              },
+                          .on_open = {}};
 
   auto peer = peers_.create({role, session_id, cmd.sdp, {}}, std::move(callbacks));
   if (!peer) return std::unexpected(peer.error());
@@ -244,7 +245,11 @@ std::expected<SessionAnswer, http::Problem> StreamService::watch(const http::Whe
                                 if (auto e = weak.lock()) e->room.on_viewer_rtcp(session_id, p, clock_());
                               },
                           .on_message = {},
-                          .on_closed = [this, session_id] { remove_session(session_id); }};
+                          .on_closed = [this, session_id] { remove_session(session_id); },
+                          .on_open =
+                              [this, weak, session_id] {
+                                if (auto e = weak.lock()) e->room.on_viewer_ready(session_id);
+                              }};
   auto peer = peers_.create({PeerRole::Viewer, session_id, cmd.sdp, options}, std::move(callbacks));
   if (!peer) return std::unexpected(peer.error());
 
@@ -377,6 +382,16 @@ void StreamService::tick() {
     if (count != e->last_viewer_count) {
       e->last_viewer_count = count;
       e->room.broadcast_event(events::viewer_count(count));
+    }
+    if (now - e->last_host_stats_ms >= 1000) {  // host_stats a 1 Hz, solo al host (§4)
+      e->last_host_stats_ms = now;
+      std::shared_ptr<Peer> host;
+      {
+        std::lock_guard lock(mu_);
+        host = e->host_video;
+      }
+      const auto stats = e->room.host_stats(now);
+      if (host) host->send_event(events::host_stats(stats));
     }
   }
 }

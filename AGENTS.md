@@ -81,6 +81,7 @@ Cambiar uno exige actualizar **ambos lados**, sus pruebas y [docs/arquitectura.m
 | Infra / Secretos | `make secrets` (contrato estático y sintaxis compose) · escaneo Gitleaks en CI |
 | C++ (`stream-core`) | `make test-stream`: en la imagen dev (libdatachannel no está empaquetada) corre `clang-format`, ctest y `gcovr ≥ 85`. CI añade ASan+UBSan (con loopback de libdatachannel), TSan (`-DSTREAM_BUILD_RTC=OFF`), la imagen de runtime, `/healthz` y `scripts/smoke.py` (job `cpp-stream`) |
 | Carga de la Transmisión | `make load-stream`: publicador VP8 simulcast y 50 viewers bot (libdatachannel) contra el contenedor; exige TTFF p95 < 2 s, 0 fallos y `409` al viewer 51. CI: `stream-load-smoke` (20 viewers, 15 s) |
+| E2E de la transmisión | `make e2e-stream`: Chromium real (host y dos viewers con la web) contra un entorno propio y aislado (local, fuera de CI) |
 | Carga y E2E del Canal de Voz | `k6 run … services/voice-core/loadtest/voice.js` (CI, `voice-load-smoke`; local con `make load-voice`) · `make e2e-voice`: dos Chromium reales contra la web y `docker compose` (local) |
 
 ## Lecciones aprendidas (no repetir)
