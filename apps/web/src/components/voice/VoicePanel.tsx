@@ -20,9 +20,14 @@ export type VoicePanelProps = {
     | 'toggleMute'
     | 'setHostMute'
     | 'dismissNotice'
-  >;
+  > &
+    Partial<Pick<VoiceChannel, 'notOnStage'>>;
   /** peer_id de quienes están hablando (HU-VOZ-03). */
   speaking: Set<string>;
+  /** Sala `live`: voz en modo escenario (solo el host y sus invitados; cierre 4009 al resto). */
+  stage?: boolean;
+  /** Host en modo escenario: baja a alguien del escenario (`DELETE …/stage/{user_id}`). */
+  onRemoveFromStage?: (userId: string, nick: string) => void;
 };
 
 function MicIcon({ off }: { off: boolean }) {
@@ -62,6 +67,7 @@ function MemberRow({
   connection,
   moderator,
   onHostMute,
+  onRemoveFromStage,
 }: {
   peer: VoicePeer;
   isSelf: boolean;
@@ -69,6 +75,7 @@ function MemberRow({
   connection?: RTCPeerConnectionState;
   moderator: boolean;
   onHostMute: (userId: string, muted: boolean) => void;
+  onRemoveFromStage?: (userId: string, nick: string) => void;
 }) {
   const initial = (peer.nick || '?').trim().charAt(0).toUpperCase();
   const linkText = !isSelf && connection ? CONNECTION_TEXT[connection] : undefined;
@@ -113,13 +120,23 @@ function MemberRow({
           {peer.host_muted ? 'Permitir hablar' : 'Silenciar'}
         </Button>
       )}
+      {moderator && !isSelf && onRemoveFromStage && (
+        <Button
+          variant="quiet"
+          size="sm"
+          onClick={() => onRemoveFromStage(peer.user_id, peer.nick)}
+          aria-label={`Bajar del escenario a ${peer.nick}`}
+        >
+          Bajar
+        </Button>
+      )}
     </li>
   );
 }
 
 /** Canal de voz de la sala: unirse, micrófono, quién está y quién habla. */
-export function VoicePanel({ voice, speaking }: VoicePanelProps) {
-  const { status, notice, self, peers, remoteStreams, connection, muted, hostMuted } = voice;
+export function VoicePanel({ voice, speaking, stage = false, onRemoveFromStage }: VoicePanelProps) {
+  const { status, notice, self, peers, remoteStreams, connection, muted, hostMuted, notOnStage = false } = voice;
   const inVoice = status === 'connected' || status === 'reconnecting';
   const busy = status === 'joining';
   const moderator = !!self && canModerate(self.role);
@@ -129,13 +146,16 @@ export function VoicePanel({ voice, speaking }: VoicePanelProps) {
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h2 id="voice-title" className="text-[15px] font-semibold text-white">
-            Voz
+            {stage ? 'Voz · escenario' : 'Voz'}
           </h2>
           <p className="text-[13px] text-tint-muted" role="status" aria-live="polite">
             {status === 'joining' && 'Conectando a la voz…'}
             {status === 'reconnecting' && 'Reconectando la voz…'}
             {status === 'connected' && `${peers.length + 1} en la voz`}
-            {(status === 'idle' || status === 'ended') && 'Habla con la sala mientras ven el vídeo.'}
+            {(status === 'idle' || status === 'ended') &&
+              (stage
+                ? 'Hablan el host y quienes él invite; la audiencia los oye en la transmisión.'
+                : 'Habla con la sala mientras ven el vídeo.')}
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -156,10 +176,23 @@ export function VoicePanel({ voice, speaking }: VoicePanelProps) {
               </Button>
             </>
           ) : (
-            <Button size="sm" onClick={() => void voice.join()} disabled={busy}>
-              <MicIcon off={false} />
-              {busy ? 'Conectando…' : 'Unirse a la voz'}
-            </Button>
+            <>
+              {notOnStage && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  disabled
+                  aria-describedby="voice-stage-hint"
+                  title="Pídeselo al host en el chat"
+                >
+                  Pedir subir al escenario
+                </Button>
+              )}
+              <Button size="sm" onClick={() => void voice.join()} disabled={busy}>
+                <MicIcon off={false} />
+                {busy ? 'Conectando…' : notOnStage ? 'Volver a intentar' : stage ? 'Subir al escenario' : 'Unirse a la voz'}
+              </Button>
+            </>
           )}
         </div>
       </div>
@@ -173,6 +206,12 @@ export function VoicePanel({ voice, speaking }: VoicePanelProps) {
             ✕
           </Button>
         </div>
+      )}
+
+      {notOnStage && !inVoice && (
+        <p id="voice-stage-hint" className="mt-3 text-[13px] leading-relaxed text-tint-muted">
+          No estás en el escenario. Pídele al host en el chat que te invite y luego vuelve a intentar.
+        </p>
       )}
 
       {inVoice && self && (
@@ -193,6 +232,7 @@ export function VoicePanel({ voice, speaking }: VoicePanelProps) {
               connection={connection[p.peer_id]}
               moderator={moderator}
               onHostMute={voice.setHostMute}
+              onRemoveFromStage={onRemoveFromStage}
             />
           ))}
         </ul>

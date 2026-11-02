@@ -3,6 +3,7 @@ import { useParams, Link, useNavigate } from 'react-router-dom';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { m, useReducedMotion } from 'framer-motion';
 
+import { RoomNotice } from '../components/room/RoomNotice';
 import { ReactionBar } from '../components/ReactionBar';
 import { ReactionOverlay } from '../components/ReactionOverlay';
 import { LaserOverlay } from '../components/LaserOverlay';
@@ -32,6 +33,8 @@ import { useRevocationProbe } from '../hooks/useRevocationProbe';
 import { hostFailureMessage } from '../lib/mediaFailure';
 import { useRoomPlayback, type MediaStatus } from '../hooks/useRoomPlayback';
 import { useRecapGate } from '../hooks/useRecapGate';
+import { ROOM_ENDED_TITLE, roomEndedBody } from '../lib/roomClosed';
+import { livePath } from '../lib/rooms';
 
 import { useSocialSocket } from '../hooks/useSocialSocket';
 import { useSyncSocket } from '../hooks/useSyncSocket';
@@ -77,37 +80,6 @@ function PlayerHalo({ playing }: { playing: boolean }) {
   );
 }
 
-/** Pantalla terminal de la sala (sin reintentos): expulsión, invitación inválida, etc. */
-function RoomNotice({
-  title,
-  body,
-  to = '/',
-  linkLabel = 'Volver al inicio',
-}: {
-  title: string;
-  body: string;
-  to?: string;
-  linkLabel?: string;
-}) {
-  return (
-    <div className="relative isolate grid min-h-[100dvh] place-items-center bg-tint-bg px-4 text-tint-muted">
-      <AmbientBackground />
-      <Card className="max-w-md p-8 text-center">
-        <p role="alert" className="text-lg font-semibold tracking-tight text-white">
-          {title}
-        </p>
-        <p className="mt-2 text-sm leading-relaxed">{body}</p>
-        <Link
-          to={to}
-          className="mt-6 inline-flex rounded-full bg-tint-accent px-5 py-2.5 text-sm font-semibold text-tint-bg transition hover:bg-tint-accentHover"
-        >
-          {linkLabel}
-        </Link>
-      </Card>
-    </div>
-  );
-}
-
 export default function WatchRoom() {
   const { roomId } = useParams();
   const navigate = useNavigate();
@@ -119,6 +91,9 @@ export default function WatchRoom() {
     : null;
   // Sin ningún token válido no hay cómo autenticar el socket: se muestra la puerta.
   const hasAccess = !!hostToken || !!guestToken;
+  // El evento terminó (ADR 0019: cierre 4010 o 410 Disabled). Se fija una vez y apaga los canales.
+  const [ended, setEnded] = useState(false);
+  const markEnded = useCallback(() => setEnded(true), []);
   // Canal Social (/ws/social): el estado maestro del chat vive en social-core.
   const {
     messages,
@@ -143,13 +118,14 @@ export default function WatchRoom() {
     triviaSchedule,
     revoked: socialRevoked,
     expired: socialExpired,
+    disabled: socialDisabled,
     triviaLeaderboard,
     scheduleTrivia,
     updateTrivia,
     deleteTrivia,
     answerTrivia,
     dismissTrivia,
-  } = useSocialSocket(hasAccess ? roomId : undefined, { role: hostToken ? 'host' : 'guest' });
+  } = useSocialSocket(hasAccess && !ended ? roomId : undefined, { role: hostToken ? 'host' : 'guest' });
   // Si hay sesión de host, manda el host aunque queden restos de invitado
   // (p. ej. guest token de una visita anterior al login). Coherente con
   // apiFetch, que prefiere el header de host.
@@ -177,11 +153,19 @@ export default function WatchRoom() {
     if (roomMedia && roomMedia !== loadedMediaRef.current) return null;
     return getPositionMs();
   }, [getPositionMs]);
-  const sync = useSyncSocket({ roomId: roomId ?? '', role, getPositionMs: getHeartbeatPositionMs, enabled: hasAccess });
+  const sync = useSyncSocket({
+    roomId: roomId ?? '',
+    role,
+    getPositionMs: getHeartbeatPositionMs,
+    enabled: hasAccess && !ended,
+  });
   const playback = useRoomPlayback(roomId ?? '', sync.state ? sync.state.media_id : undefined, {
     role,
-    enabled: hasAccess && !sync.revoked && !socialRevoked,
+    enabled: hasAccess && !sync.revoked && !socialRevoked && !ended,
   });
+  useEffect(() => {
+    if (socialDisabled || sync.disabled || playback.disabled) setEnded(true);
+  }, [socialDisabled, sync.disabled, playback.disabled]);
   // Si un cierre 4001 no llega (el navegador lo entrega como 1006), la API confirma la expulsión.
   const probe = useRevocationProbe({
     roomId,
@@ -315,6 +299,12 @@ export default function WatchRoom() {
     Promise.all([apiFetch(`/rooms/${roomId}`), apiFetch(`/rooms/${roomId}/invitations`)])
       .then(([roomRes, invRes]) => {
         if (cancelled) return;
+        // Una sala `live` no usa el Canal Sync: su página es /live/:id.
+        if (roomRes.room?.kind === 'live') {
+          navigate(livePath(roomId), { replace: true });
+          return;
+        }
+        if (roomRes.room?.status === 'disabled') setEnded(true);
         setRoomTitle(roomRes.room?.title ?? null);
         const list = (invRes.invitations ?? []) as { code: string; link?: string; expiresAt: string; createdAt?: string; revoked?: boolean }[];
         const latest = pickLatestActiveInvitation(
@@ -331,7 +321,7 @@ export default function WatchRoom() {
     return () => {
       cancelled = true;
     };
-  }, [roomId, isGuest, hasAccess]);
+  }, [roomId, isGuest, hasAccess, navigate]);
 
   const heading = roomTitle?.trim() ? roomTitle : `Sala ${roomId}`;
 
@@ -350,6 +340,17 @@ export default function WatchRoom() {
     navigate(`/invite/${code}`);
   };
 
+  // Evento terminado (HU-LIVE-08): distinto de "retirado" (4001); el botón lleva a casa.
+  if (ended || socialDisabled || sync.disabled || playback.disabled) {
+    return (
+      <RoomNotice
+        title={ROOM_ENDED_TITLE}
+        body={roomEndedBody(!isGuest)}
+        to={homePath}
+        linkLabel={isGuest ? 'Volver al inicio' : 'Ir al dashboard'}
+      />
+    );
+  }
   // Antes que la puerta: al revocar se borra el guest token y hasAccess cae a false.
   // El chat (social-core) cierra con 4001 igual que sync: cualquiera de los dos expulsa.
   if (sync.revoked || socialRevoked || probe.revoked) {
@@ -575,7 +576,7 @@ export default function WatchRoom() {
           </AmbilightGlow>
 
           {/* Canal de voz (voice-core): no conecta nada hasta pulsar "Unirse a la voz". */}
-          <VoiceSection roomId={roomId ?? ''} role={isGuest ? 'guest' : 'host'} />
+          <VoiceSection roomId={roomId ?? ''} role={isGuest ? 'guest' : 'host'} onRoomDisabled={markEnded} />
 
           {!isGuest && (
             <div className="mt-4 grid gap-4 md:grid-cols-2">

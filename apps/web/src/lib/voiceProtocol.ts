@@ -1,10 +1,21 @@
+import { ROOM_ENDED_TITLE } from './roomClosed';
+
 /**
  * Protocolo del Canal de Voz (voice-core, `/ws/voice`). El servidor solo autoriza, lleva la
  * membresía y reenvía la señalización; el audio va P2P entre navegadores (WebRTC, mesh).
  * Contrato: services/voice-core/AGENTS.md § Protocolo del Canal de Voz.
  */
 
-export const VOICE_CLOSE = { NORMAL: 1000, REVOKED: 4001, EXPIRED: 4003, FULL: 4008 } as const;
+export const VOICE_CLOSE = {
+  NORMAL: 1000,
+  REVOKED: 4001,
+  EXPIRED: 4003,
+  FULL: 4008,
+  /** Sala `live`: solo entran el host y quienes él invitó al escenario (ADR 0019). */
+  NOT_ON_STAGE: 4009,
+  /** La sala fue deshabilitada al terminar el evento (ADR 0019). */
+  ROOM_DISABLED: 4010,
+} as const;
 
 export interface VoicePeer {
   peer_id: string;
@@ -158,6 +169,7 @@ const ERROR_TEXT: Record<string, string> = {
   VOICE_FULL: 'La voz está llena. Intenta cuando alguien salga.',
   FORBIDDEN: 'Solo el host puede silenciar a otras personas.',
   UNAVAILABLE: 'No se pudo guardar el cambio. Intenta de nuevo en un momento.',
+  NOT_ON_STAGE: 'No estás en el escenario. En una transmisión solo hablan el host y quienes él invite.',
 };
 
 export function voiceErrorMessage(code: string): string {
@@ -168,6 +180,8 @@ export function voiceErrorMessage(code: string): string {
 export function voiceCloseNotice(code: number, isHost: boolean): string | null {
   if (code === VOICE_CLOSE.REVOKED) return 'Ya no tienes acceso a esta sala.';
   if (code === VOICE_CLOSE.FULL) return ERROR_TEXT.VOICE_FULL;
+  if (code === VOICE_CLOSE.NOT_ON_STAGE) return ERROR_TEXT.NOT_ON_STAGE;
+  if (code === VOICE_CLOSE.ROOM_DISABLED) return `${ROOM_ENDED_TITLE}.`;
   // El host pide un sync-ticket nuevo en cada intento; el invitado no puede renovar el suyo.
   if (code === VOICE_CLOSE.EXPIRED && !isHost) return 'Tu invitación caducó. Pide al host un link nuevo.';
   return null;

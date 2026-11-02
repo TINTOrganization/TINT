@@ -30,6 +30,7 @@ function makeSync(over: Partial<SyncSocketApi> = {}): SyncSocketApi {
     driftMs: null,
     revoked: false,
     expired: false,
+    disabled: false,
     fatalError: null,
     reconnect: null,
     lastBroadcast: null,

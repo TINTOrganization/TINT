@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { apiFetch } from '../lib/api';
 import { errorStatus } from '../lib/errorStatus';
+import { CLOSE_ROOM_DISABLED, isRoomDisabledError } from '../lib/roomClosed';
 import type { Correction } from '../lib/drift';
 import {
   decodeFrame,
@@ -43,9 +44,11 @@ const OWN_EVENTS_MEMORY = 50;
 
 export type SyncRole = 'host' | 'guest';
 
-export type SyncFatalError = 'NOT_HOST' | 'ROOM_GONE';
+export type SyncFatalError = 'NOT_HOST' | 'ROOM_GONE' | 'ROOM_DISABLED';
 
-function fatalTicketError(status: number | null): SyncFatalError | null {
+function fatalTicketError(err: unknown): SyncFatalError | null {
+  const status = errorStatus(err);
+  if (isRoomDisabledError(err)) return 'ROOM_DISABLED';
   if (status === 403) return 'NOT_HOST';
   if (status === 404 || status === 410) return 'ROOM_GONE';
   return null;
@@ -117,6 +120,11 @@ export interface SyncSocketApi {
    */
   expired: boolean;
   /**
+   * La sala fue deshabilitada al terminar el evento (ADR 0019): cierre `4010` o sync-ticket con
+   * `410 {error:"Disabled"}`. No se reconecta.
+   */
+  disabled: boolean;
+  /**
    * El host no puede sincronizar y reintentar no lo arregla: el sync-ticket respondió
    * 403 (`NOT_HOST`, no es el dueño) o 404/410 (`ROOM_GONE`, sala inexistente o borrada).
    */
@@ -186,6 +194,7 @@ export function useSyncSocket({
   const [revoked, setRevoked] = useState(false);
   const [fatalError, setFatalError] = useState<SyncFatalError | null>(null);
   const [expired, setExpired] = useState(false);
+  const [disabled, setDisabled] = useState(false);
   const [reconnect, setReconnect] = useState<ReconnectInfo | null>(null);
   const [lastBroadcast, setLastBroadcast] = useState<SyncBroadcast | null>(null);
   const [volume, setVolume] = useState(DEFAULT_VOLUME);
@@ -397,7 +406,7 @@ export function useSyncSocket({
         })
         .catch((err: unknown) => {
           if (disposed) return;
-          const fatal = fatalTicketError(errorStatus(err));
+          const fatal = fatalTicketError(err);
           if (fatal) {
             // No es el dueño o la sala ya no existe: reintentar no lo arregla.
             setFatalError(fatal);
@@ -436,6 +445,12 @@ export function useSyncSocket({
       ws.onclose = (ev: CloseEvent) => {
         if (wsRef.current === ws) wsRef.current = null;
         setConnected(false);
+        if (ev.code === CLOSE_ROOM_DISABLED) {
+          // El evento terminó (ADR 0019): la sala no vuelve, no se reconecta.
+          setDisabled(true);
+          setReconnect(null);
+          return;
+        }
         if (ev.code === CLOSE_REVOKED) {
           // El host retiró a este participante: no reconectar nunca.
           if (role === 'guest') localStorage.removeItem('tint_guest_token');
@@ -512,6 +527,7 @@ export function useSyncSocket({
       driftMs,
       revoked,
       expired,
+      disabled: disabled || fatalError === 'ROOM_DISABLED',
       fatalError,
       reconnect,
       lastBroadcast,
@@ -531,6 +547,7 @@ export function useSyncSocket({
       driftMs,
       revoked,
       expired,
+      disabled,
       fatalError,
       reconnect,
       lastBroadcast,

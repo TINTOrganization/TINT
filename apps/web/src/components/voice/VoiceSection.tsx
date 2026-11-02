@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef } from 'react';
+import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { Card } from '../ui/Primitives';
 import { VoicePanel } from './VoicePanel';
 import { useSpeaking } from '../../hooks/useSpeaking';
@@ -9,9 +9,39 @@ import { useVoiceChannel, type UseVoiceChannelOptions } from '../../hooks/useVoi
  * detección de quién habla y el panel. Si voice-core no está, solo falla esta tarjeta:
  * el chat y la sincronía siguen (HU-VOZ-06 AC1).
  */
-export function VoiceSection({ roomId, ...opts }: { roomId: string } & UseVoiceChannelOptions) {
+export interface VoiceSectionProps extends UseVoiceChannelOptions {
+  roomId: string;
+  /** Sala `live`: voz en modo escenario (ADR 0019). */
+  stage?: boolean;
+  /** Host en modo escenario: bajar a alguien del escenario. */
+  onRemoveFromStage?: (userId: string, nick: string) => void;
+  /** Cierre 4010 / 410 Disabled: el evento terminó (la sala muestra el aviso de fin). */
+  onRoomDisabled?: () => void;
+  /** Audio recibido de quienes están en la voz (el host lo mezcla en la transmisión). */
+  onRemoteStreams?: (streams: MediaStream[]) => void;
+}
+
+export function VoiceSection({
+  roomId,
+  stage,
+  onRemoveFromStage,
+  onRoomDisabled,
+  onRemoteStreams,
+  ...opts
+}: VoiceSectionProps) {
   const voice = useVoiceChannel(roomId, opts);
-  const { status, self, localStream, muted, hostMuted, peers, sampleEnergy } = voice;
+  const { status, self, localStream, muted, hostMuted, peers, sampleEnergy, roomDisabled, remoteStreams } = voice;
+
+  const onRoomDisabledRef = useRef(onRoomDisabled);
+  onRoomDisabledRef.current = onRoomDisabled;
+  useEffect(() => {
+    if (roomDisabled) onRoomDisabledRef.current?.();
+  }, [roomDisabled]);
+  const onRemoteStreamsRef = useRef(onRemoteStreams);
+  onRemoteStreamsRef.current = onRemoteStreams;
+  useEffect(() => {
+    onRemoteStreamsRef.current?.(Object.values(remoteStreams));
+  }, [remoteStreams]);
 
   // La voz propia se mide (Web Audio) solo mientras se envía.
   const local = useMemo(
@@ -30,7 +60,7 @@ export function VoiceSection({ roomId, ...opts }: { roomId: string } & UseVoiceC
 
   return (
     <Card className="mt-4 p-5">
-      <VoicePanel voice={voice} speaking={speaking} />
+      <VoicePanel voice={voice} speaking={speaking} stage={stage} onRemoveFromStage={onRemoveFromStage} />
     </Card>
   );
 }
