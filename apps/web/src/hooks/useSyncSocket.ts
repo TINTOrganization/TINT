@@ -33,8 +33,9 @@ import {
   type SyncState,
 } from '../lib/syncProtocol';
 import { MIN_STALL_MS } from '../lib/stallTracker';
+import { sameOriginWebSocketUrl } from '../lib/publicEntry';
 
-export const DEFAULT_SYNC_WS_URL = 'ws://localhost:8083/ws/sync';
+export const DEFAULT_SYNC_WS_URL = '/ws/sync';
 
 /** Longitud máxima de `media_id` aceptada por sync-core (contrato v2 §2). */
 const MAX_MEDIA_ID = 128;
@@ -207,7 +208,7 @@ export function useSyncSocket({
     nowRef.current = now ?? defaultNow;
   });
 
-  const baseUrl = url || import.meta.env.VITE_SYNC_WS_URL || DEFAULT_SYNC_WS_URL;
+  const baseUrl = sameOriginWebSocketUrl(url || import.meta.env.VITE_SYNC_WS_URL || DEFAULT_SYNC_WS_URL);
   const requested = encoding ?? resolveEncoding(import.meta.env.VITE_SYNC_ENCODING);
 
   useEffect(() => {

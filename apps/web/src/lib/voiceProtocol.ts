@@ -1,3 +1,5 @@
+import { sameOriginWebSocketUrl } from './publicEntry';
+
 /**
  * Protocolo del Canal de Voz (voice-core, `/ws/voice`). El servidor solo autoriza, lleva la
  * membresía y reenvía la señalización; el audio va P2P entre navegadores (WebRTC, mesh).
@@ -42,8 +44,7 @@ export type VoiceServerMessage =
   | { type: 'error'; code: string; event_id_ref?: string };
 
 export function resolveVoiceWsUrl(override?: string): string {
-  if (override) return override;
-  return import.meta.env.VITE_VOICE_WS_URL || 'ws://localhost:8085/ws/voice';
+  return sameOriginWebSocketUrl(override || import.meta.env.VITE_VOICE_WS_URL || '/ws/voice');
 }
 
 export function buildVoiceUrl(base: string, roomId: string, token: string): string {

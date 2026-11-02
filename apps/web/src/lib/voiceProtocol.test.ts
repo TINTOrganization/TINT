@@ -18,9 +18,9 @@ const peer = { peer_id: 'p1', user_id: 'guest:ana', nick: 'Ana', role: 'particip
 afterEach(() => vi.unstubAllEnvs());
 
 describe('voiceProtocol — URL', () => {
-  it('usa VITE_VOICE_WS_URL o el puerto 8085 por defecto', () => {
+  it('usa VITE_VOICE_WS_URL o la ruta pública del gateway por defecto', () => {
     vi.stubEnv('VITE_VOICE_WS_URL', '');
-    expect(resolveVoiceWsUrl()).toBe('ws://localhost:8085/ws/voice');
+    expect(resolveVoiceWsUrl()).toBe('ws://localhost:3000/ws/voice');
     vi.stubEnv('VITE_VOICE_WS_URL', 'wss://voz.test/ws/voice');
     expect(resolveVoiceWsUrl()).toBe('wss://voz.test/ws/voice');
     expect(resolveVoiceWsUrl('ws://x/ws/voice')).toBe('ws://x/ws/voice');
