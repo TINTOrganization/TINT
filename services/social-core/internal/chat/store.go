@@ -71,6 +71,29 @@ func SyncChannelKey(roomID string) string {
 	return "room:" + roomID + ":sync"
 }
 
+// StreamChannelKey es el canal Pub/Sub por el que stream-core publica
+// STREAM_STARTED y STREAM_ENDED (dominio-transmision §6.1; solo lectura).
+func StreamChannelKey(roomID string) string {
+	return "room:" + roomID + ":stream"
+}
+
+// ClosedKey marca una sala deshabilitada (la escribe identity-api, sin TTL;
+// ADR 0019).
+func ClosedKey(roomID string) string {
+	return "room:" + roomID + ":closed"
+}
+
+// KindKey guarda el tipo de sala ("watch" o "live"; lo escribe identity-api).
+func KindKey(roomID string) string {
+	return "room:" + roomID + ":kind"
+}
+
+// StreamStartedKey guarda started_at_ms del stream (lo escribe stream-core
+// con SET NX); permite reconstruir la trivia por minuto tras un reinicio.
+func StreamStartedKey(roomID string) string {
+	return "room:" + roomID + ":stream:started_at"
+}
+
 // RevokedKey marca un token revocado por identity-api (SET … EXAT exp).
 func RevokedKey(jti string) string {
 	return "token:revoked:" + jti
@@ -89,4 +112,9 @@ type Inbound struct {
 	// RATE, LOAD) leído de room:{id}:sync para el recap; nunca llega a los
 	// clientes.
 	Sync *socialevent.SyncEvent
+	// RoomClosed indica un ROOM_CLOSED válido de identity-api (ADR 0019):
+	// hay que cerrar con 4010 todas las conexiones de la sala.
+	RoomClosed bool
+	// Stream es un STREAM_STARTED/STREAM_ENDED válido de stream-core.
+	Stream *socialevent.StreamEvent
 }

@@ -39,6 +39,12 @@ class GatewayConfigTests(unittest.TestCase):
         self.assertIn("@voice_api path /api/v1/voice/*", caddyfile)
         self.assertIn("reverse_proxy @voice_api {$VOICE_CORE_UPSTREAM:voice-core:8085}", caddyfile)
 
+    def test_gateway_routes_social_rest_before_identity_catch_all(self):
+        caddyfile = CONFIG.read_text(encoding="utf-8")
+        self.assertIn("@social_api path /api/v1/social/*", caddyfile)
+        self.assertIn("reverse_proxy @social_api {$SOCIAL_CORE_UPSTREAM:social-core:8082}", caddyfile)
+        self.assertLess(caddyfile.index("@social_api path"), caddyfile.index("@identity path /api/*"))
+
     def test_gateway_routes_stream_signaling_before_identity(self):
         # WHIP/WHEP por HTTP a stream-core (HU-LIVE-06, R8). Debe ir antes del catch-all /api/*.
         caddyfile = CONFIG.read_text(encoding="utf-8")

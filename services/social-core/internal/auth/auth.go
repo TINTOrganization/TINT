@@ -107,11 +107,14 @@ func VerifyGuest(token string, cfg GuestConfig, wantRoom string, now time.Time) 
 	if p.Sub == "" || p.JTI == "" || p.Iss != issuer || !hasAudience(p.Aud, audience) || p.Exp == 0 {
 		return Claims{}, ErrInvalidToken
 	}
-	if now.Unix() > p.Exp {
-		return Claims{}, ErrExpired
-	}
+	// La sala va antes que exp: ErrExpired solo sale para un token bien
+	// firmado y de esta sala, que el handshake cierra con 4003 tras el
+	// upgrade (ADR 0014); el de otra sala sigue siendo 403 sin upgrade.
 	if wantRoom != "" && p.RoomID != wantRoom {
 		return Claims{}, ErrWrongRoom
+	}
+	if now.Unix() > p.Exp {
+		return Claims{}, ErrExpired
 	}
 	return Claims{Subject: p.Sub, RoomID: p.RoomID, Role: p.Role, Nick: p.Nick, IsGuest: true, JTI: p.JTI}, nil
 }

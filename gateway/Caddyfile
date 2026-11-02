@@ -64,6 +64,12 @@ https://{$GATEWAY_HOST:localhost} {
         import service_timeout
     }
 
+    # Historial de chat por REST para el host (HU-LIVE-09 AC3, ADR 0019).
+    @social_api path /api/v1/social/*
+    reverse_proxy @social_api {$SOCIAL_CORE_UPSTREAM:social-core:8082} {
+        import service_timeout
+    }
+
     @identity path /api/*
     reverse_proxy @identity {$IDENTITY_API_UPSTREAM:identity-api:8081} {
         import service_timeout
