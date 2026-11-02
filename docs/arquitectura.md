@@ -470,6 +470,10 @@ Ningún secreto del sistema se versiona en Git ni se hornea en capas de las imá
 - **Variables públicas del cliente**: las variables `VITE_*` (por ejemplo `VITE_FIREBASE_*`) son configuraciones públicas consumidas en el navegador e integradas durante el build de `apps/web/Dockerfile`. No son secretos de servidor.
 - **Auditoría CI con Gitleaks**: el pipeline ejecuta un escaneo completo de historial con `.gitleaks.toml` permitiendo únicamente marcadores didácticos de `.env.example`.
 
+### 7.5 Instrucciones de ejecución del prototipo (OPS-06, ADR 0023)
+
+El requerimiento R10 y la historia OPS-06 (#91) establecen que el despliegue del software debe ser 100 % orientado a contenedores y reproducible por un evaluador en menos de 15 minutos. Las instrucciones concisas de una página, los pasos de verificación y la matriz de solución de problemas (AC1, AC2, AC3) están centralizados en la sección [Instrucciones de Ejecución del Prototipo](../README.md#-instrucciones-de-ejecución-del-prototipo-ops-06) del `README.md` y formalizados en el [ADR 0023](adr/0023-instrucciones-de-ejecucion-del-prototipo.md).
+
 ## 8. Puertos locales
 
 | Servicio | Puerto | Notas |

@@ -30,6 +30,7 @@ Cada ADR de esta carpeta se escribió a partir de evidencia del repositorio (có
 | [0020](0020-entrada-unica-https-y-topologia-produccion.md) | Entrada única HTTPS y topología de producción Compose | Aceptada | 2026-11-02 | Infraestructura, web |
 | [0021](0021-observabilidad-salud-y-logs.md) | Salud y logs uniformes para operar los contenedores | Aceptada | 2026-11-02 | Todos los servicios, web, infraestructura |
 | [0022](0022-secretos-por-variables-de-entorno.md) | Secretos exclusivamente por variables de entorno | Aceptada | 2026-11-02 | Infraestructura, CI/CD, todos |
+| [0023](0023-instrucciones-de-ejecucion-del-prototipo.md) | Instrucciones de ejecución del prototipo y guía de revisión (OPS-06) | Aceptada | 2026-11-02 | Infraestructura, CI/CD, README |
 
 ```mermaid
 flowchart LR
@@ -56,6 +57,7 @@ flowchart LR
     A5 --> A20
     A17 --> A21["0021 salud y logs uniformes"]
     A17 --> A22["0022 secretos por variables de entorno"]
+    A17 --> A23["0023 instrucciones de ejecución del prototipo"]
 ```
 
 ## Formato
