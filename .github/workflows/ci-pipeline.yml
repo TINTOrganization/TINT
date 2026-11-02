@@ -108,6 +108,17 @@ jobs:
       - name: Static tests (gateway config + compose structure)
         run: python -m unittest discover -s gateway/tests -v
 
+  gitleaks:
+    name: Security · Gitleaks secret scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
   identity-api:
     name: Node · identity-api
     runs-on: ubuntu-latest
@@ -343,12 +354,12 @@ jobs:
   ci-gate:
     name: CI Gate
     if: always()
-    needs: [go, python, web, identity-api, cpp, cpp-stream, sync-load-smoke, voice-load-smoke, stream-load-smoke, compose-lint, observability-smoke]
+    needs: [go, python, web, identity-api, cpp, cpp-stream, sync-load-smoke, voice-load-smoke, stream-load-smoke, compose-lint, gitleaks, observability-smoke]
     runs-on: ubuntu-latest
     steps:
       - name: Verificar resultado de todos los jobs
         run: |
-          echo "go=${{ needs.go.result }} python=${{ needs.python.result }} web=${{ needs.web.result }} identity-api=${{ needs.identity-api.result }} cpp=${{ needs.cpp.result }} cpp-stream=${{ needs.cpp-stream.result }} load=${{ needs.sync-load-smoke.result }} voice-load=${{ needs.voice-load-smoke.result }} stream-load=${{ needs.stream-load-smoke.result }} compose-lint=${{ needs.compose-lint.result }} obs_smoke=${{ needs.observability-smoke.result }}"
+          echo "go=${{ needs.go.result }} python=${{ needs.python.result }} web=${{ needs.web.result }} identity-api=${{ needs.identity-api.result }} cpp=${{ needs.cpp.result }} cpp-stream=${{ needs.cpp-stream.result }} load=${{ needs.sync-load-smoke.result }} voice-load=${{ needs.voice-load-smoke.result }} stream-load=${{ needs.stream-load-smoke.result }} compose-lint=${{ needs.compose-lint.result }} gitleaks=${{ needs.gitleaks.result }} obs_smoke=${{ needs.observability-smoke.result }}"
           if [ "${{ needs.go.result }}" != "success" ] || \
              [ "${{ needs.python.result }}" != "success" ] || \
              [ "${{ needs.web.result }}" != "success" ] || \
@@ -359,6 +370,7 @@ jobs:
              [ "${{ needs.voice-load-smoke.result }}" != "success" ] || \
              [ "${{ needs.stream-load-smoke.result }}" != "success" ] || \
              [ "${{ needs.compose-lint.result }}" != "success" ] || \
+             [ "${{ needs.gitleaks.result }}" != "success" ] || \
              [ "${{ needs.observability-smoke.result }}" != "success" ]; then
             echo "::error::Pruebas o cobertura (≥ ${COVERAGE_MIN}%) no superadas. Merge bloqueado."
             exit 1

@@ -5,7 +5,7 @@ COVERAGE_MIN := 85
 NODE_SERVICES := services/identity-api
 CPP_SERVICES := services/voice-core
 
-.PHONY: up down test-all test-go test-python test-web test-node test-cpp test-stream smoke-stream load-stream load-voice e2e-voice observability health logs smoke-observability
+.PHONY: up down test-all test-go test-python test-web test-node test-cpp test-stream smoke-stream load-stream load-voice e2e-voice observability health logs smoke-observability secrets smoke-secrets
 
 up:
 	docker compose up -d
@@ -92,3 +92,12 @@ logs:
 
 smoke-observability:
 	python3 scripts/observability_smoke.py
+
+# Secretos por entorno (OPS-05, ADR 0022)
+secrets:
+	python3 -m unittest discover -s gateway/tests -v
+	docker compose config -q
+	docker compose -f docker-compose.yml -f docker-compose.production.yml config -q
+
+smoke-secrets:
+	python3 scripts/secrets_smoke.py
