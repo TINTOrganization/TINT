@@ -22,7 +22,8 @@ services:
         missing=""
         for variable in POSTGRES_USER POSTGRES_PASSWORD POSTGRES_DB \
           MINIO_ROOT_USER MINIO_ROOT_PASSWORD MINIO_BUCKET \
-          JWT_SECRET JWT_ISSUER JWT_AUDIENCE FIREBASE_PROJECT_ID TURN_SECRET; do
+          JWT_SECRET JWT_ISSUER JWT_AUDIENCE FIREBASE_PROJECT_ID TURN_SECRET \
+          MONGO_URI; do
           value=$$(printenv "$$variable" || true)
           if [ -z "$$value" ]; then
             missing="$$missing\n  - $$variable"
@@ -110,7 +111,7 @@ services:
 
   minio:
     #image: minio/minio:latest
-    image: pgsty/minio:latest # Usamos la imagen pgsty dado que la oficial de minio no está disponible actualmente.
+    image: pgsty/minio@sha256:b6bfe7239bfc83fb90d31612d9704d86039dd714f7904b3f1ad68f211e602372 # Usamos la imagen pgsty dado que la oficial de minio no está disponible actualmente.
     container_name: tint-minio
     <<: *env-check
     command: ["server", "/data", "--console-address", ":9001"]
@@ -133,7 +134,7 @@ services:
   # Crea el bucket de media al arrancar y termina.
   minio-init:
     #image: minio/mc:latest
-    image: pgsty/mc:latest # Usamos la imagen pgsty dado que la oficial de minio no está disponible actualmente.
+    image: pgsty/mc@sha256:ce62c9053c69ce12a527a322345b5ad9f44b5f8a7b8189f82e516f2e3f30f1d8 # Usamos la imagen pgsty dado que la oficial de minio no está disponible actualmente.
     container_name: tint-minio-init
     <<: *env-check
     depends_on:
@@ -342,6 +343,28 @@ services:
     ports:
       - "8085:8085"
 
+  # Base de datos documental: historial de chat (SOC-02, SOC-07, DAT-02).
+  # social-core escribe aquí; la colección y los índices se crean en el primer
+  # arranque de social-core (ver services/social-core PR SOC-07).
+  mongodb:
+    image: mongo:8.0
+    container_name: tint-mongodb
+    restart: unless-stopped
+    <<: *env-check
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USER:-tint}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD:-tint}
+      MONGO_INITDB_DATABASE: ${MONGO_DB:-tint}
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo-data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
   # STUN/TURN para la voz. Red del host: el relay debe anunciar direcciones alcanzables
   # desde el navegador (en Linux). Credenciales efímeras firmadas con TURN_SECRET (REST API de TURN).
   coturn:
@@ -368,3 +391,4 @@ volumes:
   postgres-data:
   redis-data:
   minio-data:
+  mongo-data:

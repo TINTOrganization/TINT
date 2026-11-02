@@ -85,6 +85,23 @@ jobs:
       - name: vitest + coverage gate (thresholds en vitest.config.ts)
         run: npx vitest run --coverage
 
+  compose-lint:
+    name: Compose · lint & static tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate docker-compose syntax
+        run: |
+          cp .env.example .env
+          docker compose config --quiet
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: pip install pyyaml
+      - name: Static tests (gateway config + compose structure)
+        run: python -m unittest discover -s gateway/tests -v
+
   identity-api:
     name: Node · identity-api
     runs-on: ubuntu-latest
@@ -223,19 +240,20 @@ jobs:
   ci-gate:
     name: CI Gate
     if: always()
-    needs: [go, python, web, identity-api, cpp, sync-load-smoke, voice-load-smoke]
+    needs: [go, python, web, identity-api, cpp, sync-load-smoke, voice-load-smoke, compose-lint]
     runs-on: ubuntu-latest
     steps:
       - name: Verificar resultado de todos los jobs
         run: |
-          echo "go=${{ needs.go.result }} python=${{ needs.python.result }} web=${{ needs.web.result }} identity-api=${{ needs.identity-api.result }} cpp=${{ needs.cpp.result }} load=${{ needs.sync-load-smoke.result }} voice-load=${{ needs.voice-load-smoke.result }}"
+          echo "go=${{ needs.go.result }} python=${{ needs.python.result }} web=${{ needs.web.result }} identity-api=${{ needs.identity-api.result }} cpp=${{ needs.cpp.result }} load=${{ needs.sync-load-smoke.result }} voice-load=${{ needs.voice-load-smoke.result }} compose-lint=${{ needs.compose-lint.result }}"
           if [ "${{ needs.go.result }}" != "success" ] || \
              [ "${{ needs.python.result }}" != "success" ] || \
              [ "${{ needs.web.result }}" != "success" ] || \
              [ "${{ needs.identity-api.result }}" != "success" ] || \
              [ "${{ needs.cpp.result }}" != "success" ] || \
              [ "${{ needs.sync-load-smoke.result }}" != "success" ] || \
-             [ "${{ needs.voice-load-smoke.result }}" != "success" ]; then
+             [ "${{ needs.voice-load-smoke.result }}" != "success" ] || \
+             [ "${{ needs.compose-lint.result }}" != "success" ]; then
             echo "::error::Pruebas o cobertura (≥ ${COVERAGE_MIN}%) no superadas. Merge bloqueado."
             exit 1
           fi
