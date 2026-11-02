@@ -119,7 +119,9 @@ class FakeRedis:
         self.streams = {}
         self.delivered = {}
         self.pending = {}
+        self.idle_ms = {}
         self.acks = []
+        self.autoclaim_calls = []
         self.xadd_calls = []
 
     def xgroup_create(self, name, groupname, id="$", mkstream=False):
@@ -141,7 +143,9 @@ class FakeRedis:
         ((stream, last_id),) = streams.items()
         if last_id == "0":
             batch = [
-                (mid, fields) for (s, mid), (_c, fields) in self.pending.items() if s == stream
+                (mid, fields)
+                for (s, mid), (owner, fields) in self.pending.items()
+                if s == stream and owner == consumername
             ]
             batch = batch[:count]
         else:
@@ -151,6 +155,19 @@ class FakeRedis:
             for mid, fields in batch:
                 self.pending[(stream, mid)] = (consumername, fields)
         return [[stream, batch]] if batch else []
+
+    def xautoclaim(self, name, groupname, consumername, min_idle_time, start_id="0-0", count=None):
+        """Reclama los pendientes con `idle_ms` >= `min_idle_time` (los demás no se tocan)."""
+        self.autoclaim_calls.append((consumername, min_idle_time, count))
+        claimed = [
+            (mid, fields)
+            for (s, mid), (_owner, fields) in list(self.pending.items())
+            if s == name and self.idle_ms.get(mid, 0) >= min_idle_time
+        ][:count]
+        for mid, fields in claimed:
+            self.pending[(name, mid)] = (consumername, fields)
+            self.idle_ms[mid] = 0
+        return ["0-0", claimed, []]
 
     def xack(self, name, groupname, *ids):
         for mid in ids:
