@@ -243,6 +243,7 @@ Orden del handshake de voz: revocado (`4001`) → sala cerrada (`4010`) → fuer
 | **Rutas** | `host->host` en los 4 pares | `relay->host` en los 4 pares; vídeo llega (≥ 451 frames) | `relay` |
 | **Gracia** (`STREAM_HOST_GRACE_S=10`) | `reconnecting` (con `grace_deadline_ms`) a los 71 ms de cerrar la pestaña; `ended`/`grace_expired` a los 10.13 s; `POST …/disable` con `X-Internal-Token`; aviso "El evento terminó…" | 25 ms · 10.23 s | — |
 | Subida del host en régimen (~40 s) | Medios: `l` 184 + `m` 402 + `h` 860 kbps + Opus 131 kbps. Además, **~1.15 Mbps de padding** en el SSRC de `l` (`headerBytesSent`); `availableOutgoingBitrate` 300 kbps | `h` 783 kbps; padding 1.2 Mbps | §7: ≈ 3.7 Mbps |
+| Subida del host **con REMB del SFU** (2026-11-02, misma máquina, antes → después) | `targetBitrate` del codificador **2500 → 3550 kbps**. Medios `l`/`m`/`h` 198/483/877 → 196/457/933 kbps. Padding en `l` (`headerBytesSent`) 1123 → 1458 kbps: **no baja**. `availableOutgoingBitrate` sigue en 300 kbps | `targetBitrate` 2500 → 3550. `h` 836 → 1008 kbps. Padding 1145 → 1396 kbps | Sin padding (no se logró) |
 
 Antes de los arreglos que encontró el E2E, el TTFF era p50 2604 ms y p95 2662 ms, y los viewers no salían de `l`. Ver el análisis abajo. Con los arreglos, S2 se volvió a medir (50 viewers, 3 corridas de 8 s): TTFF p50 161, 158 y 1154 ms; p95 166, 1221 y 1158 ms; 0 fallos. Es la misma distribución que antes.
 
@@ -256,11 +257,27 @@ Ese arreglo destapó otro bug. Un segundo viewer que entraba dentro de la ventan
 
 **Capas con Chrome (E2E).** Chrome negocia REMB porque el SFU quita transport-cc. Su REMB es una estimación del receptor que no pasa de ~1.5 veces lo que recibe, y el SFU no sondea. El E2E lo midió subiendo de 161k a ~330k mientras el viewer recibía `l` a ~210 kbps, y ahí se estancaba. El selector exigía un REMB ≥ 1.3 × 800k para subir a `m`, así que **ningún viewer salía de 360p**. Ahora el REMB solo cuenta **cuando cae**: por debajo del 90 % de su máximo desde el último cambio indica congestión, y si la capa actual ya no cabe baja a la que cabe. Para subir basta con 5 s sin pérdida en los RR ni caída del REMB. La pérdida sigue bajando una capa tras 2 informes > 10 %, con 8 s de espera antes de volver a subir. Sin red limitada no se midió cuánto tarda en bajar (HU-LIVE-02 AC3).
 
-**Padding del host.** El SFU no le da al host ninguna señal de ancho de banda: quita transport-cc y libdatachannel no genera REMB. Chrome se queda con `availableOutgoingBitrate` = 300 kbps y manda ~1 Mbps de padding en el SSRC de `l`. Igual publica las tres capas sin limitación (`qualityLimitationReason: none`). El SFU no reenvía ese padding, pero es subida desperdiciada. `host_stats` lo cuenta en el bitrate de `l`. La capa `h` rondó ~0.95 Mbps porque el contenido sintético es simple, no 2.5 Mbps. Con una pantalla real en movimiento falta medir si Chrome llega a 2.5 Mbps sin realimentación. Mejora posible: que el SFU envíe REMB al host.
+**Padding del host y REMB hacia el host.** Antes, el SFU no le daba al host ninguna señal de ancho de banda: quita transport-cc y libdatachannel no genera REMB. Chrome mostraba `availableOutgoingBitrate` = 300 kbps y mandaba ~1.1 Mbps de padding en el SSRC de `l`. El SFU no reenvía ese padding, pero es subida desperdiciada, y `host_stats` lo cuenta en el bitrate de `l`.
+
+Ahora el SFU envía un **REMB al host** por la sesión WHIP de vídeo (`sfu/host_remb`, desde `Room::tick`):
+- **Cuándo:** en cuanto conoce algún SSRC del host, luego cada 1 s, y enseguida si cambian los SSRC (capa nueva o reconexión) o el objetivo.
+- **SSRC:** los de las capas aprendidas.
+- **Objetivo:** constante, (2.5 + 0.8 + 0.25 Mbps) × 1.2 = **4.26 Mbps**. No baja con pocos viewers ni sin viewers por dos motivos. La subida del host no debe depender de la audiencia (HU-LIVE-02 AC2). Y un REMB por debajo de la suma haría que Chrome apagara las capas altas: el viewer que suba a `h` tendría que esperar a que se reactiven. El techo real lo siguen poniendo los `maxBitrate` por capa de la web.
+- **SDP:** la respuesta WHIP de vídeo anuncia `a=rtcp-fb:<vp8> goog-remb` (`sdp::add_goog_remb`).
+
+Medido con `make e2e-stream` (tabla de arriba, corridas consecutivas en la misma máquina):
+- **El REMB llega y Chrome lo usa.** El `targetBitrate` del codificador sube de **2500 kbps** a **3550 kbps**, que es la suma de los `maxBitrate`. Antes, el presupuesto del codificador era el `x-google-start-bitrate` (2500), por debajo de la suma de las capas. Con contenido real, `h` no habría pasado de ~1.45 Mbps. Ahora tiene presupuesto para sus 2.5 Mbps.
+- **El 300 kbps de `availableOutgoingBitrate` no era el límite real.** Sin transport-cc, Chrome no actualiza ese dato, y sigue en 300 kbps con REMB.
+- **El padding no desaparece** (1.1 → 1.4 Mbps, dentro del ruido). Causa probable: Chrome rellena hasta su tasa de padding de simulcast (objetivo de las capas bajas + mínimo de la alta) cuando el codificador produce menos de eso. Con el canvas sintético, `h` produce ~0.9 Mbps de 2.5. El REMB no lo puede evitar: solo un objetivo por debajo de esa tasa cortaría el padding, y también apagaría capas.
+- **Sin regresión:** TTFF p95 866/803 → 762/803 ms (libre/`relay`), glass-to-glass p95 280/165 → 156/168 ms, y S2 (`make load-stream`, 50 viewers) en verde: TTFF p50 70 ms, p95 1132 ms, 0 fallos, `409` al 51 y el hilo más cargado al 4.2 %. La máquina tenía carga de otros procesos (load 6–10 en 4 vCPU): con la carga más alta, el E2E de `develop` tampoco llegaba a las 30 muestras de glass-to-glass.
+
+**Pendiente:**
+- Medir el padding con una pantalla real en movimiento: se espera que baje cuando los medios llenen el presupuesto.
+- El REMB es fijo y el host no recibe RR, así que en un enlace de subida más lento que 3.55 Mbps Chrome no se entera de la pérdida. Ya pasaba antes con los 2.5 Mbps de arranque. Arreglarlo exige un estimador en el SFU (REMB según la pérdida o el retardo del host) o generar feedback transport-cc.
 
 ## 8. Plan de pruebas (TDD)
 
-Las pruebas unitarias (GoogleTest) cubren el código puro, sin libdatachannel: `request_decision`, `stream_state`, `room`, `layer_selector`, `rtp_rewriter`, `vp8`, `rtp_packet`, `rtcp`, `simulcast_demux`, `nack_buffer`, `pli_throttle`, `sdp_munge`, `ice_servers`, `internal_api`, `sync_listener`, `room_store`, `identity_client`, `config` y `server`. La lista de casos está en [stream-core/AGENTS.md](../services/stream-core/AGENTS.md#pruebas).
+Las pruebas unitarias (GoogleTest) cubren el código puro, sin libdatachannel: `request_decision`, `stream_state`, `room`, `layer_selector`, `rtp_rewriter`, `vp8`, `rtp_packet`, `rtcp`, `simulcast_demux`, `nack_buffer`, `pli_throttle`, `host_remb`, `sdp_munge`, `ice_servers`, `internal_api`, `sync_listener`, `room_store`, `identity_client`, `config` y `server`. La lista de casos está en [stream-core/AGENTS.md](../services/stream-core/AGENTS.md#pruebas).
 
 Las demás pruebas:
 - **Integración:** `rtc_loopback_test` (dos peers de libdatachannel en el mismo proceso).
@@ -286,5 +303,5 @@ Las demás pruebas:
 - Máximo 50 viewers por sala.
 - El historial de chat de una sala deshabilitada se puede leer durante 12 h (TTL de Redis).
 - El audio del sistema depende del navegador y del sistema operativo (S5). Firefox y Safari no lo entregan.
-- Sin transport-cc ni REMB hacia el host, Chrome no tiene estimación de subida (300 kbps) y manda ~1 Mbps de padding en `l` (§7.1).
+- El SFU envía al host un REMB fijo de 4.26 Mbps, sin transport-cc ni RR. Con contenido simple, Chrome sigue mandando ~1.1–1.4 Mbps de padding en `l`, y no se entera si su subida pierde paquetes (§7.1).
 - La subida de capa del viewer no se basa en ancho de banda medido: sube tras 5 s sin pérdida y baja por pérdida o caída del REMB. En un enlace justo puede alternar entre subir y bajar, con 8 s de espera entre intentos.
