@@ -44,7 +44,9 @@ describe('useAmbilight', () => {
     const { result } = renderHook(() => useAmbilight('https://blob/m1/ambilight.json?sig=1', videoRef));
     expect(fetchMock).toHaveBeenCalledWith('https://blob/m1/ambilight.json?sig=1', expect.objectContaining({ signal: expect.anything() }));
     await waitFor(() => expect(sampling()).toBe(true));
+    await act(async () => {});
     // El primer color llega al instante, sin esperar al primer intervalo.
+    await act(async () => {});
     expect(result.current).toEqual({ top: '#000000', right: '#000000', bottom: '#000000', left: '#000000' });
     video.currentTime = 0.5;
     runFrame();
@@ -55,6 +57,7 @@ describe('useAmbilight', () => {
     expect(AMBILIGHT_SAMPLE_MS).toBe(250);
     const { result } = renderHook(() => useAmbilight('https://blob/m1/ambilight.json', videoRef));
     await waitFor(() => expect(sampling()).toBe(true));
+    await act(async () => {});
     video.currentTime = 0.5;
     act(() => vi.advanceTimersByTime(AMBILIGHT_SAMPLE_MS - 1));
     expect(result.current?.top).toBe('#000000');
@@ -69,6 +72,7 @@ describe('useAmbilight', () => {
       return useAmbilight('https://blob/m1/ambilight.json', videoRef);
     });
     await waitFor(() => expect(sampling()).toBe(true));
+    await act(async () => {});
     runFrame();
     const after = renders;
     runFrame();
@@ -79,6 +83,7 @@ describe('useAmbilight', () => {
   it('sin interpolar salta de frame en frame', async () => {
     const { result } = renderHook(() => useAmbilight('https://blob/a.json', videoRef, { interpolate: false }));
     await waitFor(() => expect(sampling()).toBe(true));
+    await act(async () => {});
     video.currentTime = 0.9;
     runFrame();
     expect(result.current?.top).toBe('#000000');
@@ -89,6 +94,7 @@ describe('useAmbilight', () => {
       initialProps: { url: 'https://blob/m1/ambilight.json?sig=1' },
     });
     await waitFor(() => expect(sampling()).toBe(true));
+    await act(async () => {});
     rerender({ url: 'https://blob/m1/ambilight.json?sig=2' });
     expect(fetchMock).toHaveBeenCalledTimes(1);
     rerender({ url: 'https://blob/m2/ambilight.json?sig=1' });
@@ -104,6 +110,7 @@ describe('useAmbilight', () => {
       initialProps: { enabled: true },
     });
     await waitFor(() => expect(sampling()).toBe(true));
+    await act(async () => {});
     runFrame();
     expect(result.current).not.toBeNull();
     rerender({ enabled: false });
@@ -126,6 +133,7 @@ describe('useAmbilight', () => {
     const empty: RefObject<HTMLVideoElement> = { current: null };
     const { result } = renderHook(() => useAmbilight('https://blob/a.json', empty));
     await waitFor(() => expect(sampling()).toBe(true));
+    await act(async () => {});
     runFrame();
     expect(result.current).toBeNull();
     expect(sampling()).toBe(true);

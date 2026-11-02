@@ -550,12 +550,14 @@ npm run lint             # ESLint
 npm run typecheck        # tsc -b
 npx vitest run --coverage  # o npm run test:coverage
 npm run build            # tsc -b && vite build
+npm run build:ssr        # vite build --ssr src/entry-server.tsx (bundle SSR)
 ```
 
 Ese es el **gate del dominio** y corre en CI. La cobertura mínima es **85 %** en líneas, funciones, ramas y sentencias (`vitest.config.ts`); no se relaja para que una prueba pase. El desarrollo es TDD (Red → Green → Refactor).
 
 Cómo se prueba lo difícil:
 
+- **SSR e hidratación**: `src/entry-server.tsx` pre-renderiza la landing page (`/`, `/login`) y las invitaciones (`/invite/:code`) usando `StaticRouter` e inyecta meta tags Open Graph y Twitter Card dinámicos con el título de la sala. `src/server.ts` implementa el servidor Node para despachar HTML pre-renderizado y activos de `dist/client`. `src/main.tsx` hidrata con `hydrateRoot` (deserializando `__TINT_SSR_DATA__`) cuando `#root` contiene HTML del servidor, preservando la navegación del cliente y aislando completamente las rutas de streaming con WebSockets (`/watch/:roomId`).
 - **Sockets**: `src/test/mockWebSocket.ts` (`MockWebSocket`, instalado con `vi.stubGlobal`) registra instancias y frames enviados, y simula la apertura (con subprotocolo negociado), mensajes del servidor (texto o binarios msgpack) y cierres con código (`4001`, `4003`…). `useSocialSocket` además acepta `createSocket`, `reconnectBaseMs` y `reconnectMaxMs` inyectables, y `useSyncSocket` un reloj `now`. Con timers falsos de Vitest se avanza el backoff.
 - **Subidas**: `src/test/mockXhr.ts` (`MockXhr`) registra método, URL, cabeceras y cuerpo, y simula progreso, respuesta, error de red y abort.
 - **Invitados**: `src/test/guestToken.ts` (`testGuestToken`) arma un guest token con forma de JWT (firma falsa) de la sala `r1`, vigente una hora.

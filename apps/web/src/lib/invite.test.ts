@@ -1,9 +1,10 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
   toAbsoluteInviteLink,
   inviteClaimErrorMessage,
   parseInviteCode,
   pickLatestActiveInvitation,
+  fetchInviteRoomDetails,
 } from './invite';
 import { ApiError } from './api';
 
@@ -105,5 +106,86 @@ describe('pickLatestActiveInvitation', () => {
     ).toBeNull();
     expect(pickLatestActiveInvitation([])).toBeNull();
     expect(pickLatestActiveInvitation(null)).toBeNull();
+  });
+});
+
+describe('fetchInviteRoomDetails', () => {
+  it('obtiene los datos de la sala si la invitación es válida', async () => {
+    const mockFetcher = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ code: 'ABC123', roomTitle: 'Cine Club', roomId: 'r1', expiresAt: '2026-12-01' }),
+    });
+
+    const res = await fetchInviteRoomDetails('ABC123', {
+      fetcher: mockFetcher as unknown as typeof fetch,
+      apiUrl: 'http://api.tint.test/api/v1',
+    });
+
+    expect(res).toEqual({
+      code: 'ABC123',
+      roomTitle: 'Cine Club',
+      roomId: 'r1',
+      expiresAt: '2026-12-01',
+      valid: true,
+    });
+    expect(mockFetcher).toHaveBeenCalledWith('http://api.tint.test/api/v1/invitations/ABC123', expect.anything());
+  });
+
+  it('extrae el código si se pasa un link completo', async () => {
+    const mockFetcher = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ code: 'XYZ789', roomTitle: 'Noche de terror', roomId: 'r2' }),
+    });
+
+    const res = await fetchInviteRoomDetails('https://tint.stream/invite/XYZ789', {
+      fetcher: mockFetcher as unknown as typeof fetch,
+      apiUrl: 'http://api.tint.test/api/v1',
+    });
+
+    expect(res.code).toBe('XYZ789');
+    expect(res.roomTitle).toBe('Noche de terror');
+    expect(res.valid).toBe(true);
+  });
+
+  it('retorna valid=false y roomTitle=null ante respuesta no-ok', async () => {
+    const mockFetcher = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 404,
+    });
+
+    const res = await fetchInviteRoomDetails('NOPE', {
+      fetcher: mockFetcher as unknown as typeof fetch,
+    });
+
+    expect(res).toEqual({
+      code: 'NOPE',
+      roomTitle: null,
+      roomId: null,
+      expiresAt: null,
+      valid: false,
+    });
+  });
+
+  it('maneja errores de red o excepciones sin lanzar', async () => {
+    const mockFetcher = vi.fn().mockRejectedValue(new Error('Network offline'));
+
+    const res = await fetchInviteRoomDetails('ERR123', {
+      fetcher: mockFetcher as unknown as typeof fetch,
+    });
+
+    expect(res).toEqual({
+      code: 'ERR123',
+      roomTitle: null,
+      roomId: null,
+      expiresAt: null,
+      valid: false,
+    });
+  });
+
+  it('retorna valid=false si fetcher no está disponible', async () => {
+    const res = await fetchInviteRoomDetails('ABC', {
+      fetcher: null,
+    });
+    expect(res.valid).toBe(false);
   });
 });

@@ -18,7 +18,7 @@ describe('CopyButton', () => {
   it('vuelve a Copiar luego del tiempo configurado', async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.assign(navigator, { clipboard: { writeText } });
-    render(<CopyButton link="/invite/abc123" resetMs={30} />);
+    render(<CopyButton link="/invite/abc123" resetMs={150} />);
     await userEvent.click(screen.getByRole('button', { name: /copiar/i }));
     expect(await screen.findByRole('button', { name: /copiado/i })).toBeInTheDocument();
     await waitFor(() =>

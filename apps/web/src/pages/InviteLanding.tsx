@@ -3,6 +3,7 @@ import { useParams, useNavigate, Link } from 'react-router-dom';
 import { apiFetch } from '../lib/api';
 import { inviteClaimErrorMessage } from '../lib/invite';
 import { getDeviceId } from '../lib/deviceId';
+import { readStored } from '../lib/safeStorage';
 import { m, useReducedMotion } from 'framer-motion';
 import { Button, ButtonLink } from '../components/ui/Button';
 import { Field, ErrorAlert, Card, Input } from '../components/ui/Primitives';
@@ -12,7 +13,11 @@ import { ease, fadeUp, stagger } from '../lib/motion';
 const HERO_SRC = 'https://picsum.photos/seed/tint-guest/1200/1400';
 const HEADLINE = 'Te invitaron a ver algo juntos';
 
-export default function InviteLanding() {
+export interface InviteLandingProps {
+  initialRoomTitle?: string | null;
+}
+
+export default function InviteLanding({ initialRoomTitle }: InviteLandingProps = {}) {
   const { code } = useParams();
   const [nick, setNick] = useState('');
   const [error, setError] = useState('');
@@ -21,7 +26,22 @@ export default function InviteLanding() {
   const reduced = useReducedMotion();
   // Con sesión de host, canjear la invitación la sustituye por una de invitado: se
   // avisa y solo se hace con confirmación explícita ("Entrar como invitado").
-  const [hasHostSession] = useState(() => !!localStorage.getItem('tint_token'));
+  const [hasHostSession] = useState(() => (typeof window !== 'undefined' ? !!readStored('tint_token') : false));
+  const [roomTitle] = useState<string | null>(() => {
+    if (initialRoomTitle) return initialRoomTitle;
+    if (typeof window !== 'undefined') {
+      const dataScript = document.getElementById('__TINT_SSR_DATA__');
+      if (dataScript?.textContent) {
+        try {
+          const parsed = JSON.parse(dataScript.textContent);
+          if (parsed && typeof parsed.roomTitle === 'string') return parsed.roomTitle;
+        } catch {
+          // ignore
+        }
+      }
+    }
+    return null;
+  });
   /** Sala del host con esta invitación: undefined = buscando, null = no es suya. */
   const [hostRoomId, setHostRoomId] = useState<string | null | undefined>(undefined);
 
@@ -114,6 +134,11 @@ export default function InviteLanding() {
           <Card className="w-full p-8 shadow-lift">
             <p className="tint-eyebrow">Invitación</p>
             <h2 className="mt-2 text-2xl font-bold tracking-tight text-white">Unirse a la sala</h2>
+            {roomTitle && (
+              <p className="mt-1 font-semibold text-tint-accent" data-testid="room-title">
+                {roomTitle}
+              </p>
+            )}
             <p className="mt-2 text-sm leading-relaxed">
               Código <span className="rounded-md bg-white/10 px-2 py-0.5 font-mono text-[13px] text-white">{code}</span>
             </p>
