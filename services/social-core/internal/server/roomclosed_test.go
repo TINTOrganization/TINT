@@ -1,6 +1,6 @@
 package server
 
-// Pruebas del ADR 0018 (salas live y cierre ROOM_CLOSED) y de la corrección
+// Pruebas del ADR 0019 (salas live y cierre ROOM_CLOSED) y de la corrección
 // del ADR 0014 en /ws/social (upgrade + 4001/4003 en lugar de 401).
 
 import (
@@ -84,7 +84,7 @@ func closeCode(t *testing.T, c *websocket.Conn) (websocket.StatusCode, []byte) {
 	}
 }
 
-// (c) ADR 0014/0018: un token caducado pero bien firmado hace upgrade y se
+// (c) ADR 0014/0019: un token caducado pero bien firmado hace upgrade y se
 // cierra con 4003; uno revocado, con 4001. Antes respondía 401 antes del
 // upgrade y el navegador solo veía 1006 (reconectaba para siempre).
 func TestSocialTerminalTokensUpgradeAndClose(t *testing.T) {
@@ -115,7 +115,7 @@ func TestSocialTerminalTokensUpgradeAndClose(t *testing.T) {
 	})
 }
 
-// (b) ADR 0018: con room:{id}:closed presente, el handshake hace upgrade y
+// (b) ADR 0019: con room:{id}:closed presente, el handshake hace upgrade y
 // cierra con 4010 sin enviar el historial (HU-LIVE-08 AC3).
 func TestSocialClosedRoomHandshakeClosesWith4010(t *testing.T) {
 	const secret = "s3cr3t"
@@ -137,7 +137,7 @@ func TestSocialClosedRoomHandshakeClosesWith4010(t *testing.T) {
 	}
 }
 
-// (a) ADR 0018 / HU-LIVE-09 AC1: ROOM_CLOSED en room:{id}:sync cierra con
+// (a) ADR 0019 / HU-LIVE-09 AC1: ROOM_CLOSED en room:{id}:sync cierra con
 // 4010 todos los sockets sociales de la sala (host incluido); otra sala
 // sigue abierta.
 func TestSocialRoomClosedClosesAllWith4010(t *testing.T) {
@@ -159,7 +159,8 @@ func TestSocialRoomClosedClosesAllWith4010(t *testing.T) {
 	if err := mr.Set(roomClosedKey("r1"), "1"); err != nil {
 		t.Fatal(err)
 	}
-	msg := `{"type":"ROOM_CLOSED","room_id":"r1","reason":"host_ended","event_id":"c1","occurred_at":"2026-11-01T18:00:00Z"}`
+	// Formato exacto de dominio-transmision §6.1.
+	msg := `{"type":"ROOM_CLOSED","event_id":"5b0f8a52-9c1e-4c55-8f0e-2f7d8c1a6b01","room_id":"r1","reason":"host_ended","occurred_at":"2026-11-01T18:00:00.000Z"}`
 	if err := pub.Publish(ctx, chat.SyncChannelKey("r1"), msg).Err(); err != nil {
 		t.Fatal(err)
 	}
@@ -194,7 +195,7 @@ func getChat(t *testing.T, base, roomID, token string) (int, []byte) {
 	return resp.StatusCode, body
 }
 
-// (d) ADR 0018 / HU-LIVE-09 AC3: el host lee el historial del chat por REST
+// (d) ADR 0019 / HU-LIVE-09 AC3: el host lee el historial del chat por REST
 // aunque la sala esté deshabilitada; nadie más puede.
 func TestSocialChatHistoryRESTForHost(t *testing.T) {
 	const secret = "s3cr3t"
@@ -221,10 +222,14 @@ func TestSocialChatHistoryRESTForHost(t *testing.T) {
 			t.Fatalf("status = %d (%s), want 200", status, body)
 		}
 		var got struct {
+			RoomID   string                    `json:"room_id"`
 			Messages []socialevent.ChatMessage `json:"messages"`
 		}
 		if err := json.Unmarshal(body, &got); err != nil {
 			t.Fatalf("JSON %s: %v", body, err)
+		}
+		if got.RoomID != "r1" {
+			t.Fatalf("room_id = %q, want r1", got.RoomID)
 		}
 		if len(got.Messages) != 2 || got.Messages[0].Text != "hola" || got.Messages[1].Text != "qué buen evento" {
 			t.Fatalf("messages = %+v, want [hola, qué buen evento] en orden", got.Messages)
@@ -260,12 +265,29 @@ func publishStream(t *testing.T, mr *miniredis.Miniredis, roomID, payload string
 	}
 }
 
-// (e) Trivia por minuto del stream: tras STREAM_STARTED, una pregunta con
-// at_ms se dispara en started_at_ms + at_ms según el reloj del servidor
-// (sin comandos de sync: una sala live no tiene vídeo sincronizado).
+// streamStarted arma un STREAM_STARTED con el formato exacto de §6.1.
+func streamStarted(roomID string, startedMS int64) string {
+	at := time.UnixMilli(startedMS).UTC().Format("2006-01-02T15:04:05.000Z")
+	return `{"type":"STREAM_STARTED","event_id":"7c9e6679-7425-40de-944b-e07fc1f90ae7","room_id":"` + roomID +
+		`","started_at":"` + at + `","started_at_ms":` + itoa(startedMS) + `,"occurred_at":"` + at + `"}`
+}
+
+// markLive marca la sala como live, igual que identity-api.
+func markLive(t *testing.T, mr *miniredis.Miniredis, roomID string) {
+	t.Helper()
+	if err := mr.Set("room:"+roomID+":kind", "live"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// (e) Trivia por minuto del stream: en una sala live (room:{id}:kind=live),
+// tras STREAM_STARTED una pregunta con at_ms se dispara en
+// started_at_ms + at_ms según el reloj del servidor (sin comandos de sync:
+// una sala live no tiene vídeo sincronizado).
 func TestTriviaFiresAtStreamMinute(t *testing.T) {
 	const secret = "s3cr3t"
 	mr := miniredis.RunT(t)
+	markLive(t, mr, "r1")
 	clock, timers := newTestClock(), &fakeTimers{}
 	url, _ := redisReplica(t, mr, secret, clock, timers)
 	h, colH := joinCol(t, url, roleTicket(t, secret, "host-1", "Ana", "host", "r1"))
@@ -279,7 +301,7 @@ func TestTriviaFiresAtStreamMinute(t *testing.T) {
 
 	// El stream empezó hace 10 s: la pregunta sale dentro de 35 s.
 	started := clock.UnixMilli() - 10_000
-	publishStream(t, mr, "r1", `{"type":"STREAM_STARTED","room_id":"r1","started_at_ms":`+itoa(started)+`}`)
+	publishStream(t, mr, "r1", streamStarted("r1", started))
 	launch := timers.take(t, 35*time.Second)
 	if len(launch) != 1 {
 		t.Fatalf("timers de disparo = %d, want 1", len(launch))

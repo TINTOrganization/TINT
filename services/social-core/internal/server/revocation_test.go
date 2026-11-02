@@ -41,7 +41,7 @@ func TestSocialRevokedGuest(t *testing.T) {
 	url := "ws://" + strings.TrimPrefix(srv.URL, "http://") + "/ws/social?room_id=r1"
 	exp := time.Now().Add(time.Hour)
 
-	// 1. Token ya revocado en el handshake: upgrade + 4001 (ADR 0014/0018),
+	// 1. Token ya revocado en el handshake: upgrade + 4001 (ADR 0014/0019),
 	// cubierto por TestSocialTerminalTokensUpgradeAndClose.
 
 	// 2. Revocación en vivo: solo se cierra el socket del jti revocado.
