@@ -777,7 +777,8 @@ router.post('/invitations/claim', validate(claimSchema), async (req, res) => {
     expiresAt: new Date(payload.exp * 1000),
     deviceId: deviceId ?? null,
   });
-  res.json({ token, roomId: invitation.roomId, nick, roomTitle: room?.title ?? null });
+  // roomKind: la web decide si abre /watch/:id o /live/:id (ADR 0019).
+  res.json({ token, roomId: invitation.roomId, nick, roomTitle: room?.title ?? null, roomKind: room?.kind ?? 'watch' });
   void publishAnalyticsEvent('invitation_claimed', { room_id: payload.room_id, user_id: payload.sub });
 });
 

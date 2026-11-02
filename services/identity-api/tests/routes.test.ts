@@ -529,6 +529,17 @@ describe('rutas v1', () => {
     expect(res.body.roomTitle).toBe('Noche de cine');
   });
 
+  it.each([
+    ['watch', { ...room, kind: 'watch' }],
+    ['live', { ...room, kind: 'live' }],
+  ])('POST /invitations/claim devuelve roomKind=%s para elegir /watch o /live (ADR 0019)', async (kind, r) => {
+    vi.mocked(findByCode).mockResolvedValueOnce({ ...invitation } as any);
+    vi.mocked(findById).mockResolvedValueOnce(r as any);
+    const res = await request(app).post('/api/v1/invitations/claim').send({ code: 'abc', nick: 'Ana' });
+    expect(res.status).toBe(200);
+    expect(res.body.roomKind).toBe(kind);
+  });
+
   it('POST /invitations/claim 400 si el nick supera 64 caracteres', async () => {
     const res = await request(app).post('/api/v1/invitations/claim').send({ code: 'abc', nick: 'a'.repeat(65) });
     expect(res.status).toBe(400);
