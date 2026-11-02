@@ -113,7 +113,14 @@ describe('fetchInviteRoomDetails', () => {
   it('obtiene los datos de la sala si la invitación es válida', async () => {
     const mockFetcher = vi.fn().mockResolvedValue({
       ok: true,
-      json: async () => ({ code: 'ABC123', roomTitle: 'Cine Club', roomId: 'r1', expiresAt: '2026-12-01' }),
+      json: async () => ({
+        code: 'ABC123',
+        roomTitle: 'Cine Club',
+        roomId: 'r1',
+        hostName: 'Carlos Host',
+        scheduledStartTime: '2026-12-01T20:00:00.000Z',
+        expiresAt: '2026-12-01',
+      }),
     });
 
     const res = await fetchInviteRoomDetails('ABC123', {
@@ -125,6 +132,8 @@ describe('fetchInviteRoomDetails', () => {
       code: 'ABC123',
       roomTitle: 'Cine Club',
       roomId: 'r1',
+      hostName: 'Carlos Host',
+      scheduledStartTime: '2026-12-01T20:00:00.000Z',
       expiresAt: '2026-12-01',
       valid: true,
     });
@@ -134,7 +143,13 @@ describe('fetchInviteRoomDetails', () => {
   it('extrae el código si se pasa un link completo', async () => {
     const mockFetcher = vi.fn().mockResolvedValue({
       ok: true,
-      json: async () => ({ code: 'XYZ789', roomTitle: 'Noche de terror', roomId: 'r2' }),
+      json: async () => ({
+        code: 'XYZ789',
+        roomTitle: 'Noche de terror',
+        roomId: 'r2',
+        hostName: 'Lucía Host',
+        scheduledStartTime: '2026-11-10T21:00:00.000Z',
+      }),
     });
 
     const res = await fetchInviteRoomDetails('https://tint.stream/invite/XYZ789', {
@@ -144,6 +159,8 @@ describe('fetchInviteRoomDetails', () => {
 
     expect(res.code).toBe('XYZ789');
     expect(res.roomTitle).toBe('Noche de terror');
+    expect(res.hostName).toBe('Lucía Host');
+    expect(res.scheduledStartTime).toBe('2026-11-10T21:00:00.000Z');
     expect(res.valid).toBe(true);
   });
 
@@ -161,6 +178,8 @@ describe('fetchInviteRoomDetails', () => {
       code: 'NOPE',
       roomTitle: null,
       roomId: null,
+      hostName: null,
+      scheduledStartTime: null,
       expiresAt: null,
       valid: false,
     });
@@ -177,6 +196,8 @@ describe('fetchInviteRoomDetails', () => {
       code: 'ERR123',
       roomTitle: null,
       roomId: null,
+      hostName: null,
+      scheduledStartTime: null,
       expiresAt: null,
       valid: false,
     });
@@ -187,5 +208,25 @@ describe('fetchInviteRoomDetails', () => {
       fetcher: null,
     });
     expect(res.valid).toBe(false);
+  });
+});
+
+describe('formatScheduledTime', () => {
+  it('retorna cadena vacía si no se provee fecha', async () => {
+    const { formatScheduledTime } = await import('./invite');
+    expect(formatScheduledTime(null)).toBe('');
+    expect(formatScheduledTime(undefined)).toBe('');
+  });
+
+  it('formatea una fecha ISO válida a formato local', async () => {
+    const { formatScheduledTime } = await import('./invite');
+    const formatted = formatScheduledTime('2026-11-01T20:00:00.000Z');
+    expect(formatted).toBeTruthy();
+    expect(typeof formatted).toBe('string');
+  });
+
+  it('devuelve el string original si no es una fecha parseable', async () => {
+    const { formatScheduledTime } = await import('./invite');
+    expect(formatScheduledTime('fecha-invalida')).toBe('fecha-invalida');
   });
 });

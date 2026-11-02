@@ -43,6 +43,8 @@ describe('entry-server SSR', () => {
           code: 'ABC123XYZ',
           roomTitle: 'Noche de Pelis Clásicas',
           roomId: 'room-42',
+          hostName: 'Carlos Host',
+          scheduledStartTime: '2026-11-15T20:00:00.000Z',
         }),
       });
 
@@ -53,26 +55,28 @@ describe('entry-server SSR', () => {
 
       expect(result.statusCode).toBe(200);
 
-      // AC1: Contenido inicial completo sin JS
+      // AC1: Contenido inicial completo sin JS con título, host y hora programada
       expect(result.appHtml).toContain('Te invitaron a ver algo juntos');
       expect(result.appHtml).toContain('Unirse a la sala');
       expect(result.appHtml).toContain('ABC123XYZ');
-      expect(result.appHtml).toContain('Nick');
       expect(result.appHtml).toContain('Noche de Pelis Clásicas');
+      expect(result.appHtml).toContain('Carlos Host');
+      expect(result.appHtml).toContain('Join');
 
-      // AC2: Dynamic meta tags con el título de la sala para scrapers de chat
+      // Dynamic meta tags con el título de la sala para scrapers de chat
       expect(result.html).toContain('<title>Noche de Pelis Clásicas — TINT</title>');
       expect(result.html).toContain('property="og:title" content="Te invitaron a Noche de Pelis Clásicas — TINT"');
-      expect(result.html).toContain('property="og:description" content="Te invitaron a ver algo juntos en TINT. Elige un nick y entra a la sala."');
       expect(result.html).toContain('property="og:url" content="https://tint.stream/invite/ABC123XYZ"');
 
-      // AC3: Script de initialData para hidratación sin fisuras
+      // Script de initialData para hidratación sin fisuras
       expect(result.html).toContain('id="__TINT_SSR_DATA__"');
       expect(result.html).toContain('Noche de Pelis Clásicas');
       expect(result.initialData?.roomTitle).toBe('Noche de Pelis Clásicas');
+      expect(result.initialData?.hostName).toBe('Carlos Host');
+      expect(result.initialData?.scheduledStartTime).toBe('2026-11-15T20:00:00.000Z');
     });
 
-    it('pre-renderiza ruta de invitación con fallback si no se puede obtener el título de la sala', async () => {
+    it('devuelve status 404 y renderiza página de invitación no válida si el link es inválido, expirado o revocado (AC2)', async () => {
       const mockFetcher = vi.fn().mockResolvedValue({
         ok: false,
         status: 404,
@@ -82,12 +86,12 @@ describe('entry-server SSR', () => {
         fetcher: mockFetcher as unknown as typeof fetch,
       });
 
-      expect(result.statusCode).toBe(200);
-      expect(result.appHtml).toContain('Te invitaron a ver algo juntos');
-      expect(result.appHtml).toContain('Unirse a la sala');
-      expect(result.html).toContain('<title>Te invitaron a ver algo juntos — TINT</title>');
-      expect(result.html).toContain('property="og:title" content="Te invitaron a ver algo juntos — TINT"');
-      expect(result.html).toContain('property="og:description" content="Elige un nick y entra como participante. Sin cuenta, sin fricción."');
+      expect(result.statusCode).toBe(404);
+      expect(result.appHtml).toContain('Invitación no válida');
+      expect(result.appHtml).toContain('Error 404');
+      expect(result.appHtml).toContain('Esta invitación no existe, ha expirado o fue revocada por el host.');
+      expect(result.html).toContain('<title>Invitación no válida — TINT</title>');
+      expect(result.html).toContain('property="og:title" content="Invitación no válida — TINT"');
     });
 
     it('respeta roomTitle provisto directamente en opciones', async () => {

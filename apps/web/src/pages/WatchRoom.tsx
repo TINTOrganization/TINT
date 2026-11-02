@@ -415,7 +415,7 @@ export default function WatchRoom() {
           <p className="mt-6 border-t border-white/10 pt-4 text-[13px]">
             ¿Eres el host?{' '}
             <Link
-              to={`/login?next=${encodeURIComponent(`/watch/${roomId ?? ''}`)}`}
+              to={`/login?returnUrl=${encodeURIComponent(`/watch/${roomId ?? ''}`)}&redirect=${encodeURIComponent(`/watch/${roomId ?? ''}`)}&next=${encodeURIComponent(`/watch/${roomId ?? ''}`)}`}
               className="text-tint-accent underline-offset-4 hover:underline"
             >
               Inicia sesión

@@ -25,7 +25,11 @@ const page = (node: ReactNode) => <PageTransition>{node}</PageTransition>;
 
 export interface AppInitialData {
   roomTitle?: string | null;
+  hostName?: string | null;
+  scheduledStartTime?: string | null;
   code?: string | null;
+  roomId?: string | null;
+  valid?: boolean;
   [key: string]: unknown;
 }
 
@@ -41,7 +45,18 @@ export function AnimatedRoutes({ initialData }: { initialData?: AppInitialData |
     <AnimatePresence mode="wait" initial={false}>
       <Routes location={location} key={location.pathname}>
         <Route path="/login" element={page(<Login />)} />
-        <Route path="/invite/:code" element={page(<InviteLanding initialRoomTitle={initialData?.roomTitle} />)} />
+        <Route
+          path="/invite/:code"
+          element={page(
+            <InviteLanding
+              initialRoomTitle={initialData?.roomTitle}
+              initialHostName={initialData?.hostName}
+              initialScheduledStartTime={initialData?.scheduledStartTime}
+              initialRoomId={initialData?.roomId}
+              initialValid={initialData?.valid}
+            />,
+          )}
+        />
         <Route path="/dashboard" element={page(<ProtectedRoute><Dashboard /></ProtectedRoute>)} />
         <Route path="/rooms/new" element={page(<ProtectedRoute><CreateRoom /></ProtectedRoute>)} />
         <Route path="/rooms/:id" element={page(<ProtectedRoute><CreateRoom /></ProtectedRoute>)} />

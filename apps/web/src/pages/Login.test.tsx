@@ -137,6 +137,26 @@ describe('Login', () => {
     await waitFor(() => expect(screen.getByText('Sala OK')).toBeInTheDocument());
   });
 
+  it('tras login vuelve a returnUrl (?returnUrl=/watch/r1) automáticamente', async () => {
+    mockedSignIn.mockResolvedValueOnce({
+      user: { getIdToken: () => Promise.resolve('tok-123') },
+    } as unknown as UserCredential);
+    mockedApi.mockResolvedValueOnce({ user: { id: 'u1' }, isRegistered: true });
+    renderLogin('/login?returnUrl=/watch/r1');
+    await userEvent.click(screen.getByText('Iniciar sesión con Google'));
+    await waitFor(() => expect(screen.getByText('Sala OK')).toBeInTheDocument());
+  });
+
+  it('tras login vuelve a redirect (?redirect=/watch/r1) automáticamente', async () => {
+    mockedSignIn.mockResolvedValueOnce({
+      user: { getIdToken: () => Promise.resolve('tok-123') },
+    } as unknown as UserCredential);
+    mockedApi.mockResolvedValueOnce({ user: { id: 'u1' }, isRegistered: true });
+    renderLogin('/login?redirect=/watch/r1');
+    await userEvent.click(screen.getByText('Iniciar sesión con Google'));
+    await waitFor(() => expect(screen.getByText('Sala OK')).toBeInTheDocument());
+  });
+
   it('ignora un next externo y va al dashboard', async () => {
     mockedSignIn.mockResolvedValueOnce({
       user: { getIdToken: () => Promise.resolve('tok-123') },

@@ -34,6 +34,17 @@ beforeEach(() => {
   vi.clearAllMocks();
   mockedApi.mockReset();
   localStorage.clear();
+  global.fetch = vi.fn().mockResolvedValue({
+    ok: true,
+    json: async () => ({
+      code: 'ABC123',
+      roomTitle: 'Sala de prueba',
+      hostName: 'Host de prueba',
+      scheduledStartTime: '2026-11-01T20:00:00.000Z',
+      valid: true,
+      roomId: 'r1',
+    }),
+  });
 });
 
 describe('InviteLanding', () => {
@@ -217,5 +228,70 @@ describe('InviteLanding', () => {
     expect(screen.getByTestId('room-title')).toHaveTextContent('Sala de terror');
 
     document.body.removeChild(script);
+  });
+
+  it('AC1: muestra room title, host name y scheduled start time sin requerir autenticación previa', () => {
+    const script = document.createElement('script');
+    script.id = '__TINT_SSR_DATA__';
+    script.type = 'application/json';
+    script.textContent = JSON.stringify({
+      roomTitle: 'Maratón Sci-Fi',
+      hostName: 'Elena Host',
+      scheduledStartTime: '2026-11-20T19:30:00.000Z',
+      valid: true,
+      roomId: 'room-scifi-123',
+    });
+    document.body.appendChild(script);
+
+    renderInvite();
+
+    expect(screen.getByTestId('room-title')).toHaveTextContent('Maratón Sci-Fi');
+    expect(screen.getByTestId('host-name')).toHaveTextContent('Elena Host');
+    expect(screen.getByTestId('scheduled-start-time')).toBeInTheDocument();
+
+    document.body.removeChild(script);
+  });
+
+  it('AC2: renderiza una pantalla de "Invitación no válida" si el enlace es inválido, expirado o revocado', () => {
+    render(
+      <MemoryRouter initialEntries={['/invite/REVOKED123']}>
+        <Routes>
+          <Route path="/invite/:code" element={<InviteLanding initialValid={false} />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByRole('alert')).toHaveTextContent('Invitación no válida');
+    expect(screen.getByText(/esta invitación no existe, ha expirado o fue revocada/i)).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Volver al inicio' })).toHaveAttribute('href', '/');
+    expect(screen.queryByPlaceholderText('Nick')).not.toBeInTheDocument();
+  });
+
+  it('AC3: un invitado no autenticado al pulsar "Join" es redirigido al flujo de inicio de sesión con returnUrl/redirect', async () => {
+    render(
+      <MemoryRouter initialEntries={['/invite/ABC123']}>
+        <Routes>
+          <Route
+            path="/invite/:code"
+            element={
+              <InviteLanding
+                initialRoomTitle="Cine Club"
+                initialRoomId="room-abc-789"
+                initialValid={true}
+              />
+            }
+          />
+          <Route path="/login" element={<p data-testid="login-page">Página de login</p>} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    const joinBtn = screen.getByRole('button', { name: 'Join' });
+    expect(joinBtn).toBeInTheDocument();
+    await userEvent.click(joinBtn);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('login-page')).toBeInTheDocument();
+    });
   });
 });

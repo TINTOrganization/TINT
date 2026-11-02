@@ -80,14 +80,33 @@ export function parseInviteCode(input: string): string | null {
 
 /**
  * Detalles de la sala obtenidos para una invitación, usados tanto en SSR
- * para inyectar meta tags dinámicos como en hidratación inicial.
+ * para inyectar meta tags dinámicos como en hidratación inicial y vista previa pública.
  */
 export interface InviteRoomDetails {
   code: string;
   roomTitle: string | null;
   roomId: string | null;
+  hostName: string | null;
+  scheduledStartTime: string | null;
   expiresAt: string | null;
   valid: boolean;
+}
+
+/**
+ * Formatea una fecha u hora programada para mostrar en la interfaz de vista previa.
+ */
+export function formatScheduledTime(timeStr: string | null | undefined): string {
+  if (!timeStr) return '';
+  try {
+    const date = new Date(timeStr);
+    if (Number.isNaN(date.getTime())) return timeStr;
+    return date.toLocaleString('es-ES', {
+      dateStyle: 'medium',
+      timeStyle: 'short',
+    });
+  } catch {
+    return timeStr;
+  }
 }
 
 /**
@@ -111,7 +130,7 @@ export async function fetchInviteRoomDetails(
 
   const fetchFn = options?.fetcher !== undefined ? options.fetcher : (typeof fetch !== 'undefined' ? fetch : null);
   if (!fetchFn) {
-    return { code: cleanCode, roomTitle: null, roomId: null, expiresAt: null, valid: false };
+    return { code: cleanCode, roomTitle: null, roomId: null, hostName: null, scheduledStartTime: null, expiresAt: null, valid: false };
   }
 
   const timeoutMs = options?.timeoutMs ?? 3000;
@@ -126,12 +145,14 @@ export async function fetchInviteRoomDetails(
     });
 
     if (!res.ok) {
-      return { code: cleanCode, roomTitle: null, roomId: null, expiresAt: null, valid: false };
+      return { code: cleanCode, roomTitle: null, roomId: null, hostName: null, scheduledStartTime: null, expiresAt: null, valid: false };
     }
 
     const data = (await res.json()) as {
       roomTitle?: string | null;
       roomId?: string | null;
+      hostName?: string | null;
+      scheduledStartTime?: string | null;
       expiresAt?: string | null;
     };
 
@@ -139,11 +160,13 @@ export async function fetchInviteRoomDetails(
       code: cleanCode,
       roomTitle: data.roomTitle ?? null,
       roomId: data.roomId ?? null,
+      hostName: data.hostName ?? null,
+      scheduledStartTime: data.scheduledStartTime ?? null,
       expiresAt: data.expiresAt ?? null,
       valid: true,
     };
   } catch {
-    return { code: cleanCode, roomTitle: null, roomId: null, expiresAt: null, valid: false };
+    return { code: cleanCode, roomTitle: null, roomId: null, hostName: null, scheduledStartTime: null, expiresAt: null, valid: false };
   } finally {
     if (timer) clearTimeout(timer);
   }

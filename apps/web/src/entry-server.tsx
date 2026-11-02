@@ -167,9 +167,11 @@ export async function render(url: string, options?: SSRRenderOptions): Promise<S
     const rawCode = cleanUrl.replace(/^\/invite\//, '');
     const code = parseInviteCode(rawCode) ?? rawCode;
 
-    // AC2: Obtener detalles de la sala para la invitación
     let roomTitle: string | null = options?.roomTitle ?? null;
+    let hostName: string | null = null;
+    let scheduledStartTime: string | null = null;
     let roomId: string | null = null;
+    let valid = true;
 
     if (roomTitle === null && options?.roomTitle === undefined) {
       const details = await fetchInviteRoomDetails(code, {
@@ -179,16 +181,49 @@ export async function render(url: string, options?: SSRRenderOptions): Promise<S
       });
       roomTitle = details.roomTitle;
       roomId = details.roomId;
+      hostName = details.hostName;
+      scheduledStartTime = details.scheduledStartTime;
+      valid = details.valid;
     }
 
-    initialData = { code, roomTitle, roomId };
+    initialData = { code, roomTitle, hostName, scheduledStartTime, roomId, valid };
+
+    if (!valid) {
+      meta = {
+        title: 'Invitación no válida — TINT',
+        ogTitle: 'Invitación no válida — TINT',
+        description: 'Esta invitación no es válida, ha expirado o fue revocada por el host.',
+        ogDescription: 'Esta invitación no es válida, ha expirado o fue revocada por el host.',
+        ogType: 'website',
+        ogUrl: `${origin}/invite/${code}`,
+        ogImage: 'https://picsum.photos/seed/tint-guest/1200/1400',
+        twitterCard: 'summary_large_image',
+      };
+
+      const appHtml = renderToString(<App location={locationForApp} initialData={initialData} />);
+      const metaTags = generateMetaTags(meta);
+      const templateHtml = options?.templateHtml || DEFAULT_HTML_TEMPLATE;
+      const html = injectIntoTemplate(templateHtml, appHtml, metaTags, initialData);
+
+      return {
+        html,
+        appHtml,
+        meta,
+        statusCode: 404,
+        initialData,
+      };
+    }
 
     if (roomTitle) {
       meta = {
         title: `${roomTitle} — TINT`,
         ogTitle: `Te invitaron a ${roomTitle} — TINT`,
-        description: 'Te invitaron a ver algo juntos en TINT. Elige un nick y entra a la sala.',
-        ogDescription: 'Te invitaron a ver algo juntos en TINT. Elige un nick y entra a la sala.',
+        description: hostName
+          ? `Te invitaron a la sala de ${hostName} en TINT. Únete a la sala.`
+          : 'Te invitaron a ver algo juntos en TINT. Elige un nick y entra a la sala.',
+        ogDescription: hostName
+          ? `Te invitaron a la sala de ${hostName} en TINT. Únete a la sala.`
+          : 'Te invitaron a ver algo juntos en TINT. Elige un nick y entra a la sala.',
         ogType: 'website',
         ogUrl: `${origin}/invite/${code}`,
         ogImage: 'https://picsum.photos/seed/tint-guest/1200/1400',

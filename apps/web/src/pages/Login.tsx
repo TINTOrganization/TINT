@@ -18,10 +18,10 @@ export default function Login() {
   const navigate = useNavigate();
   const reduced = useReducedMotion();
   const [searchParams] = useSearchParams();
-  // Retorno tras login (p. ej. ?next=/watch/:id desde la puerta de la sala).
+  // Retorno tras login (p. ej. ?returnUrl=/watch/:id, ?redirect=/watch/:id o ?next=/watch/:id).
   // Solo rutas internas para evitar open-redirect.
-  const next = searchParams.get('next');
-  const safeNext = next && next.startsWith('/') && !next.startsWith('//') ? next : '/dashboard';
+  const returnParam = searchParams.get('returnUrl') || searchParams.get('redirect') || searchParams.get('next');
+  const safeNext = returnParam && returnParam.startsWith('/') && !returnParam.startsWith('//') ? returnParam : '/dashboard';
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const [invite, setInvite] = useState('');
