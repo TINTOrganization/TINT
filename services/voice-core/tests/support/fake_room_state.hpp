@@ -9,7 +9,7 @@
 
 namespace voice::testing {
 
-// Estado de sala en Redis que voice-core lee en el handshake (ADR 0018):
+// Estado de sala en Redis que voice-core lee en el handshake (ADR 0019):
 //   room:{id}:closed       → la sala se deshabilitó (ROOM_CLOSED): upgrade y cierre 4010.
 //   room:{id}:kind = live  → modo escenario: solo host/cohost o quien esté en el escenario.
 //   room:{id}:voice:stage  → SET de user_id (sub) invitados al escenario (lo escribe voice-core).

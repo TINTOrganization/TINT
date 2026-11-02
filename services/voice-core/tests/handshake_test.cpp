@@ -150,7 +150,7 @@ TEST(UrlDecode, DecodesPercentAndPlus) {
   EXPECT_EQ(url_decode("100%"), "100%");
 }
 
-// --- ADR 0018: sala deshabilitada (ROOM_CLOSED, 4010) y modo escenario (4009) -------------
+// --- ADR 0019: sala deshabilitada (ROOM_CLOSED, 4010) y modo escenario (4009) -------------
 //
 // PRUEBAS EN ROJO: decide_handshake todavía no recibe el estado de sala. Al implementar,
 // `decide()` debe pasarle `rooms` (FakeRoomState heredará de la interfaz nueva).
@@ -208,7 +208,7 @@ TEST_F(RoomStateHandshakeTest, ValidTokenQueriesRoomState) {
   EXPECT_GE(rooms.calls, 1) << "cada handshake válido consulta room:{id}:closed (y kind)";
 }
 
-// Modo escenario (ADR 0018): en una sala live solo entran host/cohost y los invitados.
+// Modo escenario (ADR 0019): en una sala live solo entran host/cohost y los invitados.
 TEST_F(RoomStateHandshakeTest, LiveRoomParticipantNotOnStageUpgradesAndCloses4009) {
   rooms.make_live("room-1");
   auto d = decide(target(sign_jwt(guest_claims())));

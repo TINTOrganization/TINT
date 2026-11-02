@@ -106,7 +106,7 @@ TEST_F(MuteApiTest, WrongMethodOrPath) {
   EXPECT_EQ(status(decide("PUT", "/api/v1/voice/rooms/room-1", bearer(host_claims()))), 404u);
 }
 
-// --- ADR 0018: escenario de las salas live ------------------------------------------------
+// --- ADR 0019: escenario de las salas live ------------------------------------------------
 //   PUT|DELETE /api/v1/voice/rooms/{room_id}/stage/{user_id} (SET room:{id}:voice:stage)
 // Mismas reglas que los silencios. PRUEBAS EN ROJO: hoy la ruta responde 404. Un resultado
 // que no es Reject es el comando para el servidor (que escribe el SET y responde 204).

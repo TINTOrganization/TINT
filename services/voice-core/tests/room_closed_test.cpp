@@ -1,4 +1,4 @@
-// ADR 0018: ROOM_CLOSED en room:{id}:sync cierra con 4010 todas las conexiones de la sala.
+// ADR 0019: ROOM_CLOSED en room:{id}:sync cierra con 4010 todas las conexiones de la sala.
 //
 // PRUEBAS EN ROJO. Lo que se espera de la implementación:
 //   - src/redis/sync_message.hpp:
@@ -106,22 +106,42 @@ using voice::redis::parse_sync_message;
 using voice::redis::RevokedMessage;
 using voice::redis::RoomClosedMessage;
 
+// Formato de dominio-transmision §6.1 (fuente de verdad).
+constexpr const char* kRoomClosed =
+    R"({"type":"ROOM_CLOSED","event_id":"8f4e2c1a-0b7d-4e7a-9c3f-2d1b6a5e4f30","room_id":"abc-123",)"
+    R"("reason":"host_ended","occurred_at":"2026-11-01T18:00:00.000Z"})";
+
 TEST(ParseSyncMessage, RecognizesRoomClosed) {
-  auto m = parse_sync_message(
-      "room:abc-123:sync",
-      R"({"type":"ROOM_CLOSED","room_id":"abc-123","reason":"host_closed","event_id":"e","occurred_at":1})");
+  auto m = parse_sync_message("room:abc-123:sync", kRoomClosed);
   ASSERT_TRUE(m.has_value());
   auto* closed = std::get_if<RoomClosedMessage>(&*m);
   ASSERT_NE(closed, nullptr);
   EXPECT_EQ(closed->room_id, "abc-123");
-  EXPECT_EQ(closed->reason, "host_closed");
+  EXPECT_EQ(closed->reason, "host_ended");
 }
 
-TEST(ParseSyncMessage, RoomClosedWithoutReasonStillCloses) {
-  auto m = parse_sync_message("room:r:sync", R"({"type":"ROOM_CLOSED","room_id":"r"})");
+TEST(ParseSyncMessage, RecognizesGraceExpired) {
+  auto m = parse_sync_message(
+      "room:r:sync",
+      R"({"type":"ROOM_CLOSED","event_id":"e1","room_id":"r","reason":"grace_expired","occurred_at":"2026-11-01T18:00:00.000Z"})");
   ASSERT_TRUE(m.has_value());
-  ASSERT_NE(std::get_if<RoomClosedMessage>(&*m), nullptr);
-  EXPECT_EQ(std::get<RoomClosedMessage>(*m).room_id, "r");
+  EXPECT_EQ(std::get<RoomClosedMessage>(*m).reason, "grace_expired");
+}
+
+// §6.1: un mensaje del bus que no cumple el formato se descarta.
+TEST(ParseSyncMessage, DiscardsRoomClosedOutsideTheStandardFormat) {
+  const std::string base = "room:r:sync";
+  for (
+      const char* payload : {
+          R"({"type":"ROOM_CLOSED","room_id":"r"})",
+          R"({"type":"ROOM_CLOSED","room_id":"r","reason":"host_ended","occurred_at":"2026-11-01T18:00:00.000Z"})",
+          R"({"type":"ROOM_CLOSED","event_id":"","room_id":"r","reason":"host_ended","occurred_at":"2026-11-01T18:00:00.000Z"})",
+          R"({"type":"ROOM_CLOSED","event_id":"e","room_id":"r","occurred_at":"2026-11-01T18:00:00.000Z"})",
+          R"({"type":"ROOM_CLOSED","event_id":"e","room_id":"r","reason":"host_closed","occurred_at":"2026-11-01T18:00:00.000Z"})",
+          R"({"type":"ROOM_CLOSED","event_id":"e","room_id":"r","reason":"host_ended"})",
+          R"({"type":"ROOM_CLOSED","event_id":"e","room_id":"r","reason":"host_ended","occurred_at":1})",
+      })
+    EXPECT_FALSE(parse_sync_message(base, payload)) << payload;
 }
 
 TEST(ParseSyncMessage, StillRecognizesRevoked) {
@@ -135,11 +155,14 @@ TEST(ParseSyncMessage, StillRecognizesRevoked) {
 
 TEST(ParseSyncMessage, IgnoresEverythingElse) {
   EXPECT_FALSE(parse_sync_message("room:a:sync", R"({"type":"PLAY"})"));
-  EXPECT_FALSE(parse_sync_message("room:a:sync", R"({"type":"ROOM_CLOSED","room_id":"b"})"))
-      << "room_id del mensaje distinto del canal";
-  EXPECT_FALSE(parse_sync_message("room:a:sync", R"({"type":"ROOM_CLOSED","room_id":5})"));
-  EXPECT_FALSE(parse_sync_message("room:a:social", R"({"type":"ROOM_CLOSED","room_id":"a"})"));
-  EXPECT_FALSE(parse_sync_message("room::sync", R"({"type":"ROOM_CLOSED","room_id":""})"));
+  EXPECT_FALSE(parse_sync_message("room:a:sync", kRoomClosed)) << "room_id del mensaje distinto del canal";
+  EXPECT_FALSE(parse_sync_message(
+      "room:a:sync",
+      R"({"type":"ROOM_CLOSED","event_id":"e","room_id":5,"reason":"host_ended","occurred_at":"2026-11-01T18:00:00.000Z"})"));
+  EXPECT_FALSE(parse_sync_message("room:abc-123:social", kRoomClosed));
+  EXPECT_FALSE(parse_sync_message(
+      "room::sync",
+      R"({"type":"ROOM_CLOSED","event_id":"e","room_id":"","reason":"host_ended","occurred_at":"2026-11-01T18:00:00.000Z"})"));
   EXPECT_FALSE(parse_sync_message("room:a:sync", "no json"));
   EXPECT_FALSE(parse_sync_message("room:a:sync", R"({"type":"REVOKED","jti":""})"));
 }

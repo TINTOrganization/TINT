@@ -454,7 +454,7 @@ TEST_F(ServerTest, WebSocketHostMute) {
   EXPECT_EQ((*muted)["host_muted"], true);
 }
 
-// --- ADR 0018: REST del escenario (salas live) ---------------------------------------------
+// --- ADR 0019: REST del escenario (salas live) ---------------------------------------------
 // PRUEBAS EN ROJO: hoy la ruta /stage/ no existe (404). Al implementar, el servidor recibe el
 // store del escenario y una prueba más comprueba el SET y el 503 si Redis falla.
 
