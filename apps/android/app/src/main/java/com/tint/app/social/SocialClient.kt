@@ -42,6 +42,10 @@ data class SocialUiState(
     val error: String? = null,
     val errorSeq: Int = 0,
     val trivia: TriviaState? = null,
+    /** Encuesta vigente (o la última cerrada, hasta que la descarte). `myVote` ya resuelto. */
+    val poll: PollState? = null,
+    /** Puntos recientes del láser del host, con su hora de llegada local. */
+    val laser: List<LaserArrival> = emptyList(),
     val revoked: Boolean = false,
     val expired: Boolean = false,
     val reconnectAttempt: Int = 0,
@@ -63,6 +67,8 @@ class SocialClient(
     sleep: suspend (Long) -> Unit = { delay(it) },
     private val newId: () -> String = { UUID.randomUUID().toString() },
     private val wallClock: () -> String = { Instant.now().toString() },
+    /** Hora de pared en ms, solo para la cuenta atrás de las encuestas (el cierre lo decide el servidor). */
+    private val wallNowMs: () -> Long = { System.currentTimeMillis() },
 ) {
     private val lock = Any()
     private val _state = MutableStateFlow(SocialUiState())
@@ -71,6 +77,9 @@ class SocialClient(
     /** `event_id` ya vistos: traga ecos y reenvíos del servidor. */
     private val seen = LinkedHashSet<String>()
     private var lastReactionAtMs: Long? = null
+
+    /** Encuestas que el usuario descartó: el servidor reenvía la vigente al reconectar y no debe reaparecer. */
+    private val dismissedPolls = LinkedHashSet<String>()
 
     private val connection = ResilientSocket(
         token = token,
@@ -163,6 +172,40 @@ class SocialClient(
         _state.update { it.copy(trivia = null) }
     }
 
+    /**
+     * Vota (o cambia el voto) por el índice de la opción. El voto es del servidor: aquí se marca al instante y
+     * el `poll_state` con `my_vote` lo confirma o lo corrige. No se manda si ya cerró.
+     */
+    fun votePoll(option: Int): Boolean {
+        val poll = _state.value.poll ?: return false
+        if (option !in poll.options.indices) return false
+        if (poll.closed || poll.remainingMs(wallNowMs()) <= 0) {
+            fail("POLL_CLOSED")
+            return false
+        }
+        if (!connection.send(SocialProtocol.pollVote(roomId, poll.pollId, option, newId()))) return false
+        _state.update { it.copy(error = null, poll = it.poll?.takeIf { p -> p.pollId == poll.pollId }?.copy(myVote = option) ?: it.poll) }
+        return true
+    }
+
+    fun dismissPoll() {
+        val id = _state.value.poll?.pollId
+        if (id != null) synchronized(lock) {
+            dismissedPolls.add(id)
+            if (dismissedPolls.size > DISMISSED_CAP) dismissedPolls.remove(dismissedPolls.first())
+        }
+        _state.update { it.copy(poll = null) }
+    }
+
+    /** Tira los puntos del láser que ya no se ven; se llama de vez en cuando mientras hay trazo en pantalla. */
+    fun pruneLaser() {
+        val now = nowMs()
+        _state.update { cur ->
+            val kept = cur.laser.filter { LaserTrail.isVisible(it, now) }
+            if (kept.size == cur.laser.size) cur else cur.copy(laser = kept)
+        }
+    }
+
     private fun handle(msg: SocialMessage) {
         when (msg) {
             is SocialMessage.History -> {
@@ -202,6 +245,18 @@ class SocialClient(
                 if (t == null || t.question.triviaId != msg.result.triviaId) it
                 else it.copy(trivia = t.copy(result = msg.result))
             }
+            is SocialMessage.PollStateMsg -> {
+                val dismissed = synchronized(lock) { msg.poll.pollId in dismissedPolls }
+                if (!dismissed) _state.update {
+                    // Los broadcasts no traen `my_vote`: se conserva el último que conocí de esa misma encuesta.
+                    val kept = it.poll?.takeIf { p -> p.pollId == msg.poll.pollId }?.myVote
+                    it.copy(poll = msg.poll.copy(myVote = msg.poll.myVote ?: kept))
+                }
+            }
+            is SocialMessage.LaserMsg -> if (!remember(msg.point.eventId)) {
+                val arrival = LaserArrival(msg.point, nowMs())
+                _state.update { it.copy(laser = (it.laser + arrival).takeLast(LASER_LIMIT)) }
+            }
             is SocialMessage.Error -> {
                 if (msg.code == "SLOW_MODE" && msg.retryAfterMs != null) {
                     _state.update { it.copy(cooldownUntilMs = nowMs() + msg.retryAfterMs) }
@@ -224,6 +279,8 @@ class SocialClient(
 
     private companion object {
         const val REACTION_LIMIT = 20
+        const val LASER_LIMIT = 120
+        const val DISMISSED_CAP = 50
         const val MIN_REACTION_GAP_MS = 200L
         const val SEEN_CAP = 2000
     }

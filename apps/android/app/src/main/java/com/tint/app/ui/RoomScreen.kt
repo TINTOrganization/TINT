@@ -197,6 +197,7 @@ fun RoomScreen(room: JoinedRoom, container: AppContainer, onLeave: () -> Unit) {
                         modifier = Modifier.fillMaxSize(),
                         factory = { ctx -> PlayerView(ctx).apply { useController = false; this.player = player } },
                     )
+                    LaserOverlay(socialState.laser, nowMs = clock, onPrune = social::pruneLaser, modifier = Modifier.fillMaxSize())
                     if (ui.videoUrl == null) {
                         when {
                             ui.noVideo -> Text("La sala todavía no tiene vídeo", color = Color.White, textAlign = TextAlign.Center)
@@ -216,6 +217,9 @@ fun RoomScreen(room: JoinedRoom, container: AppContainer, onLeave: () -> Unit) {
                 }
                 socialState.trivia?.let { trivia ->
                     TriviaCard(trivia, nowMs = clock, onAnswer = { social.answerTrivia(it) }, onDismiss = social::dismissTrivia)
+                }
+                socialState.poll?.let { poll ->
+                    PollCard(poll, wallNowMs = System::currentTimeMillis, onVote = { social.votePoll(it) }, onDismiss = social::dismissPoll)
                 }
                 ReactionBar(socialState) { emoji ->
                     social.sendReaction(emoji, tracker.current() ?: 0)

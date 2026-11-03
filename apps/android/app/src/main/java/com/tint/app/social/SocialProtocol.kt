@@ -51,6 +51,34 @@ data class TriviaResult(
     val myTotal: Int?,
 )
 
+/**
+ * Estado de una encuesta (autoritativo en social-core). `closesAtMs` es del reloj del servidor y solo sirve para
+ * la cuenta atrás; quien decide si sigue abierta es el servidor (`closed` o `POLL_CLOSED`). `myVote` es el índice
+ * de mi opción, o null si no he votado.
+ */
+data class PollState(
+    val pollId: String,
+    val question: String,
+    val options: List<String>,
+    val counts: List<Int>,
+    val closesAtMs: Long,
+    val closed: Boolean,
+    val myVote: Int?,
+) {
+    /** Cuánto falta para el cierre (0 si ya cerró). `wallNowMs` es la hora de pared: solo para mostrar. */
+    fun remainingMs(wallNowMs: Long): Long = if (closed) 0L else maxOf(0L, closesAtMs - wallNowMs)
+}
+
+/** Punto del puntero láser del host (`x`, `y` normalizados a 0..1 sobre el vídeo); `end` cierra el trazo. */
+data class LaserPoint(
+    val eventId: String,
+    val userId: String,
+    val nick: String,
+    val x: Float,
+    val y: Float,
+    val end: Boolean,
+)
+
 sealed interface SocialMessage {
     /** Se manda al entrar: los últimos mensajes de la sala. */
     data class History(val items: List<ChatItem>) : SocialMessage
@@ -69,12 +97,17 @@ sealed interface SocialMessage {
     data class TriviaAckMsg(val ack: TriviaAck) : SocialMessage
 
     data class TriviaResultMsg(val result: TriviaResult) : SocialMessage
+
+    data class PollStateMsg(val poll: PollState) : SocialMessage
+
+    data class LaserMsg(val point: LaserPoint) : SocialMessage
 }
 
 /**
  * Protocolo del Canal Social (`/ws/social`), parte del chat y las reacciones. Espejo de
  * `apps/web/src/lib/socialSocket.ts`; el contrato está en `services/social-core/AGENTS.md`.
- * Los mensajes de encuestas, láser y recap se ignoran por ahora.
+ * Encuestas y láser se reciben como participante (votar sí; crear encuestas o dibujar con el láser es del host y
+ * pide el sync-ticket). El recap se ignora por ahora.
  */
 object SocialProtocol {
     const val CHAT_MAX_LENGTH = 280
@@ -92,6 +125,9 @@ object SocialProtocol {
         "TRIVIA_NOT_FOUND" to "Esa pregunta ya no existe.",
         "TRIVIA_CLOSED" to "Se acabó el tiempo para responder.",
         "ALREADY_ANSWERED" to "Ya respondiste esta pregunta.",
+        "POLL_CLOSED" to "La encuesta ya está cerrada.",
+        "POLL_NOT_FOUND" to "La encuesta ya no existe.",
+        "POLL_ACTIVE" to "Ya hay una encuesta abierta.",
     )
     private const val GENERIC_ERROR = "No se pudo completar la acción. Inténtalo de nuevo."
 
@@ -122,6 +158,8 @@ object SocialProtocol {
             "trivia_question" -> triviaQuestion(obj)?.let { SocialMessage.TriviaQuestionMsg(it) }
             "trivia_ack" -> triviaAck(obj)?.let { SocialMessage.TriviaAckMsg(it) }
             "trivia_result" -> triviaResult(obj)?.let { SocialMessage.TriviaResultMsg(it) }
+            "poll_state" -> pollState(obj)?.let { SocialMessage.PollStateMsg(it) }
+            "laser" -> laser(obj)?.let { SocialMessage.LaserMsg(it) }
             else -> null
         }
     }
@@ -182,6 +220,34 @@ object SocialProtocol {
         )
     }
 
+    private fun pollState(o: JsonObject): PollState? {
+        val options = (o["options"] as? JsonArray).orEmpty()
+            .mapNotNull { (it as? JsonPrimitive)?.takeIf { p -> p.isString }?.content }
+        if (options.isEmpty()) return null
+        // Un `counts` ausente o corto se completa con ceros: la encuesta se sigue pudiendo mostrar y votar.
+        val given = (o["counts"] as? JsonArray).orEmpty().map { (it as? JsonPrimitive)?.doubleOrNull?.toInt() ?: 0 }
+        return PollState(
+            pollId = o.string("poll_id") ?: return null,
+            question = o.string("question") ?: return null,
+            options = options,
+            counts = List(options.size) { given.getOrElse(it) { 0 }.coerceAtLeast(0) },
+            closesAtMs = o.long("closes_at_ms") ?: return null,
+            closed = o.bool("closed") ?: false,
+            myVote = o.long("my_vote")?.toInt(),
+        )
+    }
+
+    private fun laser(o: JsonObject): LaserPoint? {
+        return LaserPoint(
+            eventId = o.string("event_id") ?: return null,
+            userId = o.string("user_id") ?: return null,
+            nick = o.string("nick") ?: return null,
+            x = o.unit("x") ?: return null,
+            y = o.unit("y") ?: return null,
+            end = o.bool("end") ?: false,
+        )
+    }
+
     private fun rank(element: kotlinx.serialization.json.JsonElement?): List<RankEntry> =
         (element as? JsonArray).orEmpty().mapNotNull { e ->
             val o = e as? JsonObject ?: return@mapNotNull null
@@ -191,6 +257,21 @@ object SocialProtocol {
                 score = o.long("score")?.toInt() ?: return@mapNotNull null,
             )
         }
+
+    /** Porcentaje entero de cada opción (0 si nadie votó), como en la web. */
+    fun pollPercentages(counts: List<Int>): List<Int> {
+        val total = counts.sum()
+        return counts.map { if (total > 0) Math.round(it * 100f / total) else 0 }
+    }
+
+    fun pollVote(roomId: String, pollId: String, option: Int, eventId: String): String =
+        buildJsonObject {
+            put("event_id", eventId)
+            put("type", "poll_vote")
+            put("room_id", roomId)
+            put("poll_id", pollId)
+            put("option", option)
+        }.toString()
 
     fun triviaAnswer(roomId: String, triviaId: String, option: Int, eventId: String): String =
         buildJsonObject {
@@ -227,6 +308,10 @@ object SocialProtocol {
 
     private fun JsonObject.long(key: String): Long? =
         primitive(key)?.takeIf { !it.isString }?.doubleOrNull?.takeIf { it.isFinite() }?.toLong()
+
+    /** Número acotado a 0..1 (las coordenadas del láser); null si falta o no es un número. */
+    private fun JsonObject.unit(key: String): Float? =
+        primitive(key)?.takeIf { !it.isString }?.doubleOrNull?.takeIf { it.isFinite() }?.coerceIn(0.0, 1.0)?.toFloat()
 
     private fun JsonObject.bool(key: String): Boolean? = primitive(key)?.takeIf { !it.isString }?.booleanOrNull
 

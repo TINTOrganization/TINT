@@ -12,6 +12,7 @@ Cliente móvil nativo (Kotlin + Jetpack Compose) de TINT. Usa los mismos endpoin
 | AND-03 | Reproducción sincronizada (Canal Sync v2 + Media3) | ✅ Verificado en una tablet contra el servidor desplegado (ver «Observar la sincronía») |
 | AND-04 | Chat y reacciones (Canal Social) | ✅ Verificado en una tablet contra el servidor desplegado, con un host real en el navegador (ver «Chat y reacciones») |
 | AND-05 | Trivia (pregunta con cuenta regresiva, respuesta, puntaje y ranking) | ✅ Verificado en una tablet contra el servidor desplegado con un host real (ver «Trivia») |
+| — | Encuestas (ver y votar) y puntero láser del host (ver) | ✅ Verificado en una tablet contra el servidor desplegado con un host real (ver «Encuestas y láser»). Crear encuestas y dibujar el láser son del host y piden el sync-ticket: no están en la app de invitado |
 | AND-06 | Transmisión en vivo | ⏳ Sin backend de transmisión en el repositorio |
 | AND-07 | Voz | ⏳ El backend `voice-core` ya existe ([docs/dominio-voz.md](../../docs/dominio-voz.md)); falta el cliente móvil (WebRTC nativo y permiso de micrófono). No he revisado si su contrato sirve tal cual para Android |
 
@@ -93,6 +94,20 @@ La cuenta regresiva parte del reloj local al llegar la pregunta y dura `closes_a
 relojes); una pregunta repetida al reconectar no reinicia la respuesta ni la cuenta. **Diferencia con la web:** la web
 oculta si acertaste hasta el cierre; el ticket AND-05 pide verlo al responder y el servidor ya devuelve el puntaje en el
 `trivia_ack`, así que la app lo muestra enseguida.
+
+### Encuestas y láser
+Con el host lanzando la encuesta y dibujando el láser desde la web (Playwright) y la tablet como invitada:
+
+- **Encuesta:** aparece en la tablet al lanzarla, con «Quedan 0:55 · 0 votos» y una barra por opción. Al votar «Sí» queda
+  marcado («✓ Sí», 100 %) y la web registra «1 voto · Sí 100 %»; se puede cambiar el voto mientras siga abierta. Al
+  cerrar se ve el resultado final con un botón «Cerrar». Una encuesta que ya cerró y se descartó no vuelve a salir al
+  reconectar (el servidor reenvía la vigente al entrar).
+- **Láser:** el trazo del host se dibuja sobre el vídeo en la tablet (arco naranja con la punta blanca que se desvanece
+  en 2,5 s) y al soltar queda un marcador de 3 s con el nick de quien lo dibujó. Mismos tiempos que `LaserOverlay.tsx`.
+
+La cuenta atrás de la encuesta usa la hora de pared del dispositivo contra `closes_at_ms`, **solo para mostrarla**: quien
+cierra y rechaza votos tardíos (`POLL_CLOSED`) es social-core. Los puntos del láser se fechan con el reloj local al
+llegar, nunca con el de quien los mandó.
 
 ### Latencia host → tablet (AC1)
 Con Playwright controlando la sala del host (Chromium con `--remote-debugging-port`) y la tablet escribiendo una

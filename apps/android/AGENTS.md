@@ -17,7 +17,7 @@ Eres el agente especializado en el cliente móvil de **TINT**: una app nativa en
 ## Responsabilidades
 - Cliente REST de identity-api (`net/ApiClient.kt`): mismas rutas `/api/v1` que la web.
 - Canal Sync v2 (`/ws/sync`) y Canal Social (`/ws/social`): se implementan por fases (ver README).
-- Reproducción sincronizada con Media3, chat, reacciones, trivia y login con Google.
+- Reproducción sincronizada con Media3, chat, reacciones, trivia, encuestas (ver y votar), láser del host (ver) y login con Google.
 
 ## Límites de Dominio
 - ❌ No implementes lógica de negocio autoritativa (puntajes, reloj maestro, moderación): vive en `services/*`. La app refleja y pre-valida.
@@ -31,7 +31,7 @@ Eres el agente especializado en el cliente móvil de **TINT**: una app nativa en
 | :--- | :--- |
 | REST `/api/v1` (invitaciones, salas, playback, bans) | [identity-api/AGENTS.md](../../services/identity-api/AGENTS.md#api) |
 | Canal Sync v2 (`STATE`, `HEARTBEAT` → `SYNC_CHECK`, `SYNC_CORRECTION`, cierres `4001`/`4003`) | [sync-core/AGENTS.md](../../services/sync-core/AGENTS.md#protocolo-del-canal-sync) |
-| Canal Social (`history`, `chat_*`, `reaction_*`, `trivia_*`) | [social-core/AGENTS.md](../../services/social-core/AGENTS.md#protocolo-del-canal-social) |
+| Canal Social (`history`, `chat_*`, `reaction_*`, `trivia_*`, `poll_state` / `poll_vote`, `laser`) | [social-core/AGENTS.md](../../services/social-core/AGENTS.md#protocolo-del-canal-social) |
 | Claims JWT HS256 | [usuarios-e-identidad §4](../../docs/usuarios-e-identidad.md#4-esquemas-de-tokens) |
 
 ## Estructura
@@ -44,7 +44,7 @@ Eres el agente especializado en el cliente móvil de **TINT**: una app nativa en
 | `auth/` | `AuthRepository` (Google → Firebase → `tint_token` → `POST /auth/verify`; sin sesión si algo falla), `LoginController` (estado de la pantalla), y las capas finas `CredentialManagerGoogleSource` y `FirebaseAuthGateway`. |
 | `join/` | `InviteCode` (extrae el código de un link, ruta o código pelado), `InviteRepository` (`POST /invitations/claim` anónimo con `deviceId`; guarda `tint_guest_token` y **no borra** la sesión de host, a diferencia de la web) y `JoinController` (nick de 2 a 24 caracteres). |
 | `sync/` | `SyncProtocol` (mensajes del Canal Sync v2 en JSON, `SYNC_CHECK`, backoff), `ResilientSocket` (conexión que reconecta con backoff, ignora sockets viejos y no reconecta ante `4001`/`4003`; la usan los dos canales) y `SyncClient` (como participante: descarta por `version`, responde `HEARTBEAT`, reconecta; `4001`/`4003` son terminales), `SyncedPlayback` (aplica el estado maestro y las correcciones a un `PlayerPort`; salta solo con > 250 ms de desfase, 50 ms en pausa), `PositionTracker` (ExoPlayer solo se lee en el hilo principal y el `SYNC_CHECK` sale por el del socket), `PlaybackRepository` (`GET /rooms/:id/playback` con el token de invitado) y `RoomController` (pide la URL cuando cambia el `media_id`). `OkHttpSyncSocketFactory` y `ExoPlayerPort` son capas finas sin pruebas unitarias. |
-| `social/` | `SocialProtocol` (chat, historial, avisos, reacciones, ajustes, errores y trivia del Canal Social; ignora encuestas, láser y recap por ahora) y `SocialClient` (dedup por `event_id`, tope de 50 mensajes, pre-validación del modo lento y del silencio para explicar la regla, máximo 5 reacciones por segundo; trivia: `TriviaState`, `answerTrivia` una sola vez y dentro de la ventana, cuenta regresiva con el reloj local). Reconecta con `sync/ResilientSocket`, que comparte con el Canal Sync. |
+| `social/` | `SocialProtocol` (chat, historial, avisos, reacciones, ajustes, errores y trivia del Canal Social; encuestas y láser como participante; ignora el recap por ahora) y `SocialClient` (dedup por `event_id`, tope de 50 mensajes, pre-validación del modo lento y del silencio para explicar la regla, máximo 5 reacciones por segundo; trivia: `TriviaState`, `answerTrivia` una sola vez y dentro de la ventana, cuenta regresiva con el reloj local; encuestas: `votePoll` (voto cambiable, no se manda si ya cerró), `dismissPoll` y `my_vote` conservado entre broadcasts; láser: `LaserTrail` calcula trazos y marcadores con la hora de llegada local). Reconecta con `sync/ResilientSocket`, que comparte con el Canal Sync. |
 | `identity/DeviceIdProvider.kt` | `tint_device_id` (UUID persistente) para el bloqueo por dispositivo. |
 | `store/` | `KeyValueStore` y su implementación sobre `SharedPreferences`. |
 | `AppContainer.kt` · `MainActivity.kt` | Cableado y pantalla. Capa fina excluida de la cobertura. |
