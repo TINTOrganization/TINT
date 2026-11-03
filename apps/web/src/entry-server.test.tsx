@@ -1,154 +1,139 @@
-import { describe, it, expect, vi } from 'vitest';
-import {
-  render,
-  generateMetaTags,
-  injectIntoTemplate,
-  DEFAULT_HTML_TEMPLATE,
-  type PageMeta,
-} from './entry-server';
+import { describe, expect, it, vi } from 'vitest';
+import { renderApp, renderPage, renderHtmlPage, isSsrRoute } from './entry-server';
 
-describe('entry-server SSR', () => {
-  describe('render (AC1 & AC2)', () => {
-    it('pre-renderiza la landing page con contenido inicial completo y meta tags (AC1)', async () => {
-      const result = await render('/login');
-
-      expect(result.statusCode).toBe(200);
-      // AC1: El contenido inicial debe estar presente en el HTML renderizado por el servidor
-      expect(result.appHtml).toContain('Mira junto, siente al mismo tiempo');
-      expect(result.appHtml).toContain('Iniciar sesión con Google');
-      expect(result.appHtml).toContain('Continuar sin cuenta');
-      expect(result.appHtml).toContain('Salas sincronizadas');
-
-      // AC1 & AC2: Meta tags en el documento
-      expect(result.html).toContain('<title>TINT — Mira junto, siente al mismo tiempo</title>');
-      expect(result.html).toContain('property="og:title" content="TINT — Mira junto, siente al mismo tiempo"');
-      expect(result.html).toContain('property="og:description" content="Crea una sala, invita con un link y mantén a todos en el mismo segundo."');
-      expect(result.html).toContain('property="og:type" content="website"');
-      expect(result.html).toContain('name="twitter:card" content="summary_large_image"');
-      expect(result.html).toContain('<div id="root">');
-      expect(result.html).toContain('Mira junto, siente al mismo tiempo');
+describe('entry-server', () => {
+  describe('isSsrRoute', () => {
+    it('reconoce / y /login como rutas SSR de la landing page', () => {
+      expect(isSsrRoute('/')).toBe(true);
+      expect(isSsrRoute('/login')).toBe(true);
+      expect(isSsrRoute('/login?next=/dashboard')).toBe(true);
     });
 
-    it('pre-renderiza / como redirección a la landing con contenido de login', async () => {
-      const result = await render('/');
-      expect(result.statusCode).toBe(200);
-      expect(result.appHtml).toContain('Mira junto, siente al mismo tiempo');
-      expect(result.meta.title).toBe('TINT — Mira junto, siente al mismo tiempo');
+    it('reconoce rutas /invite/:code como rutas SSR', () => {
+      expect(isSsrRoute('/invite/ABC123XYZ')).toBe(true);
+      expect(isSsrRoute('/invite/12345')).toBe(true);
     });
 
-    it('pre-renderiza ruta de invitación con el título dinámico de la sala en meta tags (AC1 & AC2)', async () => {
-      const mockFetcher = vi.fn().mockResolvedValue({
-        ok: true,
-        json: async () => ({
-          code: 'ABC123XYZ',
-          roomTitle: 'Noche de Pelis Clásicas',
-          roomId: 'room-42',
-        }),
-      });
-
-      const result = await render('/invite/ABC123XYZ', {
-        fetcher: mockFetcher as unknown as typeof fetch,
-        origin: 'https://tint.stream',
-      });
-
-      expect(result.statusCode).toBe(200);
-
-      // AC1: Contenido inicial completo sin JS
-      expect(result.appHtml).toContain('Te invitaron a ver algo juntos');
-      expect(result.appHtml).toContain('Unirse a la sala');
-      expect(result.appHtml).toContain('ABC123XYZ');
-      expect(result.appHtml).toContain('Nick');
-      expect(result.appHtml).toContain('Noche de Pelis Clásicas');
-
-      // AC2: Dynamic meta tags con el título de la sala para scrapers de chat
-      expect(result.html).toContain('<title>Noche de Pelis Clásicas — TINT</title>');
-      expect(result.html).toContain('property="og:title" content="Te invitaron a Noche de Pelis Clásicas — TINT"');
-      expect(result.html).toContain('property="og:description" content="Te invitaron a ver algo juntos en TINT. Elige un nick y entra a la sala."');
-      expect(result.html).toContain('property="og:url" content="https://tint.stream/invite/ABC123XYZ"');
-
-      // AC3: Script de initialData para hidratación sin fisuras
-      expect(result.html).toContain('id="__TINT_SSR_DATA__"');
-      expect(result.html).toContain('Noche de Pelis Clásicas');
-      expect(result.initialData?.roomTitle).toBe('Noche de Pelis Clásicas');
-    });
-
-    it('pre-renderiza ruta de invitación con fallback si no se puede obtener el título de la sala', async () => {
-      const mockFetcher = vi.fn().mockResolvedValue({
-        ok: false,
-        status: 404,
-      });
-
-      const result = await render('/invite/NOEXISTE', {
-        fetcher: mockFetcher as unknown as typeof fetch,
-      });
-
-      expect(result.statusCode).toBe(200);
-      expect(result.appHtml).toContain('Te invitaron a ver algo juntos');
-      expect(result.appHtml).toContain('Unirse a la sala');
-      expect(result.html).toContain('<title>Te invitaron a ver algo juntos — TINT</title>');
-      expect(result.html).toContain('property="og:title" content="Te invitaron a ver algo juntos — TINT"');
-      expect(result.html).toContain('property="og:description" content="Elige un nick y entra como participante. Sin cuenta, sin fricción."');
-    });
-
-    it('respeta roomTitle provisto directamente en opciones', async () => {
-      const result = await render('/invite/CODE123', {
-        roomTitle: 'Maratón Star Wars',
-      });
-
-      expect(result.meta.title).toBe('Maratón Star Wars — TINT');
-      expect(result.html).toContain('Maratón Star Wars');
-    });
-
-    it('permite inyectar en una plantilla HTML personalizada', async () => {
-      const customTemplate = `<!DOCTYPE html><html><head><title>Original</title></head><body><div id="root"></div></body></html>`;
-      const result = await render('/login', {
-        templateHtml: customTemplate,
-      });
-
-      expect(result.html).toContain('<title>TINT — Mira junto, siente al mismo tiempo</title>');
-      expect(result.html).toContain('property="og:title"');
-      expect(result.html).toContain('Mira junto, siente al mismo tiempo');
+    it('no aplica SSR a rutas interactivas de streaming ni a rutas privadas', () => {
+      expect(isSsrRoute('/watch/room-1')).toBe(false);
+      expect(isSsrRoute('/live/room-1')).toBe(false);
+      expect(isSsrRoute('/dashboard')).toBe(false);
+      expect(isSsrRoute('/rooms/new')).toBe(false);
+      expect(isSsrRoute('/test-me')).toBe(false);
     });
   });
 
-  describe('generateMetaTags', () => {
-    it('escapa caracteres especiales para prevenir inyección HTML', () => {
-      const meta: PageMeta = {
-        title: 'Sala <Script> "Hack" & Fun',
-        description: 'Descripción con <b>HTML</b> & "comillas"',
-        ogTitle: 'OG <Title>',
-        ogDescription: 'OG <Desc>',
-        ogImage: 'https://example.com/img.png?a=1&b=2',
-        ogUrl: 'https://example.com/invite/<evil>',
-      };
+  describe('renderApp', () => {
+    it('pre-renderiza el HTML completo para la landing page /login (AC1)', () => {
+      const html = renderApp('/login');
+      expect(html).toContain('Mira junto, siente al mismo tiempo');
+      expect(html).toContain('Bienvenido de nuevo');
+      expect(html).toContain('Iniciar sesión con Google');
+      expect(html).toContain('Continuar sin cuenta');
+    });
 
-      const tags = generateMetaTags(meta);
-      expect(tags).not.toContain('<Script>');
-      expect(tags).toContain('&lt;Script&gt;');
-      expect(tags).toContain('&amp; Fun');
-      expect(tags).toContain('&quot;Hack&quot;');
-      expect(tags).toContain('content="https://example.com/img.png?a=1&amp;b=2"');
+    it('pre-renderiza el HTML completo para la landing page / (AC1)', () => {
+      const html = renderApp('/');
+      expect(html).toContain('Mira junto, siente al mismo tiempo');
+      expect(html).toContain('Iniciar sesión con Google');
+    });
+
+    it('pre-renderiza el HTML completo para la ruta de invitación /invite/:code (AC1)', () => {
+      const html = renderApp('/invite/ABC999');
+      expect(html).toContain('Te invitaron a ver algo juntos');
+      expect(html).toContain('Unirse a la sala');
+      expect(html).toContain('ABC999');
+      expect(html).toContain('Nick');
+      expect(html).toContain('Unirse');
     });
   });
 
-  describe('injectIntoTemplate', () => {
-    it('inyecta appHtml y metaTags en la plantilla por defecto', () => {
-      const metaTags = '<title>Custom</title><meta property="og:title" content="Custom" />';
-      const appHtml = '<div data-testid="app">Contenido</div>';
-      const initialData = { roomTitle: 'Sala 1', code: 'ABC' };
-
-      const html = injectIntoTemplate(DEFAULT_HTML_TEMPLATE, appHtml, metaTags, initialData);
-
-      expect(html).toContain(metaTags);
-      expect(html).toContain('<div id="root"><div data-testid="app">Contenido</div></div>');
-      expect(html).toContain('id="__TINT_SSR_DATA__"');
-      expect(html).toContain('Sala 1');
+  describe('renderPage', () => {
+    it('devuelve metadatos y HTML pre-renderizado para la landing page', async () => {
+      const result = await renderPage('/login');
+      expect(result.isSsrRoute).toBe(true);
+      expect(result.title).toBe('TINT — Watch Party');
+      expect(result.metaTags).toContain('og:title');
+      expect(result.metaTags).toContain('TINT — Watch Party');
+      expect(result.appHtml).toContain('Mira junto, siente al mismo tiempo');
     });
 
-    it('sin initialData omite el tag __TINT_SSR_DATA__', () => {
-      const html = injectIntoTemplate(DEFAULT_HTML_TEMPLATE, '<p>OK</p>', '<title>T</title>');
-      expect(html).not.toContain('__TINT_SSR_DATA__');
-      expect(html).toContain('<div id="root"><p>OK</p></div>');
+    it('inyecta dinámicamente el título de la sala en los metadatos Open Graph de invitaciones (AC2)', async () => {
+      const mockFetchDetails = vi.fn().mockResolvedValue({
+        code: 'INVITE123',
+        roomId: 'room-abc',
+        roomTitle: 'Maratón de Cine de Terror',
+        roomKind: 'watch',
+      });
+
+      const result = await renderPage('/invite/INVITE123', {
+        fetchRoomDetails: mockFetchDetails,
+      });
+
+      expect(result.isSsrRoute).toBe(true);
+      expect(result.title).toBe('Maratón de Cine de Terror — TINT');
+      expect(result.metaTags).toContain('content="Maratón de Cine de Terror — TINT"');
+      expect(result.metaTags).toContain('Maratón de Cine de Terror');
+      expect(result.roomDetails?.roomTitle).toBe('Maratón de Cine de Terror');
+      expect(result.appHtml).toContain('INVITE123');
+    });
+
+    it('utiliza metadatos de invitación por defecto si la sala no tiene título o falla la consulta', async () => {
+      const mockFetchDetails = vi.fn().mockResolvedValue(null);
+
+      const result = await renderPage('/invite/UNKNOWN', {
+        fetchRoomDetails: mockFetchDetails,
+      });
+
+      expect(result.isSsrRoute).toBe(true);
+      expect(result.title).toBe('Invitación a sala — TINT');
+      expect(result.metaTags).toContain('content="Invitación a sala — TINT"');
+      expect(result.appHtml).toContain('UNKNOWN');
+    });
+
+    it('para rutas de streaming concurrentes (watch/live), retorna appHtml vacío para hidratación en cliente', async () => {
+      const result = await renderPage('/watch/room-streaming-1');
+      expect(result.isSsrRoute).toBe(false);
+      expect(result.appHtml).toBe('');
+      expect(result.title).toBe('TINT — Watch Party');
+    });
+  });
+
+  describe('renderHtmlPage', () => {
+    const templateHtml = `<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <title>TINT — Watch Party</title>
+    <!--ssr-head-->
+  </head>
+  <body class="bg-tint-bg">
+    <div id="root"><!--ssr-outlet--></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>`;
+
+    it('genera la respuesta HTML completa con contenido y metadatos pre-renderizados', async () => {
+      const { html, statusCode } = await renderHtmlPage(templateHtml, '/invite/PARTY777', {
+        roomTitle: 'Anime Night',
+      });
+
+      expect(statusCode).toBe(200);
+      expect(html).toContain('<title>Anime Night — TINT</title>');
+      expect(html).toContain('<meta property="og:title" content="Anime Night — TINT" />');
+      expect(html).toContain('<div id="root">');
+      expect(html).toContain('Te invitaron a ver algo juntos');
+      expect(html).toContain('PARTY777');
+      // Debe conservar los scripts para permitir la hidratación en cliente
+      expect(html).toContain('/src/main.tsx');
+    });
+
+    it('funciona también si la plantilla usa <div id="root"></div> sin el comentario <!--ssr-outlet-->', async () => {
+      const plainTemplate = `<html><head><title>Original</title></head><body><div id="root"></div></body></html>`;
+      const { html } = await renderHtmlPage(plainTemplate, '/login');
+
+      expect(html).toContain('Mira junto, siente al mismo tiempo');
+      expect(html).toContain('<title>TINT — Watch Party</title>');
     });
   });
 });

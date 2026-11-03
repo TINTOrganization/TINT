@@ -13,14 +13,13 @@ Cómo funciona la SPA por dentro (arquitectura, flujos con diagramas, estado y p
 - `@msgpack/msgpack` — codificación MessagePack opcional del Canal Sync (implementación oficial, sin dependencias, mismo modelo de datos que el JSON del protocolo).
 - `framer-motion` 11.11.17 — animaciones declarativas en toda la app. `MotionProvider` (en `App`) carga `LazyMotion` con `domAnimation` en un chunk diferido (`motion/features.ts`; el bundle principal crece ≈ 12 KB gz; no uses `animate()` de framer en código del bundle principal: arrastra el motor completo, ~18 KB gz; sin `layout`/`layoutId`, que exigirían `domMax`) y `MotionConfig reducedMotion="user"`. Los componentes usan `m.*`; el cuestionario `/test-me` (lazy) sigue con `motion.*`. En pruebas `setupTests.ts` activa `MotionGlobalConfig.skipAnimations` y mapea `m` → `motion`; los stubs de `matchMedia` deben incluir `addListener`/`removeListener`.
 - Outfit (Google Fonts, `index.html`) — tipografía de la marca.
-- Server-Side Rendering (SSR) & Hidratación: pre-renderizado en servidor (`src/entry-server.tsx`, `src/server.ts`) para la landing page (`/`, `/login`) y rutas de invitación (`/invite/:code`) con inyección dinámica de meta tags Open Graph y Twitter Cards. Hidratación selectiva en el cliente (`hydrateRoot` en `src/main.tsx`) con transferencia de datos SSR (`__TINT_SSR_DATA__`).
 
 ## Responsabilidades
 - Reproductor, sala, chat, reacciones, trivias y visualización Ambilight/Heatmap.
 - Cliente de los dos canales WebSocket: `/ws/sync` (sync-core) y canal social (social-core).
 - Transmisión en vivo de las salas `live`: captura, mezcla y composición en el navegador del host y señalización WHIP/WHEP con stream-core (ver "Transmisión en vivo").
 - Detección y corrección de desfase de reproducción del lado del cliente.
-- Server-Side Rendering (SSR) y meta tags dinámicos para landing page y enlaces de invitación sin afectar streams de cliente.
+- Server-Side Rendering (SSR) y meta tags dinámicos (Open Graph / Twitter Cards) para la landing page (/ y /login) y enlaces de invitación (/invite/:code), con hidratación en cliente (hydrateRoot) y aislamiento de rutas de streaming concurrentes.
 
 ## Límites de Dominio
 - ❌ No implementes lógica de negocio autoritativa (puntajes, rate limiting real, estado maestro): eso vive en `services/*`. La UI solo refleja y pre-valida.
@@ -179,8 +178,6 @@ npm run dev             # servidor de desarrollo
 npm run lint            # ESLint
 npm run typecheck       # tsc
 npm run test:coverage   # Vitest + umbral 85%
-npm run build           # build de producción del cliente
-npm run build:ssr       # build de producción para SSR (dist/server)
 ```
 
 ## Variables de Entorno

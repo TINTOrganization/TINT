@@ -1,4 +1,5 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { ReactionBar, REACTIONS } from './ReactionBar';
 
 describe('ReactionBar', () => {
@@ -19,7 +20,7 @@ describe('ReactionBar', () => {
     render(<ReactionBar onReact={onReact} />);
     const clap = screen.getByRole('button', { name: /👏/ });
 
-    for (let i = 0; i < 8; i++) fireEvent.click(clap);
+    for (let i = 0; i < 8; i++) await userEvent.click(clap);
 
     expect(onReact).toHaveBeenCalledTimes(5);
     expect(onReact).toHaveBeenCalledWith('👏');

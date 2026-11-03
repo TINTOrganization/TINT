@@ -194,28 +194,4 @@ describe('InviteLanding', () => {
     expect(await screen.findByText('El host te bloqueó en esta sala')).toBeInTheDocument();
     expect(localStorage.getItem('tint_guest_token')).toBeNull();
   });
-
-  it('muestra el título de la sala si fue inyectado por initialRoomTitle', () => {
-    render(
-      <MemoryRouter initialEntries={['/invite/ABC123']}>
-        <Routes>
-          <Route path="/invite/:code" element={<InviteLanding initialRoomTitle="Cine Club" />} />
-        </Routes>
-      </MemoryRouter>,
-    );
-    expect(screen.getByTestId('room-title')).toHaveTextContent('Cine Club');
-  });
-
-  it('muestra el título de la sala si existe en el tag script __TINT_SSR_DATA__', () => {
-    const script = document.createElement('script');
-    script.id = '__TINT_SSR_DATA__';
-    script.type = 'application/json';
-    script.textContent = JSON.stringify({ roomTitle: 'Sala de terror' });
-    document.body.appendChild(script);
-
-    renderInvite();
-    expect(screen.getByTestId('room-title')).toHaveTextContent('Sala de terror');
-
-    document.body.removeChild(script);
-  });
 });

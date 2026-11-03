@@ -23,4 +23,16 @@ describe('safeStorage', () => {
     expect(readStored('k')).toBeNull();
     expect(() => writeStored('k', 'v')).not.toThrow();
   });
+
+  it('maneja entornos SSR donde localStorage no está definido', () => {
+    const original = globalThis.localStorage;
+    // @ts-expect-error simulación de SSR
+    delete globalThis.localStorage;
+    try {
+      expect(readStored('test')).toBeNull();
+      expect(() => writeStored('test', 'val')).not.toThrow();
+    } finally {
+      globalThis.localStorage = original;
+    }
+  });
 });

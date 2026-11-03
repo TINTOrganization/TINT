@@ -1,7 +1,6 @@
 /**
  * Preferencias por navegador en `localStorage`. Puede lanzar (modo privado, datos de sitio
  * bloqueados): en ese caso se lee `null` y la escritura se ignora, nunca se rompe la UI.
- * Seguro para entornos SSR donde `localStorage` no existe en el servidor.
  */
 export function readStored(key: string): string | null {
   try {

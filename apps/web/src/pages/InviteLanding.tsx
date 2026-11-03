@@ -14,11 +14,7 @@ import { ease, fadeUp, stagger } from '../lib/motion';
 const HERO_SRC = 'https://picsum.photos/seed/tint-guest/1200/1400';
 const HEADLINE = 'Te invitaron a ver algo juntos';
 
-export interface InviteLandingProps {
-  initialRoomTitle?: string | null;
-}
-
-export default function InviteLanding({ initialRoomTitle }: InviteLandingProps = {}) {
+export default function InviteLanding() {
   const { code } = useParams();
   const [nick, setNick] = useState('');
   const [error, setError] = useState('');
@@ -28,6 +24,7 @@ export default function InviteLanding({ initialRoomTitle }: InviteLandingProps =
   // Con sesión de host, canjear la invitación la sustituye por una de invitado: se
   // avisa y solo se hace con confirmación explícita ("Entrar como invitado").
   const [hasHostSession] = useState(() => !!readStored('tint_token'));
+  /** Ruta de la sala del host con esta invitación: undefined = buscando, null = no es suya. */
   const [hostRoomId, setHostRoomId] = useState<string | null | undefined>(undefined);
 
   useEffect(() => {
@@ -120,11 +117,6 @@ export default function InviteLanding({ initialRoomTitle }: InviteLandingProps =
           <Card className="w-full p-8 shadow-lift">
             <p className="tint-eyebrow">Invitación</p>
             <h2 className="mt-2 text-2xl font-bold tracking-tight text-white">Unirse a la sala</h2>
-            {roomTitle && (
-              <p className="mt-1 font-semibold text-tint-accent" data-testid="room-title">
-                {roomTitle}
-              </p>
-            )}
             <p className="mt-2 text-sm leading-relaxed">
               Código <span className="rounded-md bg-white/10 px-2 py-0.5 font-mono text-[13px] text-white">{code}</span>
             </p>

@@ -1,5 +1,5 @@
 import { lazy, Suspense, type ReactNode } from 'react';
-import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, useLocation } from 'react-router-dom';
 import { StaticRouter } from 'react-router-dom/server';
 import { AnimatePresence } from 'framer-motion';
 import Login from './pages/Login';
@@ -11,7 +11,6 @@ import ProtectedRoute from './routes/ProtectedRoute';
 import Forbidden from './pages/Forbidden';
 import { MotionProvider } from './components/motion/MotionProvider';
 import { PageTransition } from './components/motion/PageTransition';
-
 // Carga diferida: la ruta oculta del cuestionario no se enlaza desde la UI.
 const TestMe = lazy(() => import('./pages/TestMe'));
 // Carga diferida: mapa interactivo de la arquitectura, también oculto y hermano del cuestionario.
@@ -25,25 +24,18 @@ const LiveRoom = lazy(() => import('./pages/LiveRoom'));
 
 const page = (node: ReactNode) => <PageTransition>{node}</PageTransition>;
 
-export interface AppInitialData {
-  roomTitle?: string | null;
-  code?: string | null;
-  [key: string]: unknown;
-}
-
 export interface AppProps {
-  location?: string;
-  initialData?: AppInitialData | null;
+  url?: string;
 }
 
 /** Rutas con transición: AnimatePresence necesita la ubicación para animar la salida. */
-export function AnimatedRoutes({ initialData }: { initialData?: AppInitialData | null }) {
+export function AnimatedRoutes() {
   const location = useLocation();
   return (
     <AnimatePresence mode="wait" initial={false}>
       <Routes location={location} key={location.pathname}>
         <Route path="/login" element={page(<Login />)} />
-        <Route path="/invite/:code" element={page(<InviteLanding initialRoomTitle={initialData?.roomTitle} />)} />
+        <Route path="/invite/:code" element={page(<InviteLanding />)} />
         <Route path="/dashboard" element={page(<ProtectedRoute><Dashboard /></ProtectedRoute>)} />
         <Route path="/rooms/new" element={page(<ProtectedRoute><CreateRoom /></ProtectedRoute>)} />
         <Route path="/rooms/:id" element={page(<ProtectedRoute><CreateRoom /></ProtectedRoute>)} />
@@ -61,21 +53,21 @@ export function AnimatedRoutes({ initialData }: { initialData?: AppInitialData |
         <Route path="/arquitectura" element={<Suspense fallback={null}><Arquitectura /></Suspense>} />
         {/* Ruta oculta: panel de negocio de analítica (pide la contraseña del equipo). */}
         <Route path="/analitica" element={<Suspense fallback={null}><BusinessAnalytics /></Suspense>} />
-        <Route path="/" element={<Navigate to="/login" replace />} />
+        <Route path="/" element={page(<Login />)} />
       </Routes>
     </AnimatePresence>
   );
 }
 
-export default function App({ location, initialData }: AppProps = {}) {
+export default function App({ url }: AppProps = {}) {
   const content = (
     <MotionProvider>
-      <AnimatedRoutes initialData={initialData} />
+      <AnimatedRoutes />
     </MotionProvider>
   );
 
-  if (location !== undefined) {
-    return <StaticRouter location={location}>{content}</StaticRouter>;
+  if (url !== undefined) {
+    return <StaticRouter location={url}>{content}</StaticRouter>;
   }
 
   return <BrowserRouter>{content}</BrowserRouter>;
