@@ -335,7 +335,7 @@ Esquemas de tokens, matriz de permisos y flujos de login, invitación y retiro e
 ### 1. Prerrequisitos
 - **Docker Engine** ≥ 24.0 y **Docker Compose** v2 (e.g. Docker Desktop en Windows/macOS o Docker nativo en Linux).
 - **Git** y al menos **4 GB de RAM** libre para el motor de contenedores.
-- Puertos libres por defecto: `80`, `443` (gateway) y `5173` (web dev).
+- Puertos libres por defecto: `80`, `443` (gateway), `5173` (web dev) y `9099` (Firebase Auth Emulator, solo `127.0.0.1`).
 
 ### 2. Comandos de ejecución rápida
 Compatible con **Linux**, **macOS** y **Windows** (PowerShell / WSL2):
@@ -360,7 +360,7 @@ Una vez finalizado el arranque (típicamente 2–4 minutos):
   ```bash
   docker compose ps
   ```
-  *Todos los servicios (`tint-gateway`, `tint-web`, `tint-identity-api`, `tint-sync-core`, `tint-social-core`, `tint-analytics`, `tint-media-worker`, `tint-voice-core`, `tint-postgres`, `tint-redis`, `tint-mongodb`, `tint-minio`) deben figurar en estado `Up` y `healthy`.*
+  *Todos los servicios (`tint-gateway`, `tint-web`, `tint-identity-api`, `tint-sync-core`, `tint-social-core`, `tint-analytics`, `tint-media-worker`, `tint-voice-core`, `tint-postgres`, `tint-redis`, `tint-mongodb`, `tint-minio`, `tint-firebase-auth-emulator`) deben figurar en estado `Up` y `healthy`.*
 
 - **Sonda de salud HTTP (Liveness)**:
   ```bash
@@ -375,6 +375,7 @@ Una vez finalizado el arranque (típicamente 2–4 minutos):
     - [`/test-me`](https://localhost/test-me): Cuestionario interactivo con preguntas sobre la arquitectura, contratos y decisiones del monorepo.
     - [`/arquitectura`](https://localhost/arquitectura): Mapa visual interactivo de componentes y conectores del sistema.
     - [`/analitica`](https://localhost/analitica): Panel de KPIs y telemetría de salas.
+  - **Login del host sin Firebase real**: en [`/login`](https://localhost/login), *Continuar con Google* abre el popup del **Firebase Auth Emulator** (`http://localhost:9099`, proyecto `demo-tint`): *Add new account* → *Auto-generate user information* → *Sign in*. Solo desarrollo: sus tokens no llevan firma y producción no lo arranca ([ADR 0024](docs/adr/0024-login-local-con-firebase-auth-emulator.md)).
 
 ### 4. Apagado y reinicio
 ```bash
@@ -392,6 +393,7 @@ docker compose down -v && docker compose up -d
 | `bind: address already in use` (`80`, `443`, `5432`, `6379`, `27017`) | Conflicto con un servicio local (Apache, Nginx, PostgreSQL, Redis o MongoDB nativos). | Detener el servicio en conflicto o cambiar puertos en `.env` (ej. `GATEWAY_HTTP_PORT=8080`, `GATEWAY_HTTPS_PORT=8443`). |
 | Advertencia de certificado SSL no seguro en `https://localhost` | Caddy genera certificados TLS autofirmados locales para desarrollo. | En el navegador, pulsar **Avanzado** → **Continuar a localhost (no seguro)**, o acceder directamente vía `http://localhost:5173`. |
 | Docker daemon no responde o falla por memoria | Docker Desktop está detenido o tiene asignado < 4 GB de RAM. | Iniciar Docker Desktop y en *Settings* → *Resources* asignar al menos 4 GB de memoria y 2 CPUs. |
+| `tint-identity-api` reinicia con `FIREBASE_AUTH_EMULATOR_HOST no se permite…` o `env-check` pide `demo-*` | Emulador activo con `NODE_ENV=production` o un `FIREBASE_PROJECT_ID` real. | En local deja `FIREBASE_PROJECT_ID=demo-tint`; para Firebase real vacía `FIREBASE_AUTH_EMULATOR_HOST` y `VITE_FIREBASE_AUTH_EMULATOR_URL` y reconstruye la web. |
 | Advertencia sobre `coturn` en Windows o macOS | `coturn` utiliza `network_mode: host` diseñado para Linux. | En Docker Desktop opera sobre la VM local (`localhost:3478`). La señalización WebSocket y la interfaz web funcionan sin cambios. |
 
 ---

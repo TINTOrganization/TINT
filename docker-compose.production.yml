@@ -3,9 +3,17 @@
 services:
   web:
     ports: !reset []
+    build:
+      args:
+        # ADR 0024: el build de producción nunca apunta al Firebase Auth Emulator.
+        VITE_FIREBASE_AUTH_EMULATOR_URL: ""
 
   identity-api:
     ports: !reset []
+    environment:
+      # ADR 0024: con production, identity-api se niega a arrancar si hay emulador.
+      NODE_ENV: production
+      FIREBASE_AUTH_EMULATOR_HOST: ""
 
   sync-core:
     ports: !reset []
@@ -17,4 +25,10 @@ services:
     ports: !reset []
 
   voice-core:
+    ports: !reset []
+
+  # ADR 0024: el Firebase Auth Emulator (tokens sin firma) es solo de desarrollo. Con un
+  # perfil que nadie activa, `up` no lo arranca y `config` no lo incluye.
+  firebase-auth-emulator:
+    profiles: ["never-in-production"]
     ports: !reset []

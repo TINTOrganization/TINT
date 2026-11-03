@@ -312,7 +312,7 @@ Son los únicos puntos en los que un PR puede necesitar coordinar dos dominios (
 | `room:{id}:kind` (`live`, TTL 24 h) | identity-api → voice-core, social-core | Escenario de voz (`4009`) y trivia por minuto del stream |
 | `TURN_SECRET` | voice-core ↔ coturn | Credenciales TURN efímeras (REST API de TURN), `.env.example` raíz |
 | `MONGO_URI` + colección `social.chat_message_meta` (índice `{room_id, received_at}` y TTL) | social-core ↔ mongodb | Metadatos del chat sin texto, con escritura diferida por la cola `chat:meta:outbox` (SOC-07/DAT-02, [ADR 0025](adr/0025-metadatos-del-chat-en-mongodb.md)); `.env.example` raíz |
-| Puertos locales | infra ↔ web | social-core 8082, sync-core 8083, analytics 8084, voice-core 8085, stream-core 8086 (+ UDP `STREAM_UDP_PORT`), coturn 3478 (`docker-compose.yml`, `apps/web/.env.example`) |
+| Puertos locales | infra ↔ web | social-core 8082, sync-core 8083, analytics 8084, voice-core 8085, stream-core 8086 (+ UDP `STREAM_UDP_PORT`), coturn 3478, Firebase Auth Emulator 9099 (solo `127.0.0.1`, desarrollo) (`docker-compose.yml`, `apps/web/.env.example`) |
 | Observabilidad y salud (`/healthz` con `status`/`service`; logs JSON a stdout con `LOG_LEVEL` configurable) | Todos los servicios | [ADR 0021](adr/0021-observabilidad-salud-y-logs.md) · [§8.2](#82-observabilidad-salud-y-logs) |
 
 ## 6. Almacenes de datos
@@ -412,8 +412,9 @@ flowchart TB
 | `tint-mongodb` | Imagen `mongo:8.0` (`restart: unless-stopped`) | 27017 → 27017 | `mongo-data:/data/db` | `MONGO_INITDB_ROOT_USERNAME`, `MONGO_INITDB_ROOT_PASSWORD`, `MONGO_INITDB_DATABASE` |
 | `tint-mongo-init` | Imagen `mongo:8.0`, se ejecuta una vez tras `mongodb` sano | — | — | `MONGO_ROOT_USER`, `MONGO_ROOT_PASSWORD`, `MONGO_APP_USER`, `MONGO_APP_PASSWORD`. Crea o actualiza (idempotente) el usuario de aplicación de social-core: `readWrite` y el rol `chat_meta_schema` (solo `collMod`) sobre la base `social` ([ADR 0025](adr/0025-metadatos-del-chat-en-mongodb.md)) |
 | `tint-coturn` | Imagen `coturn/coturn:4.6.3`, `network_mode: host` (en Linux el relay debe anunciar direcciones alcanzables; en Docker Desktop no alcanza clientes externos fuera de localhost; limitación de portabilidad documentada) | 3478 (UDP/TCP) · relay 49160–49200 | — | `TURN_SECRET` (`--static-auth-secret`) |
+| `tint-firebase-auth-emulator` | `build: ./firebase-auth-emulator` (`node:22-alpine` + `firebase-tools@15.34.0`, usuario `node`). **Solo desarrollo** ([ADR 0024](adr/0024-login-local-con-firebase-auth-emulator.md)): el override de producción no lo arranca | `127.0.0.1:9099` → 9099 | — | `FIREBASE_PROJECT_ID` (`demo-*`) |
 | `tint-sync-core` | `build: ./services/sync-core` (multi-stage `golang:1.22-alpine` → `distroless/static-debian12:nonroot`) | 8083 → 8080 | — | `SYNC_CORE_ADDR`, `REDIS_URL`, `JWT_*`, `ALLOWED_ORIGINS` (de `SYNC_ALLOWED_ORIGINS`) |
-| `tint-identity-api` | `build: ./services/identity-api` (Node 22, migraciones al arrancar) | 8081 → 8081 | — | `DATABASE_URL`, `REDIS_URL`, `FIREBASE_PROJECT_ID`, `JWT_*`, `MINIO_*`, `SYNC_CORE_URL`, `SOCIAL_CORE_URL`, `ANALYTICS_URL` |
+| `tint-identity-api` | `build: ./services/identity-api` (Node 22, migraciones al arrancar) | 8081 → 8081 | — | `DATABASE_URL`, `REDIS_URL`, `FIREBASE_PROJECT_ID`, `FIREBASE_AUTH_EMULATOR_HOST` (solo desarrollo), `NODE_ENV`, `JWT_*`, `MINIO_*`, `SYNC_CORE_URL`, `SOCIAL_CORE_URL`, `ANALYTICS_URL` |
 | `tint-web` | `build: ./apps/web` (build Vite + nginx) | 5173 → 80 | — | `VITE_IDENTITY_API_URL`, `VITE_FIREBASE_*`, `VITE_SYNC_WS_URL`, `VITE_SOCIAL_WS_URL`, `VITE_SYNC_ENCODING`, `VITE_ANALYTICS_API_URL` |
 | Firebase Auth | Servicio externo de Google | HTTPS | — | `FIREBASE_PROJECT_ID` (identity-api, social-core), `VITE_FIREBASE_*` (web) |
 
@@ -489,6 +490,7 @@ El requerimiento R10 y la historia OPS-06 (#91) establecen que el despliegue del
 | voice-core | 8085 | `docker compose` (`/ws/voice`, `/api/v1/voice/rooms/{id}/mutes/{user_id}`, `/healthz`) |
 | stream-core | 8086 · UDP `STREAM_UDP_PORT` | `docker compose` (`/api/v1/stream/*` WHIP/WHEP, `/healthz`) |
 | coturn | 3478 · 49160–49200 | `docker compose` (STUN/TURN, red del host) |
+| Firebase Auth Emulator | 9099 (solo `127.0.0.1`) | `docker compose` de desarrollo: login local del host ([ADR 0024](adr/0024-login-local-con-firebase-auth-emulator.md)); no existe en producción |
 | PostgreSQL | 5432 | |
 | Redis | 6379 | |
 | MinIO | 9000 (API) · 9001 (consola) | |
