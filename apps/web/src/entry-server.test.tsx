@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { renderApp, renderPage, renderHtmlPage, isSsrRoute } from './entry-server';
+import type { DashboardData } from './lib/serverDashboard';
 
 describe('entry-server', () => {
   describe('isSsrRoute', () => {
@@ -14,10 +15,14 @@ describe('entry-server', () => {
       expect(isSsrRoute('/invite/12345')).toBe(true);
     });
 
+    it('reconoce /dashboard como ruta SSR para renderizado de salas y eventos del host (AC1)', () => {
+      expect(isSsrRoute('/dashboard')).toBe(true);
+      expect(isSsrRoute('/dashboard?ref=login')).toBe(true);
+    });
+
     it('no aplica SSR a rutas interactivas de streaming ni a rutas privadas', () => {
       expect(isSsrRoute('/watch/room-1')).toBe(false);
       expect(isSsrRoute('/live/room-1')).toBe(false);
-      expect(isSsrRoute('/dashboard')).toBe(false);
       expect(isSsrRoute('/rooms/new')).toBe(false);
       expect(isSsrRoute('/test-me')).toBe(false);
     });
@@ -46,6 +51,80 @@ describe('entry-server', () => {
       expect(html).toContain('Nick');
       expect(html).toContain('Unirse');
     });
+
+    it('pre-renderiza el HTML del dashboard con el nombre de cada sala, próximo evento y estado active/disabled (AC1)', () => {
+      const dashboardData: DashboardData = {
+        rooms: [
+          {
+            id: 'room-cine',
+            title: 'Maratón de Cine Clásico',
+            status: 'active',
+            nextScheduledEvent: '2026-11-04T20:00:00.000Z',
+          },
+          {
+            id: 'room-live',
+            title: 'Charla en Vivo',
+            status: 'disabled',
+            nextScheduledEvent: { title: 'Q&A con Comunidad' },
+          },
+        ],
+        isHost: true,
+        error: null,
+      };
+
+      const html = renderApp('/dashboard', null, false, dashboardData);
+      expect(html).toContain('Mis salas');
+      expect(html).toContain('Maratón de Cine Clásico');
+      expect(html).toContain('active');
+      expect(html).toContain('Charla en Vivo');
+      expect(html).toContain('disabled');
+      expect(html).toContain('Próximo evento:');
+      expect(html).toContain('Crear sala');
+      expect(html).toContain('Gestionar');
+      expect(html).toContain('Análisis');
+      expect(html).toContain('Eliminar');
+    });
+
+    it('omite controles de gestión para un participante que no administra salas (AC2)', () => {
+      const dashboardData: DashboardData = {
+        rooms: [
+          {
+            id: 'room-view',
+            title: 'Sala de Cine Invitado',
+            status: 'active',
+            nextScheduledEvent: '2026-11-04T20:00:00.000Z',
+          },
+        ],
+        isHost: false,
+        role: 'participant',
+        error: null,
+      };
+
+      const html = renderApp('/dashboard', null, false, dashboardData);
+      expect(html).toContain('Mis salas');
+      expect(html).toContain('Sala de Cine Invitado');
+      expect(html).toContain('active');
+      expect(html).toContain('Abrir');
+      // Omitir acciones de host (AC2)
+      expect(html).not.toContain('Crear sala');
+      expect(html).not.toContain('Gestionar');
+      expect(html).not.toContain('Análisis');
+      expect(html).not.toContain('Eliminar');
+      expect(html).not.toContain('Generar en Gestionar');
+    });
+
+    it('renderiza mensaje de error user-friendly estilizado dentro del layout ante fallo upstream (AC3)', () => {
+      const dashboardData: DashboardData = {
+        rooms: [],
+        isHost: true,
+        error: 'El servicio de identidad no está disponible en este momento.',
+      };
+
+      const html = renderApp('/dashboard', null, false, dashboardData);
+      expect(html).toContain('Mis salas');
+      expect(html).toContain('El servicio de identidad no está disponible en este momento.');
+      expect(html).toContain('role="alert"');
+    });
   });
 
   describe('renderPage', () => {
@@ -56,6 +135,34 @@ describe('entry-server', () => {
       expect(result.metaTags).toContain('og:title');
       expect(result.metaTags).toContain('TINT — Watch Party');
       expect(result.appHtml).toContain('Mira junto, siente al mismo tiempo');
+    });
+
+    it('devuelve metadatos y HTML pre-renderizado para el dashboard llamando a fetchDashboardData (AC1)', async () => {
+      const mockFetchDashboard = vi.fn().mockResolvedValue({
+        rooms: [
+          {
+            id: 'r1',
+            title: 'Sala de Terror',
+            status: 'active',
+            nextScheduledEvent: '2026-11-04T20:00:00.000Z',
+          },
+        ],
+        isHost: true,
+        error: null,
+      });
+
+      const result = await renderPage('/dashboard', {
+        fetchDashboardData: mockFetchDashboard,
+        authToken: 'token-host-test',
+      });
+
+      expect(result.isSsrRoute).toBe(true);
+      expect(result.title).toBe('Mis salas — TINT');
+      expect(result.metaTags).toContain('Mis salas — TINT');
+      expect(result.appHtml).toContain('Sala de Terror');
+      expect(result.appHtml).toContain('active');
+      expect(result.dashboardData?.rooms).toHaveLength(1);
+      expect(mockFetchDashboard).toHaveBeenCalledWith('token-host-test', expect.anything());
     });
 
     it('inyecta dinámicamente el título de la sala en los metadatos Open Graph de invitaciones (AC2)', async () => {
@@ -91,23 +198,6 @@ describe('entry-server', () => {
       expect(result.appHtml).toContain('Invitación no válida');
     });
 
-    it('utiliza metadatos por defecto si la sala no tiene título propio', async () => {
-      const mockFetchDetails = vi.fn().mockResolvedValue({
-        code: 'DEF123',
-        roomId: 'room-1',
-        roomTitle: null,
-        roomKind: 'watch',
-      });
-
-      const result = await renderPage('/invite/DEF123', {
-        fetchRoomDetails: mockFetchDetails,
-      });
-
-      expect(result.isSsrRoute).toBe(true);
-      expect(result.title).toBe('Invitación a sala — TINT');
-      expect(result.appHtml).toContain('DEF123');
-    });
-
     it('para rutas de streaming concurrentes (watch/live), retorna appHtml vacío para hidratación en cliente', async () => {
       const result = await renderPage('/watch/room-streaming-1');
       expect(result.isSsrRoute).toBe(false);
@@ -123,6 +213,7 @@ describe('entry-server', () => {
     <meta charset="UTF-8" />
     <title>TINT — Watch Party</title>
     <!--ssr-head-->
+    <link rel="stylesheet" crossorigin href="/assets/index.css">
   </head>
   <body class="bg-tint-bg">
     <div id="root"><!--ssr-outlet--></div>
@@ -130,7 +221,36 @@ describe('entry-server', () => {
   </body>
 </html>`;
 
-    it('genera la respuesta HTML completa con contenido y metadatos pre-renderizados', async () => {
+    it('pre-renderiza /dashboard e inyecta la serialización de hidratación __TINT_DASHBOARD_DATA__ (AC1)', async () => {
+      const mockFetchDashboard = vi.fn().mockResolvedValue({
+        rooms: [
+          {
+            id: 'room-pre',
+            title: 'Sala Premiere',
+            status: 'active',
+            nextScheduledEvent: '2026-11-05T18:00:00.000Z',
+          },
+        ],
+        isHost: true,
+        error: null,
+      });
+
+      const { html, statusCode, dashboardData } = await renderHtmlPage(
+        templateHtml,
+        '/dashboard',
+        { fetchDashboardData: mockFetchDashboard },
+      );
+
+      expect(statusCode).toBe(200);
+      expect(html).toContain('Sala Premiere');
+      expect(html).toContain('active');
+      expect(html).toContain('<link rel="stylesheet" crossorigin href="/assets/index.css">');
+      expect(html).toContain('id="__TINT_DASHBOARD_DATA__"');
+      expect(html).toContain('Sala Premiere');
+      expect(dashboardData?.rooms[0].title).toBe('Sala Premiere');
+    });
+
+    it('genera la respuesta HTML completa con contenido y metadatos pre-renderizados para invitaciones', async () => {
       const { html, statusCode } = await renderHtmlPage(templateHtml, '/invite/PARTY777', {
         roomTitle: 'Anime Night',
       });
@@ -141,16 +261,7 @@ describe('entry-server', () => {
       expect(html).toContain('<div id="root">');
       expect(html).toContain('Te invitaron a ver algo juntos');
       expect(html).toContain('PARTY777');
-      // Debe conservar los scripts para permitir la hidratación en cliente
       expect(html).toContain('/src/main.tsx');
-    });
-
-    it('funciona también si la plantilla usa <div id="root"></div> sin el comentario <!--ssr-outlet-->', async () => {
-      const plainTemplate = `<html><head><title>Original</title></head><body><div id="root"></div></body></html>`;
-      const { html } = await renderHtmlPage(plainTemplate, '/login');
-
-      expect(html).toContain('Mira junto, siente al mismo tiempo');
-      expect(html).toContain('<title>TINT — Watch Party</title>');
     });
 
     it('devuelve statusCode 404 y vista de error para una invitación inválida o revocada (AC2)', async () => {

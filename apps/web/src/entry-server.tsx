@@ -8,11 +8,24 @@ import {
   type MetaTagOptions,
 } from './lib/metaTags';
 import { fetchRoomDetails, type RoomDetails } from './lib/serverInvite';
+import {
+  fetchDashboardData,
+  type DashboardData,
+  type FetchDashboardOptions,
+} from './lib/serverDashboard';
 
 export interface RenderOptions {
   roomTitle?: string | null;
   fetchRoomDetails?: (code: string) => Promise<RoomDetails | null>;
   apiBaseUrl?: string;
+  authToken?: string | null;
+  userRole?: 'host' | 'participant';
+  dashboardData?: DashboardData | null;
+  fetchDashboardData?: (
+    token?: string,
+    options?: FetchDashboardOptions,
+  ) => Promise<DashboardData>;
+  timeoutMs?: number;
 }
 
 export interface PageRenderResult {
@@ -21,6 +34,7 @@ export interface PageRenderResult {
   title: string;
   headHtml: string;
   roomDetails: RoomDetails | null;
+  dashboardData: DashboardData | null;
   isSsrRoute: boolean;
 }
 
@@ -28,19 +42,21 @@ export interface HtmlPageResult {
   html: string;
   statusCode: number;
   roomDetails: RoomDetails | null;
+  dashboardData?: DashboardData | null;
 }
 
 const INVITE_ROUTE_REGEX = /^\/invite\/([^/?#]+)/i;
 
 /**
  * Determina si una ruta debe procesarse con SSR o delegarse a renderizado en cliente (CSR).
- * Se habilita SSR para la landing page ('/' y '/login') y las páginas de invitación ('/invite/:code').
- * Las páginas de streaming interactivo ('/watch/*', '/live/*') y privadas se reservan para el cliente
+ * Se habilita SSR para la landing page ('/' y '/login'), páginas de invitación ('/invite/:code')
+ * y el panel principal del host ('/dashboard').
+ * Las páginas de streaming interactivo ('/watch/*', '/live/*') y secundarias se reservan para el cliente
  * para no interferir con WebSockets ni flujos de WebRTC concurrentes.
  */
 export function isSsrRoute(url: string): boolean {
   const pathname = url.split('?')[0].split('#')[0];
-  if (pathname === '/' || pathname === '/login') return true;
+  if (pathname === '/' || pathname === '/login' || pathname === '/dashboard') return true;
   if (INVITE_ROUTE_REGEX.test(pathname)) return true;
   return false;
 }
@@ -48,13 +64,25 @@ export function isSsrRoute(url: string): boolean {
 /**
  * Renderiza síncronamente el componente React principal a string HTML usando StaticRouter.
  */
-export function renderApp(url: string, roomDetails?: RoomDetails | null, isInvalid?: boolean): string {
+export function renderApp(
+  url: string,
+  roomDetails?: RoomDetails | null,
+  isInvalid?: boolean,
+  dashboardData?: DashboardData | null,
+): string {
   const effectiveUrl = url === '/' ? '/login' : url;
-  return renderToString(<App url={effectiveUrl} roomDetails={roomDetails} isInvalid={isInvalid} />);
+  return renderToString(
+    <App
+      url={effectiveUrl}
+      roomDetails={roomDetails}
+      isInvalid={isInvalid}
+      dashboardData={dashboardData}
+    />,
+  );
 }
 
 /**
- * Procesa la ruta, recopila metadatos (consultando identity-api si es invitación)
+ * Procesa la ruta, recopila metadatos (consultando identity-api si es invitación o dashboard)
  * y genera el HTML inicial y las etiquetas de cabecera.
  */
 export async function renderPage(url: string, options?: RenderOptions): Promise<PageRenderResult> {
@@ -70,7 +98,41 @@ export async function renderPage(url: string, options?: RenderOptions): Promise<
       title: defaultMeta.title,
       headHtml: metaTags,
       roomDetails: null,
+      dashboardData: null,
       isSsrRoute: false,
+    };
+  }
+
+  // Dashboard de host y participantes: /dashboard
+  if (pathname === '/dashboard') {
+    let dashboardData: DashboardData | null = null;
+    if (options?.dashboardData !== undefined) {
+      dashboardData = options.dashboardData;
+    } else if (options?.fetchDashboardData || options?.authToken) {
+      const fetchFn = options?.fetchDashboardData ?? fetchDashboardData;
+      dashboardData = await fetchFn(options?.authToken ?? undefined, {
+        apiBaseUrl: options?.apiBaseUrl,
+        role: options?.userRole,
+        timeoutMs: options?.timeoutMs,
+      });
+    }
+
+    const title = 'Mis salas — TINT';
+    const metaOptions: MetaTagOptions = {
+      title,
+      description: 'Gestiona tus salas de reproducción y eventos en vivo en TINT.',
+    };
+    const metaTags = generateMetaTags(metaOptions);
+    const appHtml = renderApp(url, null, false, dashboardData);
+
+    return {
+      appHtml,
+      metaTags,
+      title,
+      headHtml: metaTags,
+      roomDetails: null,
+      dashboardData,
+      isSsrRoute: true,
     };
   }
 
@@ -106,6 +168,7 @@ export async function renderPage(url: string, options?: RenderOptions): Promise<
       title: metaOptions.title,
       headHtml: metaTags,
       roomDetails,
+      dashboardData: null,
       isSsrRoute: true,
     };
   }
@@ -121,6 +184,7 @@ export async function renderPage(url: string, options?: RenderOptions): Promise<
     title: landingMeta.title,
     headHtml: metaTags,
     roomDetails: null,
+    dashboardData: null,
     isSsrRoute: true,
   };
 }
@@ -133,7 +197,7 @@ export async function renderHtmlPage(
   url: string,
   options?: RenderOptions,
 ): Promise<HtmlPageResult> {
-  const { appHtml, metaTags, title, roomDetails } = await renderPage(url, options);
+  const { appHtml, metaTags, title, roomDetails, dashboardData } = await renderPage(url, options);
 
   let html = injectHeadMeta(templateHtml, metaTags, title);
 
@@ -143,6 +207,17 @@ export async function renderHtmlPage(
     html = html.replace(/<div id="root">[\s\S]*?<\/div>/i, `<div id="root">${appHtml}</div>`);
   }
 
+  // Serializar estado de hidratación del dashboard de forma limpia y segura (AC1)
+  if (dashboardData) {
+    const serialized = JSON.stringify(dashboardData).replace(/</g, '\\u003c');
+    const scriptTag = `<script id="__TINT_DASHBOARD_DATA__" type="application/json">${serialized}</script>`;
+    if (html.includes('</body>')) {
+      html = html.replace('</body>', `${scriptTag}</body>`);
+    } else {
+      html += scriptTag;
+    }
+  }
+
   const isInvite = INVITE_ROUTE_REGEX.test(url.split('?')[0].split('#')[0]);
   const statusCode = isInvite && !roomDetails ? 404 : 200;
 
@@ -150,5 +225,6 @@ export async function renderHtmlPage(
     html,
     statusCode,
     roomDetails,
+    dashboardData,
   };
 }

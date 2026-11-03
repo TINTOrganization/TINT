@@ -6,6 +6,11 @@ import { fileURLToPath } from 'node:url';
 import type { Duplex } from 'node:stream';
 import { renderHtmlPage, isSsrRoute, type RenderOptions } from './entry-server';
 import type { RoomDetails } from './lib/serverInvite';
+import {
+  extractAuthFromRequest,
+  type DashboardData,
+  type FetchDashboardOptions,
+} from './lib/serverDashboard';
 
 export interface StaticFileMock {
   content: string | Buffer;
@@ -26,6 +31,7 @@ export interface RequestHandlerOptions {
   distDir?: string;
   staticFiles?: Record<string, StaticFileMock>;
   fetchRoomDetails?: (code: string) => Promise<RoomDetails | null>;
+  fetchDashboardData?: (token?: string, options?: FetchDashboardOptions) => Promise<DashboardData>;
   apiBaseUrl?: string;
   proxyTargets?: ProxyTargets;
 }
@@ -441,6 +447,9 @@ export function createRequestHandler(options: RequestHandlerOptions = {}) {
       try {
         const renderOpts: RenderOptions = {
           fetchRoomDetails: options.fetchRoomDetails,
+          fetchDashboardData: options.fetchDashboardData,
+          authToken: extractAuthFromRequest(req).token,
+          userRole: extractAuthFromRequest(req).role,
           apiBaseUrl: options.apiBaseUrl,
         };
         const { html, statusCode } = await renderHtmlPage(templateHtml, rawUrl, renderOpts);
