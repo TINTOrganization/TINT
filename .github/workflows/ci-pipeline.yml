@@ -24,6 +24,18 @@ jobs:
       fail-fast: false
       matrix:
         service: [sync-core, social-core]
+    # MongoDB real para las pruebas de los metadatos del chat (social-core, ADR 0025);
+    # sin MONGO_TEST_URI esas pruebas se omiten. 7.0 y no 8.0: MongoDB 8.0+ no arranca
+    # en el kernel 6.19+ de los runners (SERVER-121912).
+    services:
+      mongo:
+        image: mongo:7.0
+        ports: ["27017:27017"]
+        options: >-
+          --health-cmd "mongosh --quiet --eval 'db.runCommand({ping:1}).ok'"
+          --health-interval 2s --health-timeout 5s --health-retries 30
+    env:
+      MONGO_TEST_URI: mongodb://localhost:27017
     defaults:
       run:
         working-directory: services/${{ matrix.service }}
@@ -84,6 +96,41 @@ jobs:
       - run: npm run typecheck
       - name: vitest + coverage gate (thresholds en vitest.config.ts)
         run: npx vitest run --coverage
+
+  compose-lint:
+    name: Compose · lint & static tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate docker-compose syntax
+        run: |
+          cp .env.example .env
+          docker compose config --quiet
+          docker compose -f docker-compose.yml -f docker-compose.production.yml config --quiet
+      - name: Validate Caddy configuration
+        run: >-
+          docker run --rm
+          -v "$PWD/gateway/Caddyfile:/etc/caddy/Caddyfile:ro"
+          caddy:2.9-alpine caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: pip install pyyaml
+      - name: Static tests (gateway config + compose structure)
+        run: python -m unittest discover -s gateway/tests -v
+
+  gitleaks:
+    name: Security · Gitleaks secret scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
 
   identity-api:
     name: Node · identity-api
@@ -146,6 +193,48 @@ jobs:
           ctest --test-dir build-cov --output-on-failure
           gcovr --root . --filter src/ --exclude src/main.cpp build-cov --fail-under-line "$COVERAGE_MIN"
 
+  # Transmisión en vivo (C++ SFU sobre libdatachannel, ADR 0018). libdatachannel no está en
+  # Ubuntu ni Debian: todo corre dentro de la imagen "dev" (versión fijada por commit), igual que en local.
+  # TSan solo sobre la biblioteca pura (libdatachannel no está instrumentada; ver stream-core/AGENTS.md).
+  cpp-stream:
+    name: C++ · stream-core
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Imagen dev (libdatachannel v0.24.6)
+        uses: docker/build-push-action@v6
+        with:
+          context: services/stream-core
+          target: dev
+          tags: tint-stream-dev
+          load: true
+          cache-from: type=gha,scope=stream-dev
+          cache-to: type=gha,mode=max,scope=stream-dev
+      - name: Redis para las pruebas de integración
+        run: |
+          docker network create ci-stream
+          docker run -d --name redis --network ci-stream redis:7-alpine
+      - name: Formato, sanitizers y cobertura (≥ ${{ env.COVERAGE_MIN }}%)
+        run: >-
+          docker run --rm --network ci-stream -e COVERAGE_MIN -e STREAM_TEST_REDIS_URL=redis://redis:6379/0
+          -v "$PWD/services/stream-core:/src" -w /src tint-stream-dev bash -euo pipefail -c '
+          clang-format --dry-run --Werror $(find src tests -name "*.cpp" -o -name "*.hpp");
+          cmake -S . -B build-asan -G Ninja -DCMAKE_BUILD_TYPE=Debug -DSTREAM_SANITIZE=address && cmake --build build-asan && ctest --test-dir build-asan --output-on-failure;
+          cmake -S . -B build-tsan -G Ninja -DCMAKE_BUILD_TYPE=Debug -DSTREAM_SANITIZE=thread -DSTREAM_BUILD_RTC=OFF && cmake --build build-tsan && ctest --test-dir build-tsan --output-on-failure;
+          cmake -S . -B build-cov -G Ninja -DCMAKE_BUILD_TYPE=Debug -DSTREAM_COVERAGE=ON && cmake --build build-cov && ctest --test-dir build-cov --output-on-failure;
+          gcovr --root . --filter src/ --exclude src/main.cpp build-cov --fail-under-line "$COVERAGE_MIN"'
+      - name: Imagen de runtime, /healthz y smoke (HU-LIVE-07 AC1/AC2)
+        run: |
+          docker build -q -t stream-core:ci services/stream-core
+          docker run -d --name stream-core --network ci-stream -p 8086:8086 \
+            -e JWT_SECRET=ci-stream-secret -e REDIS_URL=redis://redis:6379 -e STREAM_PUBLIC_IP=127.0.0.1 \
+            -e IDENTITY_API_URL=http://identity-api:8081 -e INTERNAL_API_SECRET=ci stream-core:ci
+          for i in $(seq 1 50); do curl -fs localhost:8086/healthz && break; sleep 0.2; done
+          python3 -I services/stream-core/scripts/smoke.py --url http://localhost:8086 --secret ci-stream-secret
+      - name: Logs de stream-core
+        if: always()
+        run: docker logs --tail 50 stream-core || true
   android:
     name: Android · apps/android
     runs-on: ubuntu-latest
@@ -207,20 +296,114 @@ jobs:
           curl -fs localhost:8083/metrics | grep '^sync_' || true
           tail -n 50 /tmp/sync-core.log
 
+  voice-load-smoke:
+    name: k6 · voice-core (50 VUs)
+    needs: cpp
+    runs-on: ubuntu-latest
+    services:
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping" --health-interval 2s --health-timeout 2s --health-retries 15
+    env:
+      JWT_SECRET: ci-load-secret
+    steps:
+      - uses: actions/checkout@v4
+      - name: Arrancar voice-core (imagen de runtime)
+        run: |
+          docker build -q -t voice-core:ci services/voice-core
+          docker run -d --name voice-core --network host \
+            -e VOICE_CORE_ADDR=0.0.0.0:8085 -e REDIS_URL=redis://localhost:6379 -e JWT_SECRET \
+            -e STUN_URLS=stun:localhost:3478 voice-core:ci
+          for i in $(seq 1 50); do curl -fs localhost:8085/healthz && exit 0; sleep 0.2; done
+          docker logs voice-core; exit 1
+      - uses: grafana/setup-k6-action@v1
+        with:
+          k6-version: "0.54.0"
+      - name: k6 (umbrales de entrada, reenvío de señales y autorización)
+        run: >-
+          k6 run -e BASE_URL=ws://localhost:8085 -e VUS=50 -e DURATION=20s -e ROOM_ID=ci-${{ github.run_id }}-${{ github.run_attempt }}
+          services/voice-core/loadtest/voice.js
+      - name: Logs de voice-core
+        if: always()
+        run: docker logs --tail 50 voice-core || true
+
+  # Humo del spike S2 (dominio-transmision §9): publicador VP8 simulcast + 20 viewers WHEP con
+  # libdatachannel contra la imagen de runtime. Cupo 20 para comprobar el 409 del viewer 21.
+  stream-load-smoke:
+    name: Carga · stream-core (20 viewers)
+    needs: cpp-stream
+    runs-on: ubuntu-24.04
+    services:
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping" --health-interval 2s --health-timeout 2s --health-retries 15
+    env:
+      JWT_SECRET: ci-load-secret
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Imagen dev (caché de cpp-stream)
+        uses: docker/build-push-action@v6
+        with:
+          context: services/stream-core
+          target: dev
+          tags: tint-stream-dev
+          load: true
+          cache-from: type=gha,scope=stream-dev
+      - name: Arrancar stream-core (imagen de runtime)
+        run: |
+          docker build -q -t stream-core:ci services/stream-core
+          docker run -d --name stream-core --network host \
+            -e JWT_SECRET -e REDIS_URL=redis://localhost:6379 -e STREAM_PUBLIC_IP=127.0.0.1 -e STREAM_MAX_VIEWERS=20 \
+            -e IDENTITY_API_URL=http://localhost:8081 -e INTERNAL_API_SECRET=ci stream-core:ci
+          for i in $(seq 1 50); do curl -fs localhost:8086/healthz && exit 0; sleep 0.2; done
+          docker logs stream-core; exit 1
+      - name: Bots (TTFF p95 < 2 s, 0 fallos, 409 al viewer 21)
+        run: VIEWERS=20 DURATION=15 STREAM_CONTAINER=stream-core services/stream-core/loadtest/run.sh
+      - name: Logs de stream-core
+        if: always()
+        run: docker logs --tail 50 stream-core || true
+
+  observability-smoke:
+    name: Observabilidad · smoke (OPS-04)
+    runs-on: ubuntu-latest
+    needs: [go, python, web, identity-api, compose-lint]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Smoke test con stack reducido
+        run: |
+          python3 scripts/observability_smoke.py \
+            --services "postgres,redis,minio,minio-init,analytics,media-worker,identity-api,sync-core,social-core,gateway,web" \
+            --timeout 300
+
   ci-gate:
     name: CI Gate
     if: always()
-    needs: [go, python, web, identity-api, cpp, android, sync-load-smoke]
+    needs: [go, python, web, identity-api, cpp, cpp-stream, android, sync-load-smoke, voice-load-smoke, stream-load-smoke, compose-lint, gitleaks, observability-smoke]
     runs-on: ubuntu-latest
     steps:
       - name: Verificar resultado de todos los jobs
         run: |
-          echo "go=${{ needs.go.result }} python=${{ needs.python.result }} web=${{ needs.web.result }} identity-api=${{ needs.identity-api.result }} cpp=${{ needs.cpp.result }} android=${{ needs.android.result }} load=${{ needs.sync-load-smoke.result }}"
+          echo "go=${{ needs.go.result }} python=${{ needs.python.result }} web=${{ needs.web.result }} identity-api=${{ needs.identity-api.result }} cpp=${{ needs.cpp.result }} cpp-stream=${{ needs.cpp-stream.result }} android=${{ needs.android.result }} load=${{ needs.sync-load-smoke.result }} voice-load=${{ needs.voice-load-smoke.result }} stream-load=${{ needs.stream-load-smoke.result }} compose-lint=${{ needs.compose-lint.result }} gitleaks=${{ needs.gitleaks.result }} obs_smoke=${{ needs.observability-smoke.result }}"
           if [ "${{ needs.go.result }}" != "success" ] || \
              [ "${{ needs.python.result }}" != "success" ] || \
              [ "${{ needs.web.result }}" != "success" ] || \
              [ "${{ needs.identity-api.result }}" != "success" ] || \
              [ "${{ needs.cpp.result }}" != "success" ] || \
+             [ "${{ needs.cpp-stream.result }}" != "success" ] || \
+             [ "${{ needs.sync-load-smoke.result }}" != "success" ] || \
+             [ "${{ needs.voice-load-smoke.result }}" != "success" ] || \
+             [ "${{ needs.stream-load-smoke.result }}" != "success" ] || \
+             [ "${{ needs.compose-lint.result }}" != "success" ] || \
+             [ "${{ needs.gitleaks.result }}" != "success" ] || \
+             [ "${{ needs.observability-smoke.result }}" != "success" ]; then
              [ "${{ needs.android.result }}" != "success" ] || \
              [ "${{ needs.sync-load-smoke.result }}" != "success" ]; then
             echo "::error::Pruebas o cobertura (≥ ${COVERAGE_MIN}%) no superadas. Merge bloqueado."

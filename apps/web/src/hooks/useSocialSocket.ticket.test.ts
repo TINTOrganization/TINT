@@ -15,7 +15,7 @@ class FakeSocket {
   readyState = 0;
   onopen: ((e: unknown) => void) | null = null;
   onmessage: ((e: { data: string }) => void) | null = null;
-  onclose: (() => void) | null = null;
+  onclose: ((e: { code: number }) => void) | null = null;
   onerror: (() => void) | null = null;
   constructor(url: string) {
     this.url = url;
@@ -28,7 +28,7 @@ class FakeSocket {
   send() {}
   close() {
     this.readyState = 3;
-    this.onclose?.();
+    this.onclose?.({ code: 1006 });
   }
 }
 

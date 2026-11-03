@@ -10,6 +10,7 @@
 
 #include "auth/token_verifier.hpp"
 #include "moderation/mute_store.hpp"
+#include "rooms/room_state.hpp"
 
 namespace voice::net {
 
@@ -48,8 +49,12 @@ using HandshakeDecision = std::variant<Reject, AcceptThenClose, Accept>;
 
 inline constexpr std::string_view kVoicePath = "/ws/voice";
 
+// 404 ruta · 403 origen u otra sala · 400 faltan datos · 401 token inválido · 503 Redis no
+// responde (falla cerrado) · 4003 caducado · 4001 revocado · 4010 sala deshabilitada ·
+// 4009 sala live sin estar en el escenario. El cupo (4008) lo decide el Hub al unir.
 HandshakeDecision decide_handshake(const HandshakeRequest& request, const auth::TokenVerifier& verifier,
                                    RevocationChecker& revocation, moderation::MuteStore& mutes,
+                                   rooms::RoomStateStore& rooms,
                                    const std::vector<std::string>& allowed_origins, std::int64_t now_s);
 
 // Origin "http://localhost:5173" contra entradas "localhost:5173".

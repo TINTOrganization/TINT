@@ -41,13 +41,8 @@ func TestSocialRevokedGuest(t *testing.T) {
 	url := "ws://" + strings.TrimPrefix(srv.URL, "http://") + "/ws/social?room_id=r1"
 	exp := time.Now().Add(time.Hour)
 
-	// 1. Token ya revocado: no reconecta.
-	if err := mr.Set(chat.RevokedKey("jti-guest:old"), "1"); err != nil {
-		t.Fatal(err)
-	}
-	if got := dialStatus(t, url, guestToken(t, secret, "guest:old", "r1", exp)); got != 401 {
-		t.Fatalf("token revocado: status = %d, want 401", got)
-	}
+	// 1. Token ya revocado en el handshake: upgrade + 4001 (ADR 0014/0019),
+	// cubierto por TestSocialTerminalTokensUpgradeAndClose.
 
 	// 2. Revocación en vivo: solo se cierra el socket del jti revocado.
 	a := dial(t, url, guestToken(t, secret, "guest:a", "r1", exp))

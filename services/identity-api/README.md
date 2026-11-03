@@ -129,7 +129,7 @@ sequenceDiagram
     API-)R: XADD analytics:events user_login (best-effort)
 ```
 
-- Sin cabecera, sin `kid`, firma inválida o sin `sub` → **401**. Si falla la base de datos en el *upsert* → **500** `Internal error`.
+- Sin cabecera, sin `kid`, firma inválida, sin `exp` o sin `sub` → **401**. Un token sin firma (`alg: none`) solo se acepta en modo Firebase Auth Emulator (desarrollo, [ADR 0024](../../docs/adr/0024-login-local-con-firebase-auth-emulator.md)); fuera de él, **401**. La verificación vive en `modules/auth/firebaseToken.ts`. Si falla la base de datos en el *upsert* → **500** `Internal error`.
 - `requireAuthHost` hace este mismo trabajo en **cada** ruta de Host, no solo en `/auth/verify`: email, nombre y avatar se refrescan en cada petición autenticada.
 - El evento `user_login` lleva `user_id = users.provider_sub` (uid de Firebase), nunca `users.id` ni el email.
 
@@ -156,6 +156,12 @@ sequenceDiagram
 - `title` va de 1 a 150 caracteres; `ttlHours` es un entero de 1 a 720 (30 días).
 - `GET /rooms` devuelve solo salas no borradas, cada una con su **última invitación vigente** (no revocada ni vencida), calculada en una sola consulta (`listLatestActiveByRooms`).
 - `POST /invitations/:code/revoke` cierra la invitación, pero **no** retira a quien ya entró con ella.
+
+Para iniciar una experiencia completa en una sola operación, el host usa `POST /events/start`
+con `{ "title": "..." }`. identity-api crea la sala y su invitación, llama en orden a los
+controles internos de sync-core, social-core y analytics (5 segundos por dependencia) y
+devuelve `room`, `invitation` y `sessions`. Si una dependencia falla, responde 503 y
+compensa los servicios ya iniciados en orden inverso, además de retirar la sala de identidad.
 
 ### 3.3 Claim de invitación con `deviceId` (y el 403 BANNED)
 
@@ -283,8 +289,9 @@ sequenceDiagram
 
     H->>API: POST /rooms/:id/media/uploads { filename, contentType, sizeBytes }
     alt sizeBytes > MAX_UPLOAD_BYTES
-        API-->>H: 413 File too large
+        API-->>H: 413 File too large { maxUploadBytes }
     end
+    API->>PG: DELETE videos pending abandonados de la sala (> TTL + 1 h) + objeto de incoming/
     API->>PG: INSERT videos (id, storage_key incoming/{id}/original.ext, status pending, title)
     API->>API: presignPut(storage_key, contentType, UPLOAD_URL_TTL_SECONDS)
     API-->>H: { videoId, uploadUrl, storageKey, expiresAt, headers }
@@ -301,7 +308,7 @@ sequenceDiagram
         API-->>H: 413 (el vídeo sigue en pending)
     end
     API->>PG: UPDATE videos SET status processing WHERE status = pending
-    API->>R: XADD media:uploads * video_id {id}
+    API->>R: XADD media:uploads MAXLEN ~ 10000 * video_id {id}
     alt Redis falla
         API->>PG: UPDATE videos SET status pending
         API-->>H: 503
@@ -312,6 +319,8 @@ sequenceDiagram
     end
 ```
 
+- **Subidas interrumpidas:** el PUT firmado es único (sin *multipart*), así que un corte no deja un objeto parcial; lo que sí queda es la fila `pending`. La web la cancela con `DELETE /rooms/:id/media/uploads/:videoId` (borra la fila, de forma condicional a que siga `pending`, y el objeto de `incoming/`; idempotente, 409 si ya se confirmó). Si no pudo avisar (pestaña cerrada, corte de red), la **limpieza perezosa** de `POST …/uploads` borra las filas `pending` de la sala creadas hace más de `UPLOAD_URL_TTL_SECONDS` + 1 h (`STALE_UPLOAD_GRACE_MS`) y su objeto; sin proceso programado y sin bloquear la reserva si falla.
+- **Límite de tamaño:** `GET /uploads/limits` devuelve `{ maxUploadBytes }` y el 413 lleva el mismo campo, para que la web muestre el límite sin duplicar el valor.
 - La extensión de la clave sale del nombre del archivo si es `.mp4`, `.webm`, `.mov`, `.mkv`, `.m4v` u `.ogv`; si no, del `contentType`. El nombre del usuario nunca forma parte de la clave; sí se guarda, sin extensión, como `videos.title`.
 - La URL PUT no acota el tamaño: por eso `complete` compara el tamaño real (`HEAD`) con el declarado.
 - La transición `pending → processing` es un `UPDATE ... WHERE status = 'pending'`: de dos confirmaciones simultáneas solo una encola.
@@ -521,7 +530,7 @@ Solo los vídeos en `processing` o `ready` aparecen en la biblioteca y se pueden
 | :--- | :--- | :--- | :--- |
 | `token:revoked:{jti}` | String con `EXAT` = `exp` del token | identity-api (retirar, bloquear, borrar sala) | identity-api (`requireRoomGuest`), sync-core, social-core, analytics |
 | `room:{id}:sync` | Pub/Sub | identity-api publica solo `REVOKED` (el resto es de sync-core) | sync-core, social-core |
-| `media:uploads` | Stream | identity-api: `XADD * video_id <id>` | media-worker (grupo `media-workers`) |
+| `media:uploads` | Stream | identity-api: `XADD MAXLEN ~ 10000 * video_id <id>` | media-worker (grupo `media-workers`) |
 | `analytics:events` | Stream, `MAXLEN ~ 100000` | identity-api: `user_login`, `room_created`, `room_closed`, `invitation_claimed` | analytics (grupo `analytics-workers`) |
 | `incoming/{id}/original.*` | Objeto MinIO | Navegador (PUT firmado) | identity-api (`HEAD`/`DELETE`), media-worker |
 | `{id}/source.mp4`, `{id}/ambilight.json`, `{id}/{720,360}p.mp4` | Objetos MinIO | media-worker | Navegador (GET firmado por identity-api) |
@@ -530,13 +539,14 @@ Detalle de los eventos y sus campos en [AGENTS.md › Eventos de analítica](AGE
 
 ## 5. Configuración
 
-identity-api **no está en `docker-compose.yml`**: corre con `npm run dev` y lee `services/identity-api/.env` (plantilla: [`.env.example`](.env.example)). La tabla completa con valores por defecto está en [AGENTS.md › Variables de Entorno](AGENTS.md#variables-de-entorno).
+identity-api corre en `docker compose` como `identity-api` (puerto `8081`), aplica las migraciones al arrancar y usa las variables del `.env` raíz. Para desarrollo aislado también puede ejecutarse con `npm run dev` y `services/identity-api/.env` (plantilla: [`.env.example`](.env.example)). La tabla completa con valores por defecto está en [AGENTS.md › Variables de Entorno](AGENTS.md#variables-de-entorno).
 
 | Grupo | Variables | Notas |
 | :--- | :--- | :--- |
 | HTTP | `IDENTITY_API_PORT` (8081) | |
 | Datos | `DATABASE_URL`, `REDIS_URL` | Los mismos PostgreSQL y Redis de `docker compose` |
 | Firebase | `FIREBASE_PROJECT_ID` | **Obligatoria**: sin ella el proceso no arranca (zod) |
+| Firebase Auth Emulator | `FIREBASE_AUTH_EMULATOR_HOST` | **Solo desarrollo** ([ADR 0024](../../docs/adr/0024-login-local-con-firebase-auth-emulator.md)): con valor acepta los ID tokens sin firma (`alg: none`) del emulador. El proceso no arranca si además `NODE_ENV=production` o el proyecto no es `demo-*` |
 | Tokens HS256 | `JWT_SECRET`, `JWT_ISSUER`, `JWT_AUDIENCE` | **Contrato**: deben coincidir con sync-core, social-core y analytics (`.env.example` raíz) |
 | Vida de tokens | `GUEST_TOKEN_TTL_HOURS` (4), `INVITATION_DEFAULT_TTL_HOURS` (24), `SYNC_TICKET_TTL_SECONDS` (600) | El último aplica también al analytics-ticket |
 | MinIO | `MINIO_ENDPOINT`, `MINIO_PUBLIC_ENDPOINT`, `MINIO_ACCESS_KEY`, `MINIO_SECRET_KEY`, `MINIO_BUCKET`, `MINIO_REGION` | Las URLs se firman con el endpoint **público** (el host va dentro de la firma SigV4); `HEAD`/`DELETE` usan el interno |
@@ -547,16 +557,10 @@ Puertos relacionados: web 5173, PostgreSQL 5432, Redis 6379, MinIO 9000 (API) y 
 ## 6. Ejecutar y probar
 
 ```bash
-# Infraestructura (desde la raíz del monorepo)
+# Stack completo (desde la raíz del monorepo)
 cp .env.example .env
-docker compose up -d postgres redis minio minio-init
-
-# identity-api
-cd services/identity-api
-cp .env.example .env
-npm ci
-npx drizzle-kit migrate     # aplica migrations/ sobre DATABASE_URL
-npm run dev                 # http://localhost:8081/api/v1/healthz
+docker compose up -d --build
+# http://localhost:8081/api/v1/healthz
 ```
 
 **Gate del dominio** (lo mismo que corre el CI):

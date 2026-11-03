@@ -1,0 +1,23 @@
+title = "TINT Gitleaks Configuration"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Known development placeholders and documentation"
+paths = [
+  '''^\.env\.example$''',
+  '''^docs/.*''',
+  '''apps/web/src/lib/serverInvite\.test\.ts''',
+]
+stopwords = [
+  "dev-secret-change-in-prod",
+  "dev-turn-secret-change-in-prod",
+  "dev-internal-secret-change-in-prod",
+  "tintadmin123",
+]
+regexes = [
+  '''dev-secret-change-in-prod''',
+  '''dev-turn-secret-change-in-prod''',
+  '''dev-internal-secret-change-in-prod''',
+]

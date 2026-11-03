@@ -244,6 +244,12 @@ func (s *Store) IsRevoked(ctx context.Context, jti string) (bool, error) {
 	return n > 0, err
 }
 
+// IsRoomClosed indica si identity-api deshabilitó la sala (room:{id}:closed).
+func (s *Store) IsRoomClosed(ctx context.Context, roomID string) (bool, error) {
+	n, err := s.rdb.Exists(ctx, syncevent.ClosedKey(roomID)).Result()
+	return n > 0, err
+}
+
 func sinceArg(nowMs int64) string {
 	return strconv.FormatInt(nowMs-PresenceTimeout.Milliseconds(), 10)
 }

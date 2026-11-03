@@ -37,6 +37,13 @@ const triviaOpTimeout = 2 * time.Second
 // no lanza la pregunta: se rearma con la posición real.
 const TriviaEarlyToleranceMS = 1000
 
+// TriviaLateLaunchMS: una pregunta programada (o editada) con la marca ya
+// pasada por esto o menos se lanza en el acto. "Agregar pregunta en este
+// momento" propone el segundo actual y, mientras el host escribe, el vídeo
+// sigue; sin esto la pregunta quedaba pendiente para siempre. Más atrás es
+// una escena anterior: espera a que la vuelvan a ver (un seek la salta).
+const TriviaLateLaunchMS = 60_000
+
 // triviaArm es el timer de disparo de una sala; gen invalida cálculos y
 // timers viejos cuando se rearma.
 type triviaArm struct {
@@ -85,6 +92,55 @@ func (d *Deps) handleTriviaSchedule(ctx context.Context, c *websocket.Conn, room
 		writeError(ctx, c, triviaErrorCode(err), in.EventID)
 		return
 	}
+	d.launchIfJustPassed(ctx, roomID, q)
+	d.sendScheduleState(ctx, c, roomID, in.EventID)
+	d.armTrivia(roomID)
+}
+
+// launchIfJustPassed lanza q si la reproducción ya pasó su marca hace
+// TriviaLateLaunchMS o menos (ver la constante).
+func (d *Deps) launchIfJustPassed(ctx context.Context, roomID string, q trivia.Question) {
+	pos, _, ok := d.triviaPosition(ctx, roomID)
+	if !ok || pos <= q.AtMS || pos-q.AtMS > TriviaLateLaunchMS {
+		return
+	}
+	st, won, err := d.Trivia.Launch(ctx, roomID, q.ID, d.now().UnixMilli())
+	if err != nil || !won {
+		return
+	}
+	out := d.triviaQuestion(roomID, q, st)
+	d.emitRoom(ctx, roomID, out.EventID, out)
+	d.observeTriviaClose(roomID, q.ID, st.ClosesAtMS)
+}
+
+func (d *Deps) handleTriviaUpdate(ctx context.Context, c *websocket.Conn, roomID string, claims auth.Claims, raw []byte) {
+	var in socialevent.TriviaUpdate
+	if err := json.Unmarshal(raw, &in); err != nil {
+		writeError(ctx, c, "INVALID_PAYLOAD", "")
+		return
+	}
+	if !isModerator(claims, roomID) {
+		writeError(ctx, c, "FORBIDDEN", in.EventID)
+		return
+	}
+	if d.Trivia == nil {
+		writeError(ctx, c, "UNAVAILABLE", in.EventID)
+		return
+	}
+	if err := in.Validate(); err != nil || (in.RoomID != "" && in.RoomID != roomID) {
+		writeError(ctx, c, "INVALID_PAYLOAD", in.EventID)
+		return
+	}
+	question, options, window := in.Normalized()
+	q := trivia.Question{
+		ID: in.TriviaID, AtMS: *in.AtMS, Question: question, Options: options,
+		Correct: *in.Correct, AnswerWindowS: window,
+	}
+	if err := d.Trivia.Update(ctx, roomID, q); err != nil {
+		writeError(ctx, c, triviaErrorCode(err), in.EventID)
+		return
+	}
+	d.launchIfJustPassed(ctx, roomID, q)
 	d.sendScheduleState(ctx, c, roomID, in.EventID)
 	d.armTrivia(roomID)
 }
@@ -218,6 +274,7 @@ func (d *Deps) sendTriviaOnJoin(ctx context.Context, c *websocket.Conn, roomID s
 	if d.Trivia == nil {
 		return
 	}
+	d.sendLeaderboardOnJoin(ctx, c, roomID, claims)
 	list, err := d.Trivia.List(ctx, roomID)
 	if err != nil {
 		return
@@ -242,6 +299,30 @@ func (d *Deps) sendTriviaOnJoin(ctx context.Context, c *websocket.Conn, roomID s
 	d.armTrivia(roomID)
 }
 
+// sendLeaderboardOnJoin entrega el ranking acumulado persistido (con el
+// puesto y los puntos de quien entra). Sin puntos en la sala no se envía.
+func (d *Deps) sendLeaderboardOnJoin(ctx context.Context, c *websocket.Conn, roomID string, claims auth.Claims) {
+	board, err := d.Trivia.TotalTop(ctx, roomID, socialevent.TriviaTopN)
+	if err != nil || len(board) == 0 {
+		return
+	}
+	out := socialevent.TriviaLeaderboard{
+		EventID: d.newID(), Type: socialevent.TypeTriviaLeaderboard, RoomID: roomID, Leaderboard: toScores(board),
+	}
+	if ranks, err := d.Trivia.Ranks(ctx, roomID, []string{claims.Subject}); err == nil {
+		if r, ok := ranks[claims.Subject]; ok {
+			out.MyRank = &r
+		}
+	}
+	if _, totals, err := d.Trivia.Scores(ctx, roomID, "", []string{claims.Subject}); err == nil {
+		t := totals[claims.Subject]
+		out.MyTotal = &t
+	}
+	if msg, err := json.Marshal(out); err == nil {
+		_ = writeMsg(ctx, c, msg, d.writeTimeout())
+	}
+}
+
 func (d *Deps) triviaQuestion(roomID string, q trivia.Question, st trivia.State) socialevent.TriviaQuestion {
 	return socialevent.TriviaQuestion{
 		EventID: d.newID(), Type: socialevent.TypeTriviaQuestion, RoomID: roomID,
@@ -250,8 +331,91 @@ func (d *Deps) triviaQuestion(roomID string, q trivia.Question, st trivia.State)
 	}
 }
 
+// triviaPosition es la posición (ms) contra la que se disparan las trivias
+// y su velocidad. En una sala live (room:{id}:kind == "live") es el minuto
+// del stream: now − started_at_ms con el reloj del servidor (velocidad 1);
+// sin STREAM_STARTED, o tras STREAM_ENDED, no hay posición y lo programado
+// queda pendiente. En una sala watch es la proyección del ancla del recap
+// y solo existe si el vídeo se reproduce. ok = false si no hay posición (o
+// Redis no responde: no se dispara nada).
+func (d *Deps) triviaPosition(ctx context.Context, roomID string) (pos int64, rate float64, ok bool) {
+	if d.IsLive != nil {
+		live, err := d.IsLive(ctx, roomID)
+		if err != nil {
+			return 0, 0, false
+		}
+		if live {
+			started, ok := d.streamStart(ctx, roomID)
+			if !ok {
+				return 0, 0, false
+			}
+			return d.now().UnixMilli() - started, 1, true
+		}
+	}
+	pb, ok, err := d.Recap.Position(ctx, roomID, d.now())
+	if err != nil || !ok || !pb.Playing {
+		return 0, 0, false
+	}
+	return pb.PositionMS, pb.Rate, true
+}
+
+// streamEnded marca en streamStarts una sala cuyo stream terminó.
+const streamEnded int64 = -1
+
+// streamStart devuelve started_at_ms del stream de la sala: el último
+// STREAM_STARTED visto por el relay o, tras un reinicio, la clave
+// room:{id}:stream:started_at de stream-core (se recuerda mientras haya
+// relay). Tras STREAM_ENDED no hay inicio.
+func (d *Deps) streamStart(ctx context.Context, roomID string) (int64, bool) {
+	d.mu.Lock()
+	cur := d.streamStarts[roomID]
+	d.mu.Unlock()
+	switch {
+	case cur == streamEnded:
+		return 0, false
+	case cur > 0:
+		return cur, true
+	case d.StreamStartedAt == nil:
+		return 0, false
+	}
+	started, ok, err := d.StreamStartedAt(ctx, roomID)
+	if err != nil || !ok {
+		return 0, false
+	}
+	d.mu.Lock()
+	if _, hasRelay := d.relays[roomID]; hasRelay && d.streamStarts[roomID] == 0 {
+		if d.streamStarts == nil {
+			d.streamStarts = make(map[string]int64)
+		}
+		d.streamStarts[roomID] = started
+	}
+	d.mu.Unlock()
+	return started, true
+}
+
+// onStream aplica un STREAM_STARTED/STREAM_ENDED de stream-core. Es
+// idempotente: un STREAM_STARTED con el mismo started_at_ms no reprograma;
+// STREAM_ENDED cancela el disparo pendiente.
+func (d *Deps) onStream(roomID string, ev socialevent.StreamEvent) {
+	next := streamEnded
+	if ev.Type == socialevent.StreamStarted {
+		next = ev.StartedAtMS
+	}
+	d.mu.Lock()
+	if d.streamStarts == nil {
+		d.streamStarts = make(map[string]int64)
+	}
+	if d.streamStarts[roomID] == next {
+		d.mu.Unlock()
+		return
+	}
+	d.streamStarts[roomID] = next
+	d.mu.Unlock()
+	d.armTrivia(roomID)
+}
+
 // armTrivia (re)agenda el timer de disparo de la sala hacia la próxima
-// pregunta pendiente con at_ms ≥ posición, solo si se está reproduciendo.
+// pregunta pendiente con at_ms ≥ posición (ver triviaPosition).
 func (d *Deps) armTrivia(roomID string) {
 	if d.Trivia == nil || d.Recap == nil {
 		return
@@ -275,8 +439,8 @@ func (d *Deps) armTrivia(roomID string) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), triviaOpTimeout)
 	defer cancel()
-	pb, ok, err := d.Recap.Position(ctx, roomID, d.now())
-	if err != nil || !ok || !pb.Playing {
+	pos, rate, ok := d.triviaPosition(ctx, roomID)
+	if !ok {
 		return
 	}
 	list, err := d.Trivia.List(ctx, roomID)
@@ -285,7 +449,7 @@ func (d *Deps) armTrivia(roomID string) {
 	}
 	var next *trivia.Scheduled
 	for i := range list { // ordenada por at_ms
-		if !list[i].State.Launched && list[i].AtMS >= pb.PositionMS {
+		if !list[i].State.Launched && list[i].AtMS >= pos {
 			next = &list[i]
 			break
 		}
@@ -293,7 +457,7 @@ func (d *Deps) armTrivia(roomID string) {
 	if next == nil {
 		return
 	}
-	delay := time.Duration(float64(next.AtMS-pb.PositionMS) / pb.Rate * float64(time.Millisecond))
+	delay := time.Duration(float64(next.AtMS-pos) / rate * float64(time.Millisecond))
 	tid, at := next.ID, next.AtMS
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -317,8 +481,8 @@ func (d *Deps) fireTrivia(roomID, triviaID string, atMS int64, gen uint64) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), triviaOpTimeout)
 	defer cancel()
-	pb, ok, err := d.Recap.Position(ctx, roomID, d.now())
-	if err != nil || !ok || !pb.Playing || pb.PositionMS < atMS-TriviaEarlyToleranceMS {
+	pos, _, ok := d.triviaPosition(ctx, roomID)
+	if !ok || pos < atMS-TriviaEarlyToleranceMS {
 		return
 	}
 	st, won, err := d.Trivia.Launch(ctx, roomID, triviaID, d.now().UnixMilli())
@@ -451,11 +615,17 @@ func (d *Deps) deliverTriviaResult(ctx context.Context, roomID string, res socia
 		return
 	}
 	scores, totals, err := d.Trivia.Scores(ctx, roomID, res.TriviaID, users)
+	ranks, rankErr := d.Trivia.Ranks(ctx, roomID, users)
 	for _, t := range targets {
 		out := res
 		if err == nil {
 			s, tot := scores[t.sub], totals[t.sub]
 			out.MyScore, out.MyTotal = &s, &tot
+		}
+		if rankErr == nil {
+			if r, ok := ranks[t.sub]; ok {
+				out.MyRank = &r
+			}
 		}
 		msg, mErr := json.Marshal(out)
 		if mErr != nil {
@@ -483,8 +653,49 @@ func (d *Deps) deliverRemoteResult(roomID string, payload []byte) {
 	if d.Trivia == nil || json.Unmarshal(payload, &res) != nil || res.TriviaID == "" {
 		return
 	}
-	res.MyScore, res.MyTotal = nil, nil
+	res.MyScore, res.MyTotal, res.MyRank = nil, nil, nil
 	ctx, cancel := context.WithTimeout(context.Background(), triviaOpTimeout)
 	defer cancel()
 	d.deliverTriviaResult(ctx, roomID, res)
+}
+
+// handleTriviaLaunchNow abre ya una trivia programada que aún no salió
+// ("lanzar ahora", sobre todo en salas live). Usa el mismo Launch (HSETNX
+// launched) que el disparo programado: entre réplicas y frente al timer
+// solo una llamada la abre; quien pierde recibe TRIVIA_CLOSED.
+func (d *Deps) handleTriviaLaunchNow(ctx context.Context, c *websocket.Conn, roomID string, claims auth.Claims, raw []byte) {
+	var in socialevent.TriviaLaunchNow
+	if err := json.Unmarshal(raw, &in); err != nil {
+		writeError(ctx, c, "INVALID_PAYLOAD", "")
+		return
+	}
+	if !isModerator(claims, roomID) {
+		writeError(ctx, c, "FORBIDDEN", in.EventID)
+		return
+	}
+	if d.Trivia == nil {
+		writeError(ctx, c, "UNAVAILABLE", in.EventID)
+		return
+	}
+	if err := in.Validate(); err != nil || (in.RoomID != "" && in.RoomID != roomID) {
+		writeError(ctx, c, "INVALID_PAYLOAD", in.EventID)
+		return
+	}
+	st, won, err := d.Trivia.Launch(ctx, roomID, in.TriviaID, d.now().UnixMilli())
+	if err != nil {
+		writeError(ctx, c, triviaErrorCode(err), in.EventID)
+		return
+	}
+	if !won {
+		writeError(ctx, c, "TRIVIA_CLOSED", in.EventID)
+		return
+	}
+	q, _, ok, err := d.Trivia.Get(ctx, roomID, in.TriviaID)
+	if err == nil && ok {
+		out := d.triviaQuestion(roomID, q, st)
+		d.emitRoom(ctx, roomID, out.EventID, out)
+	}
+	d.observeTriviaClose(roomID, in.TriviaID, st.ClosesAtMS)
+	d.sendScheduleState(ctx, c, roomID, in.EventID)
+	d.armTrivia(roomID)
 }

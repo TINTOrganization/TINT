@@ -12,6 +12,7 @@
 
 #include "support/fake_mute_store.hpp"
 #include "support/fake_revocation.hpp"
+#include "support/fake_room_state.hpp"
 #include "support/jwt.hpp"
 
 namespace asio = boost::asio;
@@ -112,10 +113,11 @@ class ServerTest : public ::testing::Test {
     revocation = std::make_shared<FakeRevocation>();
     mutes = std::make_shared<FakeMuteStore>();
     options.mutes = mutes;
+    rooms = std::make_shared<FakeRoomState>();
     hub = std::make_shared<hub::Hub>(options);
     server = std::make_unique<net::Server>(ioc, net::ServerOptions{{"localhost:5173"}},
                                            std::make_shared<auth::TokenVerifier>(kSecret, kIssuer, kAudience),
-                                           revocation, mutes, hub);
+                                           revocation, mutes, rooms, hub);
     port = server->listen("127.0.0.1", 0);
     thread = std::thread([this] { ioc.run(); });
   }
@@ -174,6 +176,7 @@ class ServerTest : public ::testing::Test {
   std::shared_ptr<hub::Hub> hub;
   std::shared_ptr<FakeRevocation> revocation;
   std::shared_ptr<FakeMuteStore> mutes;
+  std::shared_ptr<FakeRoomState> rooms;
   std::unique_ptr<net::Server> server;
   std::uint16_t port = 0;
   std::thread thread;
@@ -193,7 +196,9 @@ TEST_F(ServerTest, HealthzAnswersOk) {
   http::response<http::string_body> res;
   http::read(stream, buffer, res);
   EXPECT_EQ(res.result(), http::status::ok);
-  EXPECT_EQ(json::parse(res.body())["status"], "ok");
+  const auto body = json::parse(res.body());
+  EXPECT_EQ(body["status"], "ok");
+  EXPECT_EQ(body["service"], "voice-core");
 }
 
 TEST_F(ServerTest, UnknownHttpPathIs404) {
@@ -452,4 +457,151 @@ TEST_F(ServerTest, WebSocketHostMute) {
   auto muted = ana->read_type("peer_muted");
   ASSERT_TRUE(muted);
   EXPECT_EQ((*muted)["host_muted"], true);
+}
+
+// --- ADR 0019: REST del escenario (salas live) ---------------------------------------------
+
+namespace {
+const std::string kAnaStagePath = "/api/v1/voice/rooms/room-1/stage/guest%3Aana";
+}  // namespace
+
+TEST_F(ServerTest, RestStageHostPutAndDeleteAre204) {
+  auto res = request(http::verb::put, kAnaStagePath, bearer(host_claims()));
+  EXPECT_EQ(res.result(), http::status::no_content);
+  EXPECT_EQ(res[http::field::access_control_allow_origin], "http://localhost:5173");
+  EXPECT_EQ(request(http::verb::delete_, kAnaStagePath, bearer(host_claims())).result(),
+            http::status::no_content);
+  EXPECT_EQ(mutes->writes, 0) << "el escenario no toca los silencios";
+}
+
+TEST_F(ServerTest, RestStageErrors) {
+  EXPECT_EQ(request(http::verb::put, kAnaStagePath).result(), http::status::unauthorized);
+  EXPECT_EQ(
+      request(http::verb::put, kAnaStagePath, bearer(guest_claims("room-1", "guest:luis", "jti-luis", "L")))
+          .result(),
+      http::status::forbidden);
+  EXPECT_EQ(request(http::verb::put, kAnaStagePath, bearer(host_claims("room-2"))).result(),
+            http::status::forbidden);
+  EXPECT_EQ(request(http::verb::get, kAnaStagePath, bearer(host_claims())).result(),
+            http::status::method_not_allowed);
+  EXPECT_EQ(request(http::verb::put, kAnaStagePath, bearer(host_claims()), "https://evil.example").result(),
+            http::status::forbidden);
+  revocation->unavailable = true;
+  EXPECT_EQ(request(http::verb::put, kAnaStagePath, bearer(host_claims())).result(),
+            http::status::service_unavailable);
+}
+
+TEST_F(ServerTest, RestStageCorsPreflight) {
+  auto res = request(http::verb::options, kAnaStagePath, "", "http://localhost:5173", "PUT");
+  EXPECT_EQ(res.result(), http::status::no_content);
+  EXPECT_EQ(res[http::field::access_control_allow_origin], "http://localhost:5173");
+  EXPECT_NE(std::string(res[http::field::access_control_allow_methods]).find("DELETE"), std::string::npos);
+  EXPECT_NE(std::string(res[http::field::access_control_allow_headers]).find("Authorization"),
+            std::string::npos);
+  EXPECT_EQ(request(http::verb::options, kAnaStagePath, "", "https://evil.example", "PUT").result(),
+            http::status::forbidden);
+}
+
+TEST_F(ServerTest, RestStageWritesTheSet) {
+  ASSERT_EQ(request(http::verb::put, kAnaStagePath, bearer(host_claims())).result(),
+            http::status::no_content);
+  EXPECT_TRUE(rooms->on_stage("room-1", "guest:ana"));
+  ASSERT_EQ(request(http::verb::delete_, kAnaStagePath, bearer(host_claims())).result(),
+            http::status::no_content);
+  EXPECT_FALSE(rooms->on_stage("room-1", "guest:ana"));
+}
+
+// §6.1: errores de las rutas nuevas como {"error":"UPPER_SNAKE"}.
+TEST_F(ServerTest, RestStageErrorBodiesAreUpperSnake) {
+  auto code = [](const http::response<http::string_body>& res) { return json::parse(res.body())["error"]; };
+  EXPECT_EQ(code(request(http::verb::put, kAnaStagePath)), "UNAUTHORIZED");
+  EXPECT_EQ(code(request(http::verb::put, kAnaStagePath, bearer(host_claims("room-2")))), "FORBIDDEN");
+  EXPECT_EQ(code(request(http::verb::post, kAnaStagePath, bearer(host_claims()))), "METHOD_NOT_ALLOWED");
+  EXPECT_EQ(code(request(http::verb::put, kAnaStagePath, bearer(host_claims()), "https://evil.example")),
+            "FORBIDDEN");
+  auto missing = request(http::verb::put, "/api/v1/voice/rooms/room-1/stage/", bearer(host_claims()));
+  EXPECT_EQ(missing.result(), http::status::not_found);
+  EXPECT_EQ(code(missing), "NOT_FOUND");
+  rooms->unavailable = true;
+  auto down = request(http::verb::put, kAnaStagePath, bearer(host_claims()));
+  EXPECT_EQ(down.result(), http::status::service_unavailable);
+  EXPECT_EQ(code(down), "UNAVAILABLE");
+}
+
+// DELETE en una sala live saca de la voz al usuario con 4009; los demás reciben peer_left.
+TEST_F(ServerTest, RestStageDeleteClosesTheGuestWith4009InALiveRoom) {
+  rooms->make_live("room-1");
+  rooms->set_on_stage("room-1", "guest:ana", true);
+  auto host = joined(host_claims());
+  auto ana = joined(guest_claims());
+  ASSERT_TRUE(host->read_type("peer_joined"));
+
+  ASSERT_EQ(request(http::verb::delete_, kAnaStagePath, bearer(host_claims())).result(),
+            http::status::no_content);
+  EXPECT_FALSE(ana->read_type("never").has_value());
+  EXPECT_EQ(ana->close_code(), 4009);
+  EXPECT_TRUE(host->read_type("peer_left"));
+  EXPECT_TRUE(wait_members(1));
+
+  Client again(port);
+  ASSERT_FALSE(again.connect(target(guest_claims())));
+  EXPECT_FALSE(again.read().has_value());
+  EXPECT_EQ(again.close_code(), 4009) << "ya no está en el escenario";
+}
+
+// En una sala watch el escenario no se usa: DELETE no echa a nadie.
+TEST_F(ServerTest, RestStageDeleteInAWatchRoomKeepsTheConnection) {
+  auto host = joined(host_claims());
+  auto ana = joined(guest_claims());
+  ASSERT_EQ(request(http::verb::delete_, kAnaStagePath, bearer(host_claims())).result(),
+            http::status::no_content);
+  EXPECT_EQ(hub->members("room-1").size(), 2u);
+}
+
+// SREM ya hecho pero sin poder leer room:{id}:kind: 503 (el reintento es idempotente).
+TEST_F(ServerTest, RestStageDeleteFailsClosedWhenTheKindCannotBeRead) {
+  rooms->live_unavailable = true;
+  EXPECT_EQ(request(http::verb::delete_, kAnaStagePath, bearer(host_claims())).result(),
+            http::status::service_unavailable);
+  EXPECT_EQ(request(http::verb::put, kAnaStagePath, bearer(host_claims())).result(), http::status::no_content)
+      << "PUT no necesita saber el tipo de sala";
+}
+
+// --- ADR 0019: sala deshabilitada (4010) y escenario (4009) en el handshake ---------------
+
+TEST_F(ServerTest, ClosedRoomUpgradesAndClosesWith4010) {
+  rooms->close("room-1");
+  Client c(port);
+  ASSERT_FALSE(c.connect(target(host_claims())));
+  EXPECT_FALSE(c.read().has_value());
+  EXPECT_EQ(c.close_code(), 4010);
+  EXPECT_TRUE(hub->members("room-1").empty());
+}
+
+TEST_F(ServerTest, RoomStateDownFailsClosedWith503) {
+  rooms->unavailable = true;
+  Client c(port);
+  EXPECT_TRUE(c.connect(target(guest_claims())));
+  EXPECT_EQ(c.response().result(), http::status::service_unavailable);
+}
+
+TEST_F(ServerTest, LiveRoomGuestOffStageIsClosedWith4009) {
+  rooms->make_live("room-1");
+  Client c(port);
+  ASSERT_FALSE(c.connect(target(guest_claims())));
+  EXPECT_FALSE(c.read().has_value());
+  EXPECT_EQ(c.close_code(), 4009);
+}
+
+// ROOM_CLOSED en vivo: todos (también el host) se cierran con 4010.
+TEST_F(ServerTest, HubCloseRoomDisconnectsEveryoneWith4010) {
+  auto host = joined(host_claims());
+  auto ana = joined(guest_claims());
+  ASSERT_TRUE(host->read_type("peer_joined"));
+  hub->close_room("room-1");
+  for (auto* c : {host.get(), ana.get()}) {
+    EXPECT_FALSE(c->read_type("never").has_value());
+    EXPECT_EQ(c->close_code(), 4010);
+  }
+  EXPECT_TRUE(hub->members("room-1").empty());
 }

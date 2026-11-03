@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
+import { logger } from '../src/logging.js';
 import { setRedisClient } from '../src/modules/tokens/revocation.js';
 import { ANALYTICS_STREAM, publishAnalyticsEvent } from '../src/modules/analytics/analytics.events.js';
 
@@ -69,7 +70,7 @@ describe('analytics.events', () => {
   });
 
   it('best-effort: si XADD rechaza, no propaga el error y lo registra sin datos del evento', async () => {
-    const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const log = vi.spyOn(logger, 'error').mockImplementation(() => {});
     setRedisClient({ xadd: vi.fn().mockRejectedValue(new Error('redis down')) } as any);
     await expect(publishAnalyticsEvent('room_created', { room_id: 'r', user_id: 'secret-sub' })).resolves.toBeUndefined();
     expect(log).toHaveBeenCalledTimes(1);
@@ -77,7 +78,7 @@ describe('analytics.events', () => {
   });
 
   it('best-effort: si XADD lanza de forma síncrona, tampoco propaga', async () => {
-    const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const log = vi.spyOn(logger, 'error').mockImplementation(() => {});
     setRedisClient({
       xadd: vi.fn(() => {
         throw new Error('boom');

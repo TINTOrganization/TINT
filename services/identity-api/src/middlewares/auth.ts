@@ -1,8 +1,8 @@
 import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
-import { getSigningKey } from '../modules/auth/jwks.js';
-import { env } from '../config/env.js';
+import { verifyFirebaseIdToken } from '../modules/auth/firebaseToken.js';
 import { upsertByProvider } from '../modules/users/users.repo.js';
+import { logger } from '../logging.js';
 
 export interface AuthUser {
   id: string;
@@ -24,26 +24,14 @@ export async function requireAuthHost(req: Request, res: Response, next: NextFun
       return res.status(401).json({ error: 'Unauthorized' });
     }
     const token = header.substring(7);
-    const decoded = jwt.decode(token, { complete: true }) as any;
-    if (!decoded?.header?.kid) {
-      return res.status(401).json({ error: 'Invalid token' });
-    }
-    const key = await getSigningKey(decoded.header.kid);
-    let verified: any;
+    let verified: jwt.JwtPayload;
     try {
-      verified = jwt.verify(token, key, {
-        algorithms: ['RS256'],
-        issuer: `https://securetoken.google.com/${env.FIREBASE_PROJECT_ID}`,
-        audience: env.FIREBASE_PROJECT_ID,
-      }) as any;
+      verified = await verifyFirebaseIdToken(token);
     } catch (err) {
-      console.error('[auth] fallo al verificar JWT de Firebase:', (err as Error).message);
+      logger.error('auth: fallo al verificar JWT de Firebase', { error: (err as Error).message });
       return res.status(401).json({ error: 'Invalid token' });
     }
-    const providerSub = verified.sub || verified.uid;
-    if (!providerSub) {
-      return res.status(401).json({ error: 'Invalid token' });
-    }
+    const providerSub = verified.sub as string;
     let user;
     try {
       user = await upsertByProvider({
@@ -53,7 +41,9 @@ export async function requireAuthHost(req: Request, res: Response, next: NextFun
         avatarUrl: verified.picture,
       });
     } catch (err) {
-      console.error('[auth] fallo de infraestructura (DB) en upsert de usuario:', (err as Error).message);
+      logger.error('auth: fallo de infraestructura (DB) en upsert de usuario', {
+        error: (err as Error).message,
+      });
       return res.status(500).json({ error: 'Internal error' });
     }
     req.user = {
@@ -64,7 +54,7 @@ export async function requireAuthHost(req: Request, res: Response, next: NextFun
     };
     next();
   } catch (err) {
-    console.error('[auth] error inesperado en requireAuthHost:', (err as Error).message);
+    logger.error('auth: error inesperado en requireAuthHost', { error: (err as Error).message });
     return res.status(401).json({ error: 'Unauthorized' });
   }
 }

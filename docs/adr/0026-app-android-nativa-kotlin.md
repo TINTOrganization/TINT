@@ -1,4 +1,4 @@
-# ADR 0016 — App Android nativa en Kotlin
+# ADR 0026 — App Android nativa en Kotlin
 
 | Campo | Valor |
 | :--- | :--- |

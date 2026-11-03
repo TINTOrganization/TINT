@@ -22,7 +22,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"log"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -192,6 +192,8 @@ func disconnectReason(cause error) string {
 		return "slow"
 	case errors.Is(cause, ErrRevoked):
 		return "revoked"
+	case errors.Is(cause, ErrRoomClosed):
+		return "room_closed"
 	}
 	return "normal"
 }
@@ -294,7 +296,7 @@ func (h *Hub) sweepAll(ctx context.Context) {
 	for room, b := range beats {
 		rctx, cancel := context.WithTimeout(ctx, ioTimeout)
 		if _, err := h.sweep(rctx, room, h.now().UnixMilli(), b.hosts, b.members); err != nil {
-			log.Printf("hub: barrido sala %s: %v", room, err)
+			slog.Error("hub: barrido de sala", "room_id", room, "error", err)
 		}
 		cancel()
 	}
@@ -356,7 +358,7 @@ func (h *Hub) swapDelegate(ctx context.Context, room, sub string) error {
 	ev := baseEvent(syncevent.Control, room, h.now())
 	ev.Holder = sub
 	if err := h.bus.Publish(ctx, room, mustJSON(ev)); err != nil {
-		log.Printf("hub: CONTROL sala %s: %v", room, err)
+		slog.Error("hub: CONTROL de sala", "room_id", room, "error", err)
 	}
 	return nil
 }
@@ -399,6 +401,21 @@ func (h *Hub) revoke(room, jti string) {
 		if c.claims.JTI == jti {
 			c.close(ErrRevoked)
 		}
+	}
+}
+
+// closeRoom cierra todas las conexiones locales de la sala deshabilitada
+// (host incluido). Es idempotente: cancelar un cliente ya cerrado no cambia
+// su causa, y cada cliente sale de la sala por su propio Disconnect.
+func (h *Hub) closeRoom(room string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	r, ok := h.rooms[room]
+	if !ok {
+		return
+	}
+	for c := range r.clients {
+		c.close(ErrRoomClosed)
 	}
 }
 
@@ -464,7 +481,7 @@ func (h *Hub) Connect(parent context.Context, claims auth.Claims, opts ...ConnOp
 	c.enqueueEvent(ev)
 	h.release(c)
 	if _, err := h.sweep(ctx, room, nowMs, nil, nil); err != nil {
-		log.Printf("hub: barrido sala %s: %v", room, err)
+		slog.Error("hub: barrido de sala", "room_id", room, "error", err)
 	}
 	return c, nil
 }
@@ -496,11 +513,11 @@ func (h *Hub) Disconnect(c *Client) {
 	}
 	if reevaluate {
 		if _, err := h.sweep(ctx, room, nowMs, nil, nil); err != nil {
-			log.Printf("hub: barrido sala %s: %v", room, err)
+			slog.Error("hub: barrido de sala", "room_id", room, "error", err)
 		}
 	}
 	if err := h.store.Touch(ctx, room); err != nil {
-		log.Printf("hub: touch sala %s: %v", room, err)
+		slog.Error("hub: touch de sala", "room_id", room, "error", err)
 	}
 }
 
@@ -516,6 +533,11 @@ func (h *Hub) Deliver(roomID string, payload []byte) {
 			return
 		case syncevent.Revoked:
 			h.revoke(roomID, ev.JTI) // solo entre réplicas: nunca llega a los clientes
+			return
+		case syncevent.RoomClosed:
+			if ev.ValidRoomClosed(roomID) {
+				h.closeRoom(roomID) // tampoco llega a los clientes: se enteran por el 4010
+			}
 			return
 		}
 	}
@@ -635,7 +657,7 @@ func (h *Hub) handleCommand(ctx context.Context, c *Client, ev syncevent.Event, 
 			errors.Is(err, syncevent.ErrInvalidVolume) || errors.Is(err, syncevent.ErrInvalidQuality) {
 			code, result = syncevent.CodeInvalid, "invalid"
 		} else {
-			log.Printf("hub: comando %s en sala %s: %v", ev.Type, room, err)
+			slog.Error("hub: comando", "type", ev.Type, "room_id", room, "error", err)
 		}
 		h.m.commands.With(result).Inc()
 		c.enqueueEvent(errorEvent(room, ev.EventID, code, now))
@@ -811,7 +833,7 @@ func (h *Hub) unsubscribeIfEmpty(room string) {
 	ctx, cancel := context.WithTimeout(context.Background(), ioTimeout)
 	defer cancel()
 	if err := h.bus.Unsubscribe(ctx, room); err != nil {
-		log.Printf("hub: unsubscribe sala %s: %v", room, err)
+		slog.Error("hub: unsubscribe de sala", "room_id", room, "error", err)
 	}
 }
 
@@ -906,7 +928,7 @@ func (h *Hub) publishHostStatus(ctx context.Context, room string, online bool) {
 	ev := baseEvent(syncevent.HostStatus, room, h.now())
 	ev.Online = syncevent.Bool(online)
 	if err := h.bus.Publish(ctx, room, mustJSON(ev)); err != nil {
-		log.Printf("hub: HOST_STATUS sala %s: %v", room, err)
+		slog.Error("hub: HOST_STATUS", "room_id", room, "error", err)
 	}
 }
 

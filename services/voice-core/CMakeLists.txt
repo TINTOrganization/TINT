@@ -41,14 +41,18 @@ add_library(voice_core_lib
   src/domain/voice_room.cpp
   src/hub/hub.cpp
   src/ice/ice_servers.cpp
+  src/log/log.cpp
   src/net/handshake.cpp
   src/net/mute_api.cpp
   src/net/server.cpp
   src/protocol/messages.cpp
+  src/redis/client.cpp
   src/redis/connection.cpp
   src/redis/mute_store.cpp
   src/redis/redis_url.cpp
   src/redis/revocation.cpp
+  src/redis/room_state_store.cpp
+  src/redis/sync_message.cpp
   src/util/uuid.cpp
 )
 target_include_directories(voice_core_lib PUBLIC src)
@@ -70,11 +74,14 @@ if(VOICE_BUILD_TESTS)
     tests/messages_test.cpp
     tests/hub_test.cpp
     tests/ice_servers_test.cpp
+    tests/log_test.cpp
     tests/handshake_test.cpp
     tests/mute_api_test.cpp
     tests/mute_store_test.cpp
     tests/redis_url_test.cpp
     tests/revocation_test.cpp
+    tests/room_closed_test.cpp
+    tests/room_state_store_test.cpp
     tests/server_test.cpp
     tests/uuid_test.cpp
   )

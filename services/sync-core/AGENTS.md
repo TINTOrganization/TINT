@@ -37,7 +37,8 @@ Eres el agente encargado del corazón de reproducción en tiempo real de **TINT*
 | :--- | :--- | :--- |
 | `room:{id}:sync_state` | Redis Hash | Ancla del Reloj Maestro: `status` (playing/paused), `position_ms`, `updated_at_ms` (reloj del servidor), `rate`, `version` (orden total de comandos), `host_id`, `media_id` (vídeo actual), `volume` (0–1, por defecto `1`) y `quality` (por defecto `auto`); los hashes anteriores sin estos campos se leen con sus valores por defecto. TTL 12 h (`ROOM_TTL`), refrescado en cada comando, desconexión y barrido de presencia (mientras haya clientes conectados). |
 | `room:{id}:evt:{event_id}` | Redis String | Idempotencia: un `event_id` ya aplicado se ignora durante 1 min (ACK con `duplicate: true`). |
-| `room:{id}:sync` | Redis Pub/Sub | Difusión de `Event` (comandos y `HOST_STATUS`) entre réplicas. |
+| `room:{id}:sync` | Redis Pub/Sub | Difusión de `Event` (comandos y `HOST_STATUS`) entre réplicas; además identity-api publica ahí `REVOKED` y `ROOM_CLOSED` (solo bus). |
+| `room:{id}:closed` | Redis String | Lo escribe identity-api (sin TTL) al deshabilitar la sala, **antes** de publicar `ROOM_CLOSED` ([ADR 0019](../../docs/adr/0019-salas-live-y-cierre-room-closed.md)). sync-core solo lo lee: en el handshake (`EXISTS`) y dentro de la transacción de `Init`. |
 | `room:{id}:hosts_online` | Redis ZSET | Presencia de conexiones host/cohost: miembro = id de conexión, score = último latido (unix ms). Un host sin latir en 5 s se considera fuera. |
 | `room:{id}:members` | Redis ZSET | Presencia de participantes: miembro = `sub`, score = último latido. Se renueva en lote en cada barrido. |
 | `room:{id}:host_online` | Redis String | Último `HOST_STATUS` publicado (`1`/`0`): solo se publican transiciones aunque varias réplicas evalúen la sala. |
@@ -66,7 +67,8 @@ Tokens HS256 firmados por identity-api con `JWT_SECRET`, `iss=tint-identity`, `a
 | `Origin` fuera de `ALLOWED_ORIGINS` | `403` (se comprueba también antes de los cierres terminales) |
 | Token expirado pero bien firmado (`iss`, `aud`, sala y rol correctos) | upgrade y cierre `4003` "token expirado" |
 | Token revocado (`token:revoked:{jti}`) | upgrade y cierre `4001` "token revocado" (sin `STATE`) |
-| Redis no permite comprobar la revocación | `503` (falla cerrado) |
+| Sala deshabilitada (`room:{id}:closed`; se comprueba después de la revocación) | upgrade y cierre `4010` "sala deshabilitada" (sin `STATE`), host incluido |
+| Redis no permite comprobar la revocación o `room:{id}:closed` | `503` (falla cerrado) |
 | Redis no disponible al conectar | upgrade y cierre `1011` |
 | OK | `101` y el servidor envía de inmediato un `STATE` |
 
@@ -78,6 +80,9 @@ Los casos terminales hacen upgrade porque el navegador no ve el status HTTP de u
 | :--- | :--- | :--- |
 | `4001` | Token revocado (en el handshake o por `REVOKED` en vivo) | Borra el token y muestra "Fuiste retirado". |
 | `4003` | Token expirado | Pide un token nuevo (sync-ticket del Host o volver a unirse). **Pendiente en la web**: hoy solo se detiene ante `4001`. |
+| `4010` | `ROOM_DISABLED`: sala deshabilitada (en el handshake o por `ROOM_CLOSED` en vivo) | Muestra "El evento terminó y la sala fue deshabilitada" y no reconecta (HU-LIVE-08). |
+
+**Carrera del cierre:** si la sala se cierra entre la comprobación del handshake y la suscripción de la réplica al bus, el `PUBLISH` puede perderse; por eso `Init` (que corre después de suscribirse) consulta `room:{id}:closed` en la misma transacción y el socket se cierra con `4010`. Como identity-api hace `SET` antes de `PUBLISH`, cualquier orden queda cubierto.
 
 **Subprotocolo opcional:** `Sec-WebSocket-Protocol: tint.sync.msgpack` → todos los frames son binarios MessagePack con las mismas claves que el JSON (timestamps como string ISO-8601). Sin subprotocolo o con `tint.sync.json` → JSON. El bus entre réplicas siempre usa JSON.
 
@@ -101,6 +106,7 @@ Todos los mensajes son JSON con `event_id`, `type`, `room_id`, `position_ms`, `o
 | `SYNC_CORRECTION` | S → C (solo si \|drift\| > 500 ms) | `target_ms` (= `position_ms`), `strategy` (`rate`/`seek`), `drift_ms` (+ adelantado, − atrasado), `version` + opcionales `status`, `rate` (velocidad de la sala, no la de corrección), `media_id`, `volume` y `quality` del estado en esa `version`, para que un cliente que perdió un broadcast se reconcilie (la web aún no los usa) |
 | `HOST_STATUS` | S → todos (vía Pub/Sub) | `online`; solo en transiciones, incluida la caída de la réplica del host (detectada por el barrido) |
 | `REVOKED` | identity-api → réplicas (solo bus) | `jti`: cada réplica cierra esas conexiones con `4001`; nunca llega a los clientes |
+| `ROOM_CLOSED` | identity-api → réplicas (solo bus) | `{"type":"ROOM_CLOSED","event_id","room_id","reason":"host_ended\|grace_expired","occurred_at"}` ([§6.1](../../docs/dominio-transmision.md#61-formatos-estándar)): cada réplica cierra **todas** las conexiones de la sala (host incluido) con `4010`; nunca llega a los clientes. Idempotente. Se descarta si `room_id` no es el del canal o `reason` no es válido. |
 | `ERROR` | S → C | `code` (`FORBIDDEN`, `INVALID`, `RATE_LIMITED`, `INTERNAL`), `ref_event_id` |
 
 ### Heartbeat, RTT y drift
@@ -133,6 +139,7 @@ Todos los mensajes son JSON con `event_id`, `type`, `room_id`, `position_ms`, `o
 | Latidos sin `SYNC_CHECK` | 3 intervalos | cierre `1008` |
 | Token revocado (handshake o durante la conexión) | — | cierre `4001` (no reconectar) |
 | Token expirado en el handshake | — | cierre `4003` (pedir token nuevo) |
+| Sala deshabilitada (handshake o `ROOM_CLOSED` en vivo) | — | cierre `4010` (no reconectar) |
 | Comando de un `participant` (incluidos `VOLUME` y `QUALITY`) | — | `ERROR{FORBIDDEN}` |
 | `rate`, `media_id`, `volume` o `quality` fuera de contrato | — | `ERROR{INVALID}` (el estado no cambia) |
 
@@ -144,14 +151,14 @@ Todos los mensajes son JSON con `event_id`, `type`, `room_id`, `position_ms`, `o
 | `internal/master` | Reloj Maestro puro (sin I/O): ancla, `PositionAt`, `Apply`. |
 | `internal/drift` | EWMA del RTT y decisión de corrección (`rate`/`seek`). |
 | `internal/auth` | Verificación HS256 de tokens de identity-api y roles. |
-| `internal/store` | `sync_state` con compare-and-set (lectura en pipeline —o el último estado escrito por la réplica, sin leer— + script Lua que escribe y publica si la `version` no cambió), candado local por sala, dedupe, presencia (barrido en un solo script por sala), delegación y revocación. |
+| `internal/store` | `sync_state` con compare-and-set (lectura en pipeline —o el último estado escrito por la réplica, sin leer— + script Lua que escribe y publica si la `version` no cambió), candado local por sala, dedupe, presencia (barrido en un solo script por sala), delegación, revocación y salas cerradas (`room:{id}:closed`). |
 | `internal/codec` | JSON y MessagePack (subprotocolo). |
 | `internal/metrics` | Exposición Prometheus sin dependencias. |
 | `internal/bus` | Pub/Sub entre réplicas (una conexión por réplica, suscripción solo a salas con clientes locales). |
 | `internal/telemetry` | Emisión no bloqueante de `playback_command`, `drift_correction` y `buffering` (un solo canal con buffer; si se llena se descarta). Reutiliza el `event_id` del cliente si es UUID. |
 | `internal/hub` | Salas locales, despacho de comandos, heartbeat/drift, presencia del host. Independiente del transporte. |
 | `internal/ws` | Handshake y transporte WebSocket. |
-| `internal/server` | Rutas HTTP (`/healthz`, `/ws/sync`, `/metrics`). |
+| `internal/server` | Rutas HTTP (`/healthz`, `/ws/sync`, `/metrics`) y control interno de arranque/compensación. |
 
 **Modelo de concurrencia:** cada conexión tiene una goroutine **lectora** (la del handler HTTP, llama a `hub.Handle`) y una **escritora** (única dueña de `conn.Write`, drena la cola). `hub.Run` mantiene por réplica un solo temporizador de `HEARTBEAT` (que también cierra a los clientes sin respuesta) y el barrido de presencia. Cada cliente tiene una cola con buffer (64); `enqueue` nunca bloquea, así un cliente lento no frena a los demás. La réplica emisora no difunde localmente: todo comando pasa por Redis Pub/Sub, lo que da un único camino y orden consistente entre réplicas. `hub.rooms` se protege con `sync.Mutex` (`h.mu`), que **nunca** se mantiene durante I/O de red: `Subscribe`/`Unsubscribe` del bus se serializan con otro mutex (`subMu`, orden `subMu → mu`) y una sala está en `hub.rooms` solo mientras su suscripción está activa (se inserta tras `Subscribe`, se borra antes de `Unsubscribe` y la baja re-comprueba que nadie la volvió a crear). RTT, último latido, último drift y último seek son `atomic`.
 
@@ -163,6 +170,7 @@ Todos los mensajes son JSON con `event_id`, `type`, `room_id`, `position_ms`, `o
 5. **TDD:** Implementa pruebas unitarias e integración en Go con `go test -cover`, escribiendo la prueba primero. La cobertura no puede bajar del **85%**. `main.go` debe ser mínimo; la lógica vive en `internal/`.
 6. **Privacidad:** La telemetría nunca incluye `sub`, `nick` ni tokens (por eso no envía `user_id`, sino `role`).
 7. **Telemetría fuera del camino caliente:** emitir a `analytics:events` solo encola; nunca un `XADD` síncrono en `Handle`.
+8. **Control interno de arranque:** `POST /internal/events/start/{room_id}` recibe `{"hostId":"..."}`, inicializa `sync_state` y devuelve `roomId`, `sessionId`, `wsUrl` y `state`; `DELETE` elimina el estado para compensación. Estas rutas no se publican por gateway.
 
 ## Variables de Entorno
 | Variable | Por defecto | Descripción |
@@ -175,6 +183,7 @@ Todos los mensajes son JSON con `event_id`, `type`, `room_id`, `position_ms`, `o
 | `ALLOWED_ORIGINS` | `localhost:5173,127.0.0.1:5173` | Patrones de host permitidos en el handshake, separados por coma. |
 | `ROOM_TTL` | `12h` | Periodo de gracia de la sala (duración Go, positiva). |
 | `CONTROL_HANDOFF_AFTER` | `5m` | Tiempo sin host/cohost tras el cual se delega el control (duración Go, positiva). |
+| `LOG_LEVEL` | `info` | Nivel mínimo de log (`debug`, `info`, `warn`, `error`). Logs JSON a stdout (ADR 0021). |
 
 ## Métricas (`GET /metrics`, formato Prometheus)
 `sync_connections`, `sync_rooms`, `sync_commands_total{result}`, `sync_messages_invalid_total`, `sync_messages_rate_limited_total`, `sync_disconnects_total{reason}`, `sync_corrections_total{strategy}`, `sync_command_apply_seconds`, `sync_broadcast_delivery_seconds`, `sync_store_conflicts_total`, `sync_telemetry_dropped_total`, `sync_telemetry_failed_total`. **No exponer públicamente**: debe quedar detrás del ingress.

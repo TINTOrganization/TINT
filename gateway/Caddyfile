@@ -2,34 +2,96 @@ http://{$GATEWAY_HOST:localhost} {
     redir https://{host}:{$GATEWAY_HTTPS_PORT:443}{uri} 308
 }
 
+(service_timeout) {
+    transport http {
+        dial_timeout 5s
+        response_header_timeout 5s
+    }
+}
+
 https://{$GATEWAY_HOST:localhost} {
-    @public path / /healthz /api/v1/healthz /api/v1/invitations/claim
-    @protected {
-        not path / /healthz /api/v1/healthz /api/v1/invitations/claim
+    @missing_correlation not header X-Correlation-ID *
+    request_header @missing_correlation X-Correlation-ID {http.request.uuid}
+    header X-Correlation-ID {http.request.header.X-Correlation-ID}
+    log {
+        format json
+        level {$GATEWAY_LOG_LEVEL:INFO}
+    }
+    log_append correlation_id {http.request.header.X-Correlation-ID}
+
+    handle_errors {
+        @upstream_unavailable expression `{http.error.status_code} == 502 || {http.error.status_code} == 503 || {http.error.status_code} == 504`
+        header @upstream_unavailable Content-Type application/json
+        respond @upstream_unavailable `{"error":"service_unavailable","message":"The requested service is temporarily unavailable."}` 503
     }
 
-    forward_auth @protected {$IDENTITY_API_UPSTREAM:host.docker.internal:8081} {
+    # Rutas internas de identity-api (p. ej. /api/v1/internal/rooms/{id}/disable, ADR 0019):
+    # solo se llaman dentro de la red de compose. auth/check lo usa el propio forward_auth.
+    @internal_api {
+        path /api/v1/internal/*
+        not path /api/v1/internal/auth/check
+    }
+    respond @internal_api 404
+
+    # El preflight CORS (OPTIONS) no lleva Authorization: cada servicio lo responde.
+    @protected {
+        path /api/* /ws/*
+        not path /api/v1/healthz /api/v1/invitations/claim /api/v1/invitations/*
+        not method OPTIONS
+    }
+
+    forward_auth @protected {$IDENTITY_API_UPSTREAM:identity-api:8081} {
         uri /api/v1/internal/auth/check
         copy_headers X-User-Id X-User-Sub X-User-Role X-User-Room-Id X-User-Nick
+        import service_timeout
     }
 
-    @root path /
-    respond @root 200
-
     @health path /healthz
-    respond @health 200
+    header @health Content-Type application/json
+    respond @health `{"status":"ok","service":"gateway"}` 200
 
     @analytics path_regexp analytics ^/api/v1/rooms/[^/]+/(kpis|reactions/heatmap|timeline)$
-    reverse_proxy @analytics analytics:8084
+    reverse_proxy @analytics {$ANALYTICS_UPSTREAM:analytics:8084} {
+        import service_timeout
+    }
+
+    # Transmisión en vivo: señalización WHIP/WHEP por HTTP (HU-LIVE-06, ADR 0018).
+    @stream_api path /api/v1/stream/*
+    reverse_proxy @stream_api {$STREAM_CORE_UPSTREAM:stream-core:8086} {
+        import service_timeout
+    }
+
+    @voice_api path /api/v1/voice/*
+    reverse_proxy @voice_api {$VOICE_CORE_UPSTREAM:voice-core:8085} {
+        import service_timeout
+    }
+
+    # Historial de chat por REST para el host (HU-LIVE-09 AC3, ADR 0019).
+    @social_api path /api/v1/social/*
+    reverse_proxy @social_api {$SOCIAL_CORE_UPSTREAM:social-core:8082} {
+        import service_timeout
+    }
 
     @identity path /api/*
-    reverse_proxy @identity {$IDENTITY_API_UPSTREAM:host.docker.internal:8081}
+    reverse_proxy @identity {$IDENTITY_API_UPSTREAM:identity-api:8081} {
+        import service_timeout
+    }
 
     @sync path /ws/sync /ws/sync/*
-    reverse_proxy @sync sync-core:8080
+    reverse_proxy @sync {$SYNC_CORE_UPSTREAM:sync-core:8080} {
+        import service_timeout
+    }
 
     @social path /ws/social /ws/social/*
-    reverse_proxy @social social-core:8082
+    reverse_proxy @social {$SOCIAL_CORE_UPSTREAM:social-core:8082} {
+        import service_timeout
+    }
 
-    respond 404
+    @voice path /ws/voice /ws/voice/*
+    reverse_proxy @voice {$VOICE_CORE_UPSTREAM:voice-core:8085} {
+        import service_timeout
+    }
+
+    @frontend not path /api/* /ws/*
+    reverse_proxy @frontend web:80
 }

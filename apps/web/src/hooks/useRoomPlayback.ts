@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { apiFetch } from '../lib/api';
 import { errorStatus } from '../lib/errorStatus';
+import { isRoomDisabledError } from '../lib/roomClosed';
+import { toFailureReason, type FailureReason } from '../lib/mediaFailure';
 import { normalizeQualities, type PlaybackQuality } from '../lib/quality';
 
 /** Refresca la URL firmada este tiempo antes de `expiresAt`. */
@@ -42,6 +44,8 @@ export interface RoomPlayback {
   mediaId: string | null;
   expiresAt: string | null;
   status: MediaStatus | null;
+  /** Por qué falló el vídeo (solo con `status = failed`; null si no se conoce). */
+  failureReason: FailureReason | null;
   /** URL firmada de ambilight.json; solo cuando status = ready. */
   ambilightUrl: string | null;
   /** Versiones disponibles (original + transcodificaciones); [] sin vídeo. */
@@ -50,6 +54,8 @@ export interface RoomPlayback {
   error: string | null;
   /** El invitado recibió 401/403: su invitación ya no vale (se borra `tint_guest_token`). */
   revoked: boolean;
+  /** identity-api respondió `410 {error:"Disabled"}`: el evento terminó (ADR 0019). */
+  disabled: boolean;
   /**
    * El `<video>` falló (p. ej. URL firmada caducada): adopta las URLs refrescadas si las hay
    * o pide unas nuevas (como mucho una vez cada `PLAYBACK_RECOVER_COOLDOWN_MS`). Estable.
@@ -64,6 +70,7 @@ interface PlaybackResponse {
   url?: string | null;
   expiresAt?: string | null;
   status?: string | null;
+  failureReason?: string | null;
   ambilightUrl?: string | null;
   qualities?: unknown;
 }
@@ -73,18 +80,30 @@ interface PlaybackData {
   mediaId: string | null;
   expiresAt: string | null;
   status: MediaStatus | null;
+  failureReason: FailureReason | null;
   ambilightUrl: string | null;
   qualities: PlaybackQuality[];
 }
 
-const EMPTY: PlaybackData = { url: null, mediaId: null, expiresAt: null, status: null, ambilightUrl: null, qualities: [] };
+const EMPTY: PlaybackData = {
+  url: null,
+  mediaId: null,
+  expiresAt: null,
+  status: null,
+  failureReason: null,
+  ambilightUrl: null,
+  qualities: [],
+};
 
 function toPlaybackData(res: PlaybackResponse | undefined): PlaybackData {
+  const status = toMediaStatus(res?.status);
   return {
     mediaId: res?.mediaId ?? null,
     url: res?.url ?? null,
     expiresAt: res?.expiresAt ?? null,
-    status: toMediaStatus(res?.status),
+    status,
+    // Solo tiene sentido en `failed`: un motivo suelto en otro estado se ignora.
+    failureReason: status === 'failed' ? toFailureReason(res?.failureReason) : null,
     ambilightUrl: res?.ambilightUrl ?? null,
     // identity-api sin `qualities` (versión previa) → solo el original.
     qualities: normalizeQualities(res?.qualities, res?.url ?? null),
@@ -134,6 +153,7 @@ export function useRoomPlayback(
   const [loading, setLoading] = useState(enabled);
   const [error, setError] = useState<string | null>(null);
   const [revoked, setRevoked] = useState(false);
+  const [disabled, setDisabled] = useState(false);
 
   const requestRef = useRef(0);
   const pollRequestRef = useRef(0);
@@ -179,6 +199,7 @@ export function useRoomPlayback(
             setData((prev) => ({
               ...prev,
               status: next.status,
+              failureReason: next.failureReason,
               ambilightUrl: next.ambilightUrl,
               qualities: keepAppliedUrls(next.qualities, prev.qualities),
             }));
@@ -197,6 +218,7 @@ export function useRoomPlayback(
             localStorage.removeItem('tint_guest_token');
             setRevoked(true);
           }
+          if (isRoomDisabledError(err)) setDisabled(true);
           setError('No se pudo cargar el vídeo de la sala.');
           setLoading(false);
         });
@@ -242,10 +264,19 @@ export function useRoomPlayback(
           else if (next.url) setFresh(next);
           setData((prev) =>
             next.status === 'failed'
-              ? { ...prev, status: next.status, ambilightUrl: null, url: null, expiresAt: null, qualities: [] }
+              ? {
+                  ...prev,
+                  status: next.status,
+                  failureReason: next.failureReason,
+                  ambilightUrl: null,
+                  url: null,
+                  expiresAt: null,
+                  qualities: [],
+                }
               : {
                   ...prev,
                   status: next.status,
+                  failureReason: null,
                   ambilightUrl: next.ambilightUrl,
                   qualities: keepAppliedUrls(next.qualities, prev.qualities),
                 },
@@ -306,5 +337,5 @@ export function useRoomPlayback(
     return () => clearTimeout(timer);
   }, [enabled, data.status, data.mediaId, pollTick, poll, processingPollMs, maxProcessingPolls]);
 
-  return { ...data, loading, error, revoked, recover, adoptFresh };
+  return { ...data, loading, error, revoked, disabled, recover, adoptFresh };
 }

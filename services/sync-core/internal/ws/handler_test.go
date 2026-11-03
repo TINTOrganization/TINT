@@ -37,6 +37,13 @@ type server struct {
 
 func newServer(t *testing.T, heartbeat time.Duration) *server {
 	t.Helper()
+	return newServerWithGate(t, heartbeat, nil)
+}
+
+// newServerWithGate permite sustituir la comprobación del handshake; gate
+// recibe el store real (nil = usar el store tal cual).
+func newServerWithGate(t *testing.T, heartbeat time.Duration, gate func(*store.Store) Gate) *server {
+	t.Helper()
 	mr := miniredis.RunT(t)
 	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr(), MaxRetries: -1})
 	t.Cleanup(func() { _ = rdb.Close() })
@@ -48,7 +55,11 @@ func newServer(t *testing.T, heartbeat time.Duration) *server {
 	b.Start(ctx, h.Deliver)
 	go h.Run(ctx)
 
-	ts := httptest.NewServer(NewHandler(h, auth.NewVerifier(secret, "tint-identity", "tint:room"), st, []string{"tint.app"}))
+	var g Gate = st
+	if gate != nil {
+		g = gate(st)
+	}
+	ts := httptest.NewServer(NewHandler(h, auth.NewVerifier(secret, "tint-identity", "tint:room"), g, []string{"tint.app"}))
 	t.Cleanup(ts.Close)
 	return &server{url: ts.URL, mr: mr}
 }
@@ -213,11 +224,18 @@ func TestHeartbeatAndStaleDisconnect(t *testing.T) {
 	}
 }
 
+// El intervalo respeta el límite propio de SYNC_CHECK (5/s, ventana fija de
+// 1 s): con latidos más rápidos el hub descarta en silencio las respuestas
+// que lo exceden, no renuevan el último SYNC_CHECK y la conexión se cierra
+// por ErrStale aunque el cliente conteste a todo. Con 1 s/(5-1) = 250 ms
+// caben 4 respuestas por ventana, y el margen de 3 latidos (750 ms) no
+// depende del scheduler ni de -race.
 func TestHeartbeatAnsweredKeepsAlive(t *testing.T) {
-	s := newServer(t, 30*time.Millisecond)
+	interval := time.Second / (hub.MaxSyncChecksPerSecond - 1)
+	s := newServer(t, interval)
 	c := dial(t, s, "participant")
 	read(t, c)
-	for i := 0; i < 8; i++ { // 8 latidos > 3 de margen
+	for i := 0; i < 2*hub.MaxMissedChecks; i++ { // el doble del margen de latidos sin respuesta
 		hb := readType(t, c, syncevent.Heartbeat)
 		sendJSON(t, c, map[string]any{
 			"event_id": fmt.Sprintf("c%d", i), "type": "SYNC_CHECK", "room_id": room, "position_ms": 0,
@@ -243,14 +261,23 @@ func TestMessageTooLargeClosesConnection(t *testing.T) {
 	}
 }
 
+// passGate deja pasar el handshake sin tocar Redis.
+type passGate struct{}
+
+func (passGate) IsRevoked(context.Context, string) (bool, error)    { return false, nil }
+func (passGate) IsRoomClosed(context.Context, string) (bool, error) { return false, nil }
+
+// Si Redis cae entre la comprobación del handshake (que con Redis caído
+// responde 503, ver TestClosedRoomCheckFailsClosed) y Connect, el socket ya
+// aceptado se cierra con 1011.
 func TestRedisDownClosesWithInternalError(t *testing.T) {
-	s := newServer(t, time.Second)
+	s := newServerWithGate(t, time.Second, func(*store.Store) Gate { return passGate{} })
 	s.mr.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	c, _, err := websocket.Dial(ctx, s.wsURL(room, token(t, "participant", room)), nil)
 	if err != nil {
-		t.Fatalf("el handshake ocurre antes de tocar Redis: %v", err)
+		t.Fatalf("la comprobación pasó: el handshake debe completarse: %v", err)
 	}
 	defer c.CloseNow()
 	if _, _, err := c.Read(ctx); websocket.CloseStatus(err) != websocket.StatusInternalError {

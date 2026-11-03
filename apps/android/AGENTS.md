@@ -1,7 +1,7 @@
 # 🤖 AGENT Guidelines — Domain: App Android (`apps/android`)
 
 ## Contexto & Responsabilidad
-Eres el agente especializado en el cliente móvil de **TINT**: una app nativa en Kotlin que hace lo mismo que la web (login con Google, unirse a una sala, reproducción sincronizada, chat, reacciones y trivia) contra el **mismo backend**. Decisión y alternativas en el [ADR 0016](../../docs/adr/0016-app-android-nativa-kotlin.md). Cómo compilarla y probarla: [`README.md`](README.md).
+Eres el agente especializado en el cliente móvil de **TINT**: una app nativa en Kotlin que hace lo mismo que la web (login con Google, unirse a una sala, reproducción sincronizada, chat, reacciones y trivia) contra el **mismo backend**. Decisión y alternativas en el [ADR 0026](../../docs/adr/0026-app-android-nativa-kotlin.md). Cómo compilarla y probarla: [`README.md`](README.md).
 
 ## Stack Técnico
 - Kotlin 2.0.21 + Jetpack Compose (BOM 2024.10.01, Material 3), `minSdk` 26, `targetSdk` 35.

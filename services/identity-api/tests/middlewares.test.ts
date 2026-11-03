@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
+import { logger } from '../src/logging.js';
 import { z } from 'zod';
 import { validate } from '../src/middlewares/validate.js';
 import { errorHandler } from '../src/middlewares/error.js';
@@ -34,13 +35,13 @@ describe('validate', () => {
 describe('errorHandler', () => {
   it('responde 500 genérico sin filtrar el mensaje interno y lo registra en el servidor', () => {
     const res = mockRes();
-    const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const log = vi.spyOn(logger, 'error').mockImplementation(() => {});
     const err = new Error('value too long for type character varying(150)');
     errorHandler(err, {} as any, res, (() => {}) as any);
     expect(res.status).toHaveBeenCalledWith(500);
     expect(res.json).toHaveBeenCalledWith({ error: 'Internal error' });
     expect(log).toHaveBeenCalled();
-    expect(String(log.mock.calls[0].join(' '))).toContain('character varying(150)');
+    expect(JSON.stringify(log.mock.calls[0])).toContain('character varying(150)');
     log.mockRestore();
   });
 

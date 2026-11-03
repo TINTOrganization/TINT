@@ -1,6 +1,7 @@
 import { act, renderHook } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MockWebSocket } from '../test/mockWebSocket';
+import { sameOriginWebSocketUrl } from '../lib/publicEntry';
 import { DEFAULT_SYNC_WS_URL, useSyncSocket, type UseSyncSocketOptions } from './useSyncSocket';
 import { apiFetch } from '../lib/api';
 
@@ -73,12 +74,12 @@ describe('useSyncSocket — conexión', () => {
   it('usa VITE_SYNC_WS_URL o el valor por defecto si no se pasa url', () => {
     localStorage.setItem('tint_guest_token', 'g');
     renderHook(() => useSyncSocket({ roomId: 'r1', role: 'guest' }));
-    const expectedBase = import.meta.env.VITE_SYNC_WS_URL || DEFAULT_SYNC_WS_URL;
+    const expectedBase = sameOriginWebSocketUrl(import.meta.env.VITE_SYNC_WS_URL || DEFAULT_SYNC_WS_URL);
     expect(MockWebSocket.last().url).toBe(`${expectedBase}?room_id=r1&token=g`);
   });
 
-  it('por defecto apunta a sync-core en el puerto 8083 del host (8082 es de social-core)', () => {
-    expect(DEFAULT_SYNC_WS_URL).toBe('ws://localhost:8083/ws/sync');
+  it('por defecto usa la ruta pública del gateway', () => {
+    expect(DEFAULT_SYNC_WS_URL).toBe('/ws/sync');
   });
 
   it('guest sin token no conecta y reporta error', () => {

@@ -9,6 +9,9 @@
 .env.*
 !.env.example
 
+# Python
+__pycache__/
+*.pyc
 # Android (apps/android)
 .gradle/
 build/
@@ -23,3 +26,9 @@ google-services.json
 # Local agent tooling (no commitear)
 .agents/
 skills-lock.json
+
+# Python (pruebas del gateway y scripts)
+__pycache__/
+
+# Respaldos de los almacenes (DAT-06): contienen datos personales
+backups/

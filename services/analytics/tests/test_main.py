@@ -99,7 +99,7 @@ def test_main_exits_2_on_missing_configuration(capsys):
     assert "DATABASE_URL" in capsys.readouterr().err
 
 
-def test_main_exits_1_when_migrations_cannot_run(caplog):
+def test_main_exits_1_when_migrations_cannot_run(capsys):
     rec = Recorder()
 
     def broken_connect(dsn, **kwargs):
@@ -108,8 +108,15 @@ def test_main_exits_1_when_migrations_cannot_run(caplog):
     rec.connect = broken_connect
     code, _rec = run_main(rec=rec)
     assert code == 1
-    assert "migraciones" in caplog.text
+    assert "migraciones" in capsys.readouterr().out
     assert rec.servers == []
+
+
+def test_main_exits_2_on_invalid_log_level(capsys):
+    code, rec = run_main(env={**ENV, "LOG_LEVEL": "verbose"})
+    assert code == 2
+    assert "LOG_LEVEL" in capsys.readouterr().err
+    assert rec.conns == [] and rec.servers == []
 
 
 def test_install_signal_handlers_sets_stop(monkeypatch):

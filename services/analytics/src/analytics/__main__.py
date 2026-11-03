@@ -23,6 +23,7 @@ from analytics.api import AnalyticsApi, create_server
 from analytics.config import ConfigError, Settings
 from analytics.consumer import StreamConsumer, run_maintenance_loop
 from analytics.db import EventStore, ReadRepository, apply_migrations
+from analytics.logging_config import LogLevelError, install_logging
 
 logger = logging.getLogger("analytics")
 
@@ -44,7 +45,11 @@ def main(
     server_factory=create_server,
 ) -> int:
     env = os.environ if env is None else env
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+    try:
+        install_logging("analytics", env)
+    except LogLevelError as exc:
+        print(f"analytics: {exc}", file=sys.stderr)
+        return 2
     try:
         settings = Settings.from_env(env)
     except ConfigError as exc:

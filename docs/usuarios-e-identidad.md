@@ -192,7 +192,21 @@ Lo emite Google al iniciar sesión con `signInWithPopup` y la web lo guarda en `
 | Algoritmo | `RS256`, con la clave de su `kid` en el JWKS `securetoken@system.gserviceaccount.com` (en caché, 5 pedidos/min) |
 | `iss` | `https://securetoken.google.com/<FIREBASE_PROJECT_ID>` |
 | `aud` | `<FIREBASE_PROJECT_ID>` |
-| Identidad | `sub` (o `uid`) → `users.provider_sub`; `email`, `name` y `picture` se copian en el primer acceso |
+| `exp` | Obligatorio y vigente |
+| Identidad | `sub` (obligatorio, no vacío) → `users.provider_sub`; `email`, `name` y `picture` se copian en el primer acceso |
+
+#### Modo Firebase Auth Emulator (solo desarrollo, [ADR 0024](adr/0024-login-local-con-firebase-auth-emulator.md))
+Para levantar todo en local sin un proyecto real de Firebase, `docker compose` arranca el **Firebase Auth Emulator** (proyecto `demo-tint`). Sus ID tokens **no llevan firma** (`alg: none`), así que identity-api solo los acepta si se cumplen **todas** estas condiciones:
+
+| Condición | Si no se cumple |
+| :--- | :--- |
+| `FIREBASE_AUTH_EMULATOR_HOST` tiene valor | `alg: none` → **401** (siempre: es el comportamiento por defecto) |
+| `NODE_ENV` ≠ `production` | El proceso **no arranca** (`parseEnv`, zod); en tiempo de petición, 401 |
+| `FIREBASE_PROJECT_ID` empieza por `demo-` | El proceso **no arranca**; en tiempo de petición, 401 |
+| Firma vacía, `alg` exactamente `none` | 401 (`None`, `NONE` o `none` con firma no pasan) |
+| `iss`, `aud`, `exp` y `sub` como en la tabla de arriba | 401 |
+
+En modo emulador los tokens RS256 de Google se siguen verificando con el JWKS. El override de producción (`docker-compose.production.yml`) fija `NODE_ENV=production`, vacía `FIREBASE_AUTH_EMULATOR_HOST` y no arranca el emulador.
 
 ### Guest token (invitado)
 ```json

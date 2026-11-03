@@ -21,9 +21,19 @@ Cada ADR de esta carpeta se escribió a partir de evidencia del repositorio (có
 | [0011](0011-ambilight-precalculado-por-media-worker.md) | Ambilight precalculado por media-worker | Aceptada | 2026-10-10 | media-worker, identity-api, web |
 | [0012](0012-trivia-con-reloj-del-servidor-y-ancla-del-recap.md) | Trivia con el reloj del servidor y el ancla del recap | Aceptada | 2026-10-11 | social-core, web |
 | [0013](0013-bloqueo-de-invitados-por-dispositivo.md) | Bloqueo de invitados por dispositivo | Aceptada | 2026-10-11 | identity-api, web |
-| [0014](0014-upgrade-y-cierre-4xxx-para-estados-terminales.md) | Upgrade y cierre `4xxx` para estados terminales en el Canal Sync | Aceptada | 2026-10-11 | sync-core, web (social-core pendiente) |
+| [0014](0014-upgrade-y-cierre-4xxx-para-estados-terminales.md) | Upgrade y cierre `4xxx` para estados terminales en el Canal Sync | Aceptada | 2026-10-11 | sync-core, web, social-core |
 | [0015](0015-voice-core-en-cpp-con-webrtc-p2p.md) | Canal de Voz en un servicio C++ con WebRTC P2P | Aceptada | 2026-10-30 | voice-core, infra, web |
-| [0016](0016-app-android-nativa-kotlin.md) | App Android nativa en Kotlin | Aceptada | 2026-10-31 | android (nuevo), infra |
+| [0016](0016-ranking-de-trivia-persistente-y-desempate.md) | Ranking de trivia persistente y desempate por tiempo acumulado | Aceptada | 2026-10-31 | social-core, web |
+| [0017](0017-despliegue-orientado-a-contenedores.md) | Despliegue orientado a contenedores y aprovisionamiento de MongoDB | Aceptada | 2026-11-01 | Infraestructura, identity-api |
+| [0018](0018-stream-core-sfu-cpp-con-libdatachannel.md) | Transmisión en vivo con un SFU propio en C++ sobre libdatachannel | Propuesta | 2026-11-01 | stream-core, infra, web |
+| [0019](0019-salas-live-y-cierre-room-closed.md) | Salas `live` y cierre de sala `ROOM_CLOSED` en todos los servicios | Aceptada | 2026-11-01 | identity-api, stream-core, sync-core, social-core, voice-core, web |
+| [0020](0020-entrada-unica-https-y-topologia-produccion.md) | Entrada única HTTPS y topología de producción Compose | Aceptada | 2026-11-02 | Infraestructura, web |
+| [0021](0021-observabilidad-salud-y-logs.md) | Salud y logs uniformes para operar los contenedores | Aceptada | 2026-11-02 | Todos los servicios, web, infraestructura |
+| [0022](0022-secretos-por-variables-de-entorno.md) | Secretos exclusivamente por variables de entorno | Aceptada | 2026-11-02 | Infraestructura, CI/CD, todos |
+| [0023](0023-instrucciones-de-ejecucion-del-prototipo.md) | Instrucciones de ejecución del prototipo y guía de revisión (OPS-06) | Aceptada | 2026-11-02 | Infraestructura, CI/CD, README |
+| [0024](0024-login-local-con-firebase-auth-emulator.md) | Login local del host con el Firebase Auth Emulator | Aceptada | 2026-11-02 | Infraestructura, identity-api, web |
+| [0025](0025-metadatos-del-chat-en-mongodb.md) | Metadatos del chat en MongoDB, sin el texto (SOC-07, DAT-02) | Propuesta | 2026-11-02 | social-core, Infraestructura |
+| [0026](0026-app-android-nativa-kotlin.md) | App Android nativa en Kotlin | Aceptada | 2026-10-31 | android (nuevo), infra |
 
 ```mermaid
 flowchart LR
@@ -40,6 +50,21 @@ flowchart LR
     A9 --> A11["0011 Ambilight precalculado"]
     A9 --> A10["0010 analítica sin PII"]
     A3 --> A12["0012 trivia y reloj del servidor"]
+    A12 --> A16["0016 ranking persistente y desempate"]
+    A1 --> A17["0017 despliegue contenerizado y MongoDB"]
+    A15 --> A18["0018 SFU C++ libdatachannel"]
+    A7 --> A19["0019 salas live y ROOM_CLOSED"]
+    A14 --> A19
+    A18 --> A19
+    A17 --> A20["0020 entrada única HTTPS y topología prod"]
+    A5 --> A20
+    A17 --> A21["0021 salud y logs uniformes"]
+    A17 --> A22["0022 secretos por variables de entorno"]
+    A17 --> A23["0023 instrucciones de ejecución del prototipo"]
+    A23 --> A24["0024 login local con Firebase Auth Emulator"]
+    A22 --> A24
+    A17 --> A25["0025 metadatos del chat en MongoDB"]
+    A12 --> A26["0026 app Android nativa en Kotlin"]
 ```
 
 ## Formato

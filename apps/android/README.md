@@ -1,6 +1,6 @@
 # TINT · App Android
 
-Cliente móvil nativo (Kotlin + Jetpack Compose) de TINT. Usa los mismos endpoints REST y WebSocket que la web; el backend no cambia ([ADR 0016](../../docs/adr/0016-app-android-nativa-kotlin.md)). Guía para agentes y contratos: [`AGENTS.md`](AGENTS.md).
+Cliente móvil nativo (Kotlin + Jetpack Compose) de TINT. Usa los mismos endpoints REST y WebSocket que la web; el backend no cambia ([ADR 0026](../../docs/adr/0026-app-android-nativa-kotlin.md)). Guía para agentes y contratos: [`AGENTS.md`](AGENTS.md).
 
 ## Estado
 | Ticket | Alcance | Estado |

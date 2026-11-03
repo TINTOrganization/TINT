@@ -14,6 +14,11 @@ bool Hub::join(const std::string& room_id, const auth::Claims& claims, std::shar
                bool host_muted) {
   std::lock_guard lock(mu_);
   const auto now = options_.now_ms();
+  if (auto closed = closed_rooms_.find(room_id);
+      closed != closed_rooms_.end() && now - closed->second < kClosedRoomMemoryMs) {
+    peer->close(close_code::kRoomClosed, "room disabled");
+    return false;
+  }
   auto [it, inserted] = rooms_.try_emplace(room_id, options_.max_members);
   Room& room = it->second;
 
@@ -117,6 +122,33 @@ void Hub::revoke(const std::string& room_id, const std::string& jti) {
     if (auto peer = room_it->second.peers.at(peer_id).lock())
       peer->close(close_code::kRevoked, "token revoked");
     leave_locked(room_id, peer_id);
+    room_it = rooms_.find(room_id);
+    if (room_it == rooms_.end()) return;
+  }
+}
+
+void Hub::close_room(const std::string& room_id) {
+  std::lock_guard lock(mu_);
+  const auto now = options_.now_ms();
+  std::erase_if(closed_rooms_,
+                [now](const auto& entry) { return now - entry.second >= kClosedRoomMemoryMs; });
+  closed_rooms_[room_id] = now;
+  auto room_it = rooms_.find(room_id);
+  if (room_it == rooms_.end()) return;
+  for (auto& [peer_id, weak] : room_it->second.peers)
+    if (auto peer = weak.lock()) peer->close(close_code::kRoomClosed, "room disabled");
+  rooms_.erase(room_it);
+}
+
+void Hub::remove_from_stage(const std::string& room_id, const std::string& user_id) {
+  std::lock_guard lock(mu_);
+  auto room_it = rooms_.find(room_id);
+  if (room_it == rooms_.end()) return;
+  for (const auto& member : room_it->second.voice.members()) {
+    if (member.user_id != user_id || moderation::can_moderate(member.role)) continue;
+    if (auto peer = room_it->second.peers.at(member.peer_id).lock())
+      peer->close(close_code::kNotOnStage, "not on stage");
+    leave_locked(room_id, member.peer_id);
     room_it = rooms_.find(room_id);
     if (room_it == rooms_.end()) return;
   }

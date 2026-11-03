@@ -9,3 +9,6 @@ export const pool = new Pool({
 });
 
 export const db = drizzle(pool);
+
+/** Lo que aceptan los repositorios para insertar: `db` o la transacción de `db.transaction`. */
+export type DbExecutor = Pick<typeof db, 'insert'>;

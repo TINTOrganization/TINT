@@ -1,5 +1,5 @@
 import { eq, and, ne } from 'drizzle-orm';
-import { db } from '../../db/client.js';
+import { db, type DbExecutor } from '../../db/client.js';
 import { rooms } from '../../db/schema.js';
 
 export type Room = typeof rooms.$inferSelect;
@@ -7,8 +7,8 @@ export type NewRoom = typeof rooms.$inferInsert;
 
 export const ACTIVE_STATUSES = ['active'] as const;
 
-export async function create(room: NewRoom) {
-  const result = await db.insert(rooms).values(room).returning();
+export async function create(room: NewRoom, executor: DbExecutor = db) {
+  const result = await executor.insert(rooms).values(room).returning();
   return result[0];
 }
 
@@ -38,6 +38,20 @@ export async function softRemoveById(id: string) {
     .update(rooms)
     .set({ status: 'deleted', updatedAt: new Date() })
     .where(eq(rooms.id, id))
+    .returning();
+  return result[0] || null;
+}
+
+/**
+ * Estado terminal de una sala `live` (ADR 0019): `UPDATE rooms SET status='disabled'`.
+ * Condicional a `status='active'` para no pisar un borrado concurrente. Devuelve null
+ * si no había sala activa que deshabilitar.
+ */
+export async function disableById(id: string) {
+  const result = await db
+    .update(rooms)
+    .set({ status: 'disabled', updatedAt: new Date() })
+    .where(and(eq(rooms.id, id), eq(rooms.status, 'active')))
     .returning();
   return result[0] || null;
 }
