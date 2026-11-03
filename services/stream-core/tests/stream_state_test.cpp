@@ -174,3 +174,56 @@ TEST(StreamState, StateNames) {
   EXPECT_EQ(to_string(State::Live), "live");
   EXPECT_EQ(to_string(State::Ended), "ended");
 }
+
+// Un parón de media (CPU del host saturada, pestaña en segundo plano, arranque lento del
+// codificador) no es una desconexión: si la misma sesión vuelve a mandar RTP, la gracia se
+// cancela. Antes la sala se quedaba en "reconnecting" y se deshabilitaba a los 60 s aunque el
+// host siguiera transmitiendo (E2E por el gateway, 2026-11-02).
+TEST(StreamState, MediaStallRecoversWhenRtpResumesOnTheSameSession) {
+  auto s = make();
+  s.on_host_publish(0);
+  s.on_host_rtp(100, true);
+  s.on_tick(5'001);
+  ASSERT_EQ(s.state(), State::HostGrace);
+  auto e = s.on_host_rtp(6'000, /*keyframe=*/false);
+  EXPECT_EQ(s.state(), State::Live);
+  EXPECT_TRUE(e.notify_state);
+  EXPECT_TRUE(e.request_keyframe) << "los viewers se resincronizan con un keyframe";
+  EXPECT_FALSE(e.publish_stream_started) << "no reinicia el reloj de la trivia";
+  EXPECT_FALSE(s.grace_deadline_ms());
+  EXPECT_FALSE(s.on_tick(5'001 + kGraceMs).request_disable);
+}
+
+TEST(StreamState, SlowStartRecoversFromGraceOnFirstKeyframe) {
+  auto s = make();
+  s.on_host_publish(0);
+  s.on_tick(3'001);
+  ASSERT_EQ(s.state(), State::HostGrace);
+  auto e = s.on_host_rtp(5'000, /*keyframe=*/true);
+  EXPECT_EQ(s.state(), State::Live);
+  EXPECT_TRUE(e.notify_state);
+  EXPECT_TRUE(e.publish_stream_started);
+}
+
+TEST(StreamState, SlowStartWithoutKeyframeGoesBackToWaiting) {
+  auto s = make();
+  s.on_host_publish(0);
+  s.on_tick(3'001);
+  auto e = s.on_host_rtp(5'000, /*keyframe=*/false);
+  EXPECT_EQ(s.state(), State::Waiting) << "sin keyframe todavía no hay imagen";
+  EXPECT_TRUE(e.notify_state);
+  EXPECT_TRUE(e.request_keyframe);
+  EXPECT_FALSE(s.on_tick(5'001 + kGraceMs).request_disable);
+  EXPECT_EQ(s.on_host_rtp(5'100, true).publish_stream_started, true);
+  EXPECT_EQ(s.state(), State::Live);
+}
+
+TEST(StreamState, RtpAfterHostConnectionLostStaysInGrace) {
+  // La PeerConnection del host se cerró: solo un WHIP nuevo lo devuelve (paquetes rezagados no).
+  auto s = make();
+  s.on_host_publish(0);
+  s.on_host_rtp(1, true);
+  s.on_host_lost(1'000);
+  EXPECT_FALSE(s.on_host_rtp(1'100, true).notify_state);
+  EXPECT_EQ(s.state(), State::HostGrace);
+}

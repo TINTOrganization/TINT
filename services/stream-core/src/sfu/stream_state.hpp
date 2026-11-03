@@ -28,6 +28,7 @@ struct Effects {
 // Ciclo de vida de la transmisión de una sala (HU-LIVE-05). Reloj inyectado en ms.
 //   Waiting --keyframe--> Live --host perdido / 3 s sin RTP--> HostGrace
 //   HostGrace --nuevo WHIP--> Live          HostGrace --vence la gracia--> Ended
+//   HostGrace (solo por el watchdog: la sesión sigue abierta) --vuelve el RTP--> Live | Waiting
 //   cualquiera --ROOM_CLOSED--> Ended
 class StreamState {
  public:
@@ -45,13 +46,15 @@ class StreamState {
   Effects on_room_closed(EndReason reason = EndReason::HostEnded);  // ROOM_CLOSED de identity-api
 
  private:
-  Effects enter_grace(std::int64_t now_ms);
+  Effects enter_grace(std::int64_t now_ms, bool session_alive);
+  Effects resume_after_stall(bool keyframe);
 
   std::chrono::milliseconds grace_;
   std::chrono::milliseconds media_timeout_;
   State state_ = State::Waiting;
   EndReason end_reason_ = EndReason::None;
   bool host_present_ = false;
+  bool media_stalled_ = false;  // gracia por el watchdog con la sesión del host todavía abierta
   bool started_published_ = false;
   std::int64_t last_rtp_ms_ = 0;
   std::int64_t grace_deadline_ms_ = 0;

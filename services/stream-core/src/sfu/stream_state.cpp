@@ -45,6 +45,7 @@ std::optional<std::int64_t> StreamState::grace_deadline_ms() const {
 Effects StreamState::on_host_publish(std::int64_t now_ms) {
   if (state_ == State::Ended) return {.rejected = true};
   host_present_ = true;
+  media_stalled_ = false;
   last_rtp_ms_ = now_ms;  // el watchdog cuenta desde que publica
   Effects e{.request_keyframe = true};
   if (state_ == State::HostGrace) {
@@ -56,7 +57,12 @@ Effects StreamState::on_host_publish(std::int64_t now_ms) {
 }
 
 Effects StreamState::on_host_rtp(std::int64_t now_ms, bool keyframe) {
-  if (!host_present_ || state_ == State::Ended) return {};
+  if (state_ == State::Ended) return {};
+  if (media_stalled_) {
+    last_rtp_ms_ = now_ms;
+    return resume_after_stall(keyframe);
+  }
+  if (!host_present_) return {};
   last_rtp_ms_ = now_ms;
   if (state_ != State::Waiting || !keyframe) return {};
   state_ = State::Live;
@@ -68,25 +74,48 @@ Effects StreamState::on_host_rtp(std::int64_t now_ms, bool keyframe) {
   return e;
 }
 
-Effects StreamState::enter_grace(std::int64_t now_ms) {
+// El RTP volvió por la misma sesión tras un parón: no hubo desconexión, se cancela la gracia.
+// Si ya hubo imagen vuelve a Live; si nunca la hubo, espera su primer keyframe.
+Effects StreamState::resume_after_stall(bool keyframe) {
+  media_stalled_ = false;
+  host_present_ = true;
+  Effects e{.notify_state = true, .request_keyframe = true};
+  if (started_published_) {
+    state_ = State::Live;
+  } else if (keyframe) {
+    state_ = State::Live;
+    started_published_ = true;
+    e.publish_stream_started = true;
+  } else {
+    state_ = State::Waiting;
+  }
+  return e;
+}
+
+Effects StreamState::enter_grace(std::int64_t now_ms, bool session_alive) {
   host_present_ = false;
+  media_stalled_ = session_alive && state_ != State::HostGrace;
   if (state_ == State::HostGrace || state_ == State::Ended) return {};
   state_ = State::HostGrace;
   grace_deadline_ms_ = now_ms + grace_.count();
   return {.notify_state = true};
 }
 
-Effects StreamState::on_host_lost(std::int64_t now_ms) { return enter_grace(now_ms); }
+Effects StreamState::on_host_lost(std::int64_t now_ms) {
+  media_stalled_ = false;  // la sesión se cerró: solo un WHIP nuevo devuelve al host
+  return enter_grace(now_ms, /*session_alive=*/false);
+}
 
 Effects StreamState::on_tick(std::int64_t now_ms) {
   if (state_ == State::HostGrace && now_ms >= grace_deadline_ms_) {
     state_ = State::Ended;
     end_reason_ = EndReason::GraceExpired;
+    media_stalled_ = false;
     return {.notify_state = true, .request_disable = true, .teardown = true};
   }
   if (host_present_ && (state_ == State::Live || state_ == State::Waiting) &&
       now_ms - last_rtp_ms_ > media_timeout_.count())
-    return enter_grace(now_ms);
+    return enter_grace(now_ms, /*session_alive=*/true);
   return {};
 }
 
@@ -95,6 +124,7 @@ Effects StreamState::on_room_closed(EndReason reason) {
   state_ = State::Ended;
   end_reason_ = reason == EndReason::None ? EndReason::HostEnded : reason;
   host_present_ = false;
+  media_stalled_ = false;
   return {.notify_state = true, .teardown = true};
 }
 
