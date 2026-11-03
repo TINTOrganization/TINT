@@ -6,7 +6,7 @@ import { validate } from '../middlewares/validate.js';
 import { requireAuthHost } from '../middlewares/auth.js';
 import { centralTokenCheck } from '../middlewares/centralAuth.js';
 import { requireRoomOwner } from '../middlewares/requireRoomOwner.js';
-import { upsertByProvider } from '../modules/users/users.repo.js';
+import { upsertByProvider, findById as findUserById } from '../modules/users/users.repo.js';
 import { requireRoomHostOrGuest } from '../middlewares/guestAuth.js';
 import { requireActiveRoom, requireReadableRoom, inactiveRoomError } from '../middlewares/activeRoom.js';
 import { createRoomWithInvitation } from '../modules/rooms/rooms.create.js';
@@ -744,24 +744,26 @@ router.delete('/rooms/:id/bans/:banId', requireAuthHost, requireRoomOwner, requi
 router.get('/invitations/:code', async (req, res) => {
   const code = paramId(req.params.code);
   const invitation = await findByCode(code);
-  if (!invitation) {
+  if (!invitation || invitation.revoked || invitation.expiresAt < new Date()) {
     return res.status(404).json({ error: 'Not found' });
-  }
-  if (invitation.revoked) {
-    return res.status(409).json({ error: 'Revoked' });
-  }
-  if (invitation.expiresAt < new Date()) {
-    return res.status(410).json({ error: 'Expired' });
   }
   const room = await findById(invitation.roomId);
   if (!room || room.status === 'deleted') {
-    return res.status(410).json({ error: 'Deleted' });
+    return res.status(404).json({ error: 'Not found' });
   }
+  const host = room.hostId ? await findUserById(room.hostId) : null;
+  const hostName = host?.displayName || (host?.email ? host.email.split('@')[0] : 'Host');
+  const rawScheduled = (room as any).scheduledStartTime ?? room.createdAt ?? invitation.createdAt;
+  const scheduledStartTime = rawScheduled instanceof Date ? rawScheduled.toISOString() : (rawScheduled || new Date().toISOString());
+
   res.json({
     code: invitation.code,
     roomId: room.id,
     roomTitle: room.title,
+    hostName,
+    scheduledStartTime,
     expiresAt: invitation.expiresAt,
+    roomKind: (room as any).kind || 'watch',
   });
 });
 

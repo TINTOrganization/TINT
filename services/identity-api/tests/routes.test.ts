@@ -22,6 +22,11 @@ vi.mock('../src/modules/rooms/rooms.repo.js', () => ({
   updateTitle: vi.fn(),
 }));
 
+vi.mock('../src/modules/users/users.repo.js', () => ({
+  findById: vi.fn(async (id: string) => ({ id, displayName: 'Pablo Host', email: 'host@tint.org' })),
+  upsertByProvider: vi.fn(),
+}));
+
 vi.mock('../src/modules/rooms/rooms.create.js', () => ({ createRoomWithInvitation: vi.fn() }));
 vi.mock('../src/modules/invitations/invitations.repo.js', () => ({
   create: vi.fn(),
@@ -59,7 +64,13 @@ import { create as createInvitation, findByCode, setRevoked, listByRoom, listLat
 import { defaultEventStartDeps } from '../src/modules/eventStart/eventStart.clients.js';
 import { EventStartError, startEvent } from '../src/modules/eventStart/eventStart.service.js';
 
-const room = { id: 'room-1', hostId: 'host-1', title: 'Noche de cine', status: 'active' };
+const room = {
+  id: 'room-1',
+  hostId: 'host-1',
+  title: 'Noche de cine',
+  status: 'active',
+  createdAt: new Date('2026-11-03T18:00:00.000Z'),
+};
 const deletedRoom = { ...room, status: 'deleted' };
 const invitation = {
   id: 'inv-1',
@@ -512,26 +523,26 @@ describe('rutas v1', () => {
     expect(res.status).toBe(404);
   });
 
-  it('GET /invitations/:code 409 si la invitación está revocada', async () => {
+  it('GET /invitations/:code 404 si la invitación está revocada (AC2)', async () => {
     vi.mocked(findByCode).mockResolvedValueOnce({ ...invitation, revoked: true } as any);
     const res = await request(app).get('/api/v1/invitations/abc');
-    expect(res.status).toBe(409);
+    expect(res.status).toBe(404);
   });
 
-  it('GET /invitations/:code 410 si la invitación expiró', async () => {
+  it('GET /invitations/:code 404 si la invitación expiró (AC2)', async () => {
     vi.mocked(findByCode).mockResolvedValueOnce({ ...invitation, expiresAt: new Date(Date.now() - 1000) } as any);
     const res = await request(app).get('/api/v1/invitations/abc');
-    expect(res.status).toBe(410);
+    expect(res.status).toBe(404);
   });
 
-  it('GET /invitations/:code 410 si la sala está eliminada', async () => {
+  it('GET /invitations/:code 404 si la sala está eliminada (AC2)', async () => {
     vi.mocked(findByCode).mockResolvedValueOnce({ ...invitation } as any);
     vi.mocked(findById).mockResolvedValueOnce(deletedRoom as any);
     const res = await request(app).get('/api/v1/invitations/abc');
-    expect(res.status).toBe(410);
+    expect(res.status).toBe(404);
   });
 
-  it('GET /invitations/:code 200 devuelve detalles de la sala', async () => {
+  it('GET /invitations/:code 200 devuelve detalles de la sala con hostName y scheduledStartTime (AC1)', async () => {
     vi.mocked(findByCode).mockResolvedValueOnce({ ...invitation } as any);
     vi.mocked(findById).mockResolvedValueOnce(room as any);
     const res = await request(app).get('/api/v1/invitations/abc');
@@ -540,7 +551,10 @@ describe('rutas v1', () => {
       code: invitation.code,
       roomId: 'room-1',
       roomTitle: 'Noche de cine',
+      hostName: 'Pablo Host',
+      scheduledStartTime: '2026-11-03T18:00:00.000Z',
       expiresAt: invitation.expiresAt.toISOString(),
+      roomKind: 'watch',
     });
   });
 
