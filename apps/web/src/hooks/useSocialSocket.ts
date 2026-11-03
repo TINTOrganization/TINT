@@ -2,13 +2,16 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { apiFetch } from '../lib/api';
 import { errorStatus } from '../lib/errorStatus';
 import { getLocalIdentity } from '../lib/identity';
+import { sameOriginWebSocketUrl } from '../lib/publicEntry';
 import { CLOSE_EXPIRED, CLOSE_REVOKED } from '../lib/syncProtocol';
+import { CLOSE_ROOM_DISABLED, isRoomDisabledError } from '../lib/roomClosed';
 import {
   buildChatMute,
   buildChatSend,
   buildChatSlowMode,
   buildTriviaAnswer,
   buildTriviaDelete,
+  buildTriviaLaunchNow,
   buildTriviaList,
   buildTriviaSchedule,
   buildTriviaUpdate,
@@ -120,8 +123,7 @@ const FATAL_TICKET_STATUS = [403, 404, 410];
 const SEEN_CAP = 200;
 
 function resolveBaseUrl(override?: string): string {
-  if (override) return override;
-  return import.meta.env.VITE_SOCIAL_WS_URL || 'ws://localhost:8082/ws/social';
+  return sameOriginWebSocketUrl(override || import.meta.env.VITE_SOCIAL_WS_URL || '/ws/social');
 }
 
 /**
@@ -146,6 +148,8 @@ export function useSocialSocket(roomId: string | undefined, opts: UseSocialSocke
   // Cierres terminales de social-core: el host retiró o bloqueó al participante (4001) o su token caducó (4003).
   const [revoked, setRevoked] = useState(false);
   const [expired, setExpired] = useState(false);
+  // Sala deshabilitada (ADR 0019): cierre 4010 o sync-ticket con 410 Disabled. Terminal.
+  const [disabled, setDisabled] = useState(false);
   const [triviaLeaderboard, setTriviaLeaderboard] = useState<TriviaLeaderboardView>(EMPTY_LEADERBOARD);
   /** Último voto propio visto por poll_id: los broadcasts no traen my_vote. */
   const myVotesRef = useRef<Map<string, number>>(new Map());
@@ -209,6 +213,7 @@ export function useSocialSocket(roomId: string | undefined, opts: UseSocialSocke
     attemptRef.current = 0;
     setRevoked(false);
     setExpired(false);
+    setDisabled(false);
     // Por efecto: un ticket que llega tras desmontar (o tras cambiar de sala) se descarta.
     let disposed = false;
 
@@ -231,6 +236,7 @@ export function useSocialSocket(roomId: string | undefined, opts: UseSocialSocke
             if (disposed) return;
             const status = errorStatus(err);
             if (status !== null && FATAL_TICKET_STATUS.includes(status)) {
+              if (isRoomDisabledError(err)) setDisabled(true);
               setStatus('closed');
               return;
             }
@@ -317,6 +323,13 @@ export function useSocialSocket(roomId: string | undefined, opts: UseSocialSocke
           closedRef.current = true;
           if (role === 'guest') localStorage.removeItem('tint_guest_token');
           setRevoked(true);
+          setStatus('closed');
+          return;
+        }
+        if (ev.code === CLOSE_ROOM_DISABLED) {
+          // El evento terminó (ADR 0019): reconectar solo repetiría el 4010.
+          closedRef.current = true;
+          setDisabled(true);
           setStatus('closed');
           return;
         }
@@ -477,6 +490,12 @@ export function useSocialSocket(roomId: string | undefined, opts: UseSocialSocke
     [sendFrame, listTrivia],
   );
 
+  /** `trivia_launch_now`: social-core abre la trivia ya (opens_at_ms = ahora) y reenvía la agenda. */
+  const launchTriviaNow = useCallback(
+    (triviaId: string) => sendFrame((room) => buildTriviaLaunchNow(room, triviaId)),
+    [sendFrame],
+  );
+
   const answerTrivia = useCallback(
     (triviaId: string, option: number) => {
       const ok = sendFrame((room) => buildTriviaAnswer(room, triviaId, option));
@@ -511,11 +530,13 @@ export function useSocialSocket(roomId: string | undefined, opts: UseSocialSocke
     triviaSchedule,
     revoked,
     expired,
+    disabled,
     triviaLeaderboard,
     scheduleTrivia,
     updateTrivia,
     deleteTrivia,
     listTrivia,
+    launchTriviaNow,
     answerTrivia,
     dismissTrivia,
   };

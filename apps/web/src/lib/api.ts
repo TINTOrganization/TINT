@@ -1,4 +1,4 @@
-const API_URL = import.meta.env.VITE_IDENTITY_API_URL || 'http://localhost:8081/api/v1';
+const API_URL = import.meta.env.VITE_IDENTITY_API_URL || '/api/v1';
 
 export class ApiError extends Error {
   readonly status: number;

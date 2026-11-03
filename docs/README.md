@@ -3,12 +3,14 @@
 | Documento | Para qué leerlo |
 | :--- | :--- |
 | [Arquitectura del sistema](arquitectura.md) | Visión general: servicios, contratos entre dominios, almacenes, puertos y CI. **Empieza aquí.** |
+| ↳ [Instrucciones de ejecución del prototipo](../README.md#-instrucciones-de-ejecución-del-prototipo-ops-06) | Guía de 1 página para evaluadores: clone, arranque en contenedores (R10), verificación y solución de problemas (OPS-06, [ADR 0023](adr/0023-instrucciones-de-ejecucion-del-prototipo.md)). |
 | ↳ [Vista de componentes y conectores](arquitectura.md#4-vista-de-componentes-y-conectores-cc) | Componentes en ejecución y cada conector con su tipo y protocolo (REST, WebSocket, Pub/Sub, Streams, S3, SQL), más los flujos de reproducción y social. |
 | ↳ [Vista de despliegue](arquitectura.md#7-vista-de-despliegue) | Contenedores de `docker compose`, procesos locales (identity-api y web), volúmenes, puertos, variables, estado de producción y pipeline de CI/CD. |
 | [Decisiones de arquitectura (ADRs)](adr/README.md) | Por qué el sistema es como es: una decisión por archivo, con contexto, alternativas y consecuencias. |
 | [Usuarios, identidad y permisos](usuarios-e-identidad.md) | Tipos de usuario, matriz de permisos, esquema de PostgreSQL, esquemas de tokens, flujos de login, invitación, retiro y bloqueo. |
 | [Dominio de Reproducción](dominio-reproduccion.md) | Canal Sync v2: Reloj Maestro, comandos, drift, presencia, delegación, revocación, subida y biblioteca de vídeos, métricas, benchmarks y pruebas. |
 | [Dominio de Voz](dominio-voz.md) | Canal de voz (voice-core, C++): unirse, señalización WebRTC P2P, revocación, plan por fases y verificación. |
+| [Dominio de Transmisión en vivo](dominio-transmision.md) | Transmisión del host (stream-core, C++ SFU): HU y AC, WHIP/WHEP, simulcast, salas `live`, `ROOM_CLOSED`, performance y spikes. *Especificación.* |
 | [Contrato de eventos de analítica](contrato-eventos-analitica.md) | Qué publica cada servicio en `analytics:events` y qué entrega Analítica a cambio (tablas y API de lectura de KPIs). |
 | [Bug hunting 2026-10](bug-hunting-2026-10.md) | Hallazgos de la ronda de bug hunting de octubre de 2026 y cómo se corrigieron. |
 

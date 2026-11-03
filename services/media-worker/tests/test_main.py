@@ -87,15 +87,74 @@ def test_main_runs_until_a_signal_stops_it(monkeypatch):
     handlers = {}
     monkeypatch.setattr(entry.signal, "signal", lambda sig, fn: handlers.__setitem__(sig, fn))
     fake = Mock()
+    health = FakeHealthServer()
 
     def run(stop: threading.Event):
+        assert health.started and not health.stopped
         handlers[signal.SIGTERM](signal.SIGTERM, None)
         assert stop.is_set()
 
     fake.run.side_effect = run
     monkeypatch.setattr(entry, "build_consumer", lambda env: fake)
-    assert entry.main(ENV) == 0
+    assert entry.main(ENV, health_factory=lambda state, port: health) == 0
     assert set(handlers) == {signal.SIGTERM, signal.SIGINT}
+    assert health.stopped
+
+
+class FakeHealthServer:
+    def __init__(self):
+        self.started = False
+        self.stopped = False
+        self.port = 8088
+
+    def start(self):
+        self.started = True
+
+    def stop(self):
+        self.stopped = True
+
+
+def test_main_starts_the_health_server_with_the_configured_port(monkeypatch):
+    server = FakeHealthServer()
+    captured = {}
+
+    def factory(state, port):
+        captured.update(state=state, port=port)
+        return server
+
+    monkeypatch.setattr(entry, "build_consumer", lambda env: Mock())
+    assert entry.main({**ENV, "MEDIA_WORKER_PORT": "9123"}, health_factory=factory) == 0
+    assert captured["port"] == 9123
+    assert captured["state"].is_healthy(), "el worker late desde el arranque"
+    assert server.started and server.stopped
+
+
+def test_main_wires_consumer_heartbeat_to_health_state(monkeypatch):
+    server = FakeHealthServer()
+    captured = {}
+    consumer = Mock()
+
+    def factory(state, port):
+        captured.update(state=state)
+        return server
+
+    monkeypatch.setattr(entry, "build_consumer", lambda env: consumer)
+    assert entry.main(ENV, health_factory=factory) == 0
+    assert consumer.heartbeat is not None
+    # Simular que el reloj avanza y el latido del consumidor refresca el estado
+    captured["state"]._last_beat = 0.0
+    consumer.heartbeat()
+    assert captured["state"].is_healthy()
+
+
+def test_main_exits_2_on_invalid_health_settings(monkeypatch):
+    monkeypatch.setattr(entry, "build_consumer", Mock())
+    assert entry.main({**ENV, "MEDIA_WORKER_PORT": "nope"}) == 2
+
+
+def test_main_exits_2_on_invalid_log_level(monkeypatch):
+    monkeypatch.setattr(entry, "build_consumer", Mock())
+    assert entry.main({**ENV, "LOG_LEVEL": "verbose"}) == 2
 
 
 def test_main_reports_missing_configuration(capsys):

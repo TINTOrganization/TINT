@@ -22,7 +22,9 @@ services:
         missing=""
         for variable in POSTGRES_USER POSTGRES_PASSWORD POSTGRES_DB \
           MINIO_ROOT_USER MINIO_ROOT_PASSWORD MINIO_BUCKET \
-          JWT_SECRET JWT_ISSUER JWT_AUDIENCE FIREBASE_PROJECT_ID TURN_SECRET; do
+          JWT_SECRET JWT_ISSUER JWT_AUDIENCE FIREBASE_PROJECT_ID TURN_SECRET \
+          MONGO_ROOT_PASSWORD MONGO_URI INTERNAL_API_SECRET \
+          MONGO_APP_PASSWORD CHAT_META_PEPPER; do
           value=$$(printenv "$$variable" || true)
           if [ -z "$$value" ]; then
             missing="$$missing\n  - $$variable"
@@ -30,8 +32,31 @@ services:
         done
         if [ -n "$$missing" ]; then
           printf 'Missing required variables in .env:%b\n' "$$missing" >&2
+          printf 'Run make env-sync (or python scripts/env_sync.py) to add them from .env.example.\n' >&2
           exit 1
         fi
+        # Login local con el Firebase Auth Emulator (ADR 0024): solo con un proyecto demo-*.
+        if [ -n "$${FIREBASE_AUTH_EMULATOR_HOST:-}" ]; then
+          case "$$FIREBASE_PROJECT_ID" in
+            demo-*) ;;
+            *) printf 'FIREBASE_AUTH_EMULATOR_HOST requires FIREBASE_PROJECT_ID=demo-* (got %s)\n' "$$FIREBASE_PROJECT_ID" >&2; exit 1 ;;
+          esac
+        fi
+        LOG_LEVEL=$${LOG_LEVEL:-info}
+        case "$$(printf '%s' "$$LOG_LEVEL" | tr '[:upper:]' '[:lower:]')" in
+          debug|info|warn|error) ;;
+          *) printf 'Invalid LOG_LEVEL: %s\n' "$$LOG_LEVEL" >&2; exit 1 ;;
+        esac
+        GATEWAY_LOG_LEVEL=$${GATEWAY_LOG_LEVEL:-INFO}
+        case "$$(printf '%s' "$$GATEWAY_LOG_LEVEL" | tr '[:upper:]' '[:lower:]')" in
+          debug|info|warn|error) ;;
+          *) printf 'Invalid GATEWAY_LOG_LEVEL: %s\n' "$$GATEWAY_LOG_LEVEL" >&2; exit 1 ;;
+        esac
+        NGINX_ERROR_LOG_LEVEL=$${NGINX_ERROR_LOG_LEVEL:-warn}
+        case "$$(printf '%s' "$$NGINX_ERROR_LOG_LEVEL" | tr '[:upper:]' '[:lower:]')" in
+          debug|info|notice|warn|error|crit) ;;
+          *) printf 'Invalid NGINX_ERROR_LOG_LEVEL: %s\n' "$$NGINX_ERROR_LOG_LEVEL" >&2; exit 1 ;;
+        esac
         echo "Environment validation passed"
 
   # Entrada pública única: redirige HTTP a HTTPS y enruta APIs y WebSockets.
@@ -53,6 +78,8 @@ services:
       SOCIAL_CORE_UPSTREAM: ${SOCIAL_CORE_UPSTREAM:-social-core:8082}
       ANALYTICS_UPSTREAM: ${ANALYTICS_UPSTREAM:-analytics:8084}
       VOICE_CORE_UPSTREAM: ${VOICE_CORE_UPSTREAM:-voice-core:8085}
+      STREAM_CORE_UPSTREAM: ${STREAM_CORE_UPSTREAM:-stream-core:8086}
+      GATEWAY_LOG_LEVEL: ${GATEWAY_LOG_LEVEL:-INFO}
     volumes:
       - ./gateway/Caddyfile:/etc/caddy/Caddyfile:ro
       - gateway-data:/data
@@ -64,13 +91,28 @@ services:
       retries: 5
 
   web:
-    build: ./apps/web
+    build:
+      context: ./apps/web
+      args:
+        VITE_IDENTITY_API_URL: ${VITE_IDENTITY_API_URL:-/api/v1}
+        VITE_SYNC_WS_URL: ${VITE_SYNC_WS_URL:-/ws/sync}
+        VITE_SOCIAL_WS_URL: ${VITE_SOCIAL_WS_URL:-/ws/social}
+        VITE_VOICE_WS_URL: ${VITE_VOICE_WS_URL:-/ws/voice}
+        VITE_ANALYTICS_API_URL: ${VITE_ANALYTICS_API_URL:-/api/v1}
+        VITE_SYNC_ENCODING: ${VITE_SYNC_ENCODING:-json}
+        VITE_FIREBASE_API_KEY: ${VITE_FIREBASE_API_KEY:-test}
+        VITE_FIREBASE_AUTH_DOMAIN: ${VITE_FIREBASE_AUTH_DOMAIN:-test}
+        VITE_FIREBASE_PROJECT_ID: ${VITE_FIREBASE_PROJECT_ID:-test}
+        # Solo desarrollo (ADR 0024): vacío = Firebase real. El override de producción lo vacía.
+        VITE_FIREBASE_AUTH_EMULATOR_URL: ${VITE_FIREBASE_AUTH_EMULATOR_URL:-}
     container_name: tint-web
     <<: *env-check
+    environment:
+      NGINX_ERROR_LOG_LEVEL: ${NGINX_ERROR_LOG_LEVEL:-warn}
     ports:
       - "${WEB_PORT:-5173}:80"
     healthcheck:
-      test: ["CMD", "wget", "--spider", "--quiet", "http://127.0.0.1/"]
+      test: ["CMD", "wget", "--spider", "--quiet", "http://127.0.0.1/healthz"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -81,7 +123,7 @@ services:
     <<: *env-check
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-tint}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-tint}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB:-tint}
     ports:
       - "5432:5432"
@@ -110,15 +152,15 @@ services:
 
   minio:
     #image: minio/minio:latest
-    image: pgsty/minio:latest # Usamos la imagen pgsty dado que la oficial de minio no está disponible actualmente.
+    image: pgsty/minio@sha256:b6bfe7239bfc83fb90d31612d9704d86039dd714f7904b3f1ad68f211e602372 # Usamos la imagen pgsty dado que la oficial de minio no está disponible actualmente.
     container_name: tint-minio
     <<: *env-check
     command: ["server", "/data", "--console-address", ":9001"]
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-tintadmin}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-tintadmin123}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
       # El navegador sube y reproduce directo desde MinIO con URLs firmadas.
-      MINIO_API_CORS_ALLOW_ORIGIN: ${MINIO_CORS_ALLOW_ORIGIN:-http://localhost:5173}
+      MINIO_API_CORS_ALLOW_ORIGIN: ${MINIO_CORS_ALLOW_ORIGIN:-https://localhost,http://localhost:5173}
     ports:
       - "9000:9000"
       - "9001:9001"
@@ -133,7 +175,7 @@ services:
   # Crea el bucket de media al arrancar y termina.
   minio-init:
     #image: minio/mc:latest
-    image: pgsty/mc:latest # Usamos la imagen pgsty dado que la oficial de minio no está disponible actualmente.
+    image: pgsty/mc@sha256:ce62c9053c69ce12a527a322345b5ad9f44b5f8a7b8189f82e516f2e3f30f1d8 # Usamos la imagen pgsty dado que la oficial de minio no está disponible actualmente.
     container_name: tint-minio-init
     <<: *env-check
     depends_on:
@@ -150,7 +192,7 @@ services:
       "
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-tintadmin}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-tintadmin123}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
       MINIO_BUCKET: ${MINIO_BUCKET:-tint-media}
 
   # Media worker (Python + FFmpeg): consume media:uploads, valida el vídeo subido
@@ -170,15 +212,18 @@ services:
       minio-init:
         condition: service_completed_successfully
     environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER:-tint}:${POSTGRES_PASSWORD:-tint}@postgres:5432/${POSTGRES_DB:-tint}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-tint}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-tint}
       REDIS_URL: redis://redis:6379
       S3_ENDPOINT_URL: http://minio:9000
       S3_ACCESS_KEY: ${MINIO_ROOT_USER:-tintadmin}
-      S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-tintadmin123}
+      S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
       MINIO_BUCKET: ${MINIO_BUCKET:-tint-media}
       MEDIA_WORKER_CONSUMER: media-worker-1
+      MEDIA_WORKER_PORT: ${MEDIA_WORKER_PORT:-8088}
+      MEDIA_WORKER_HEARTBEAT_MAX_AGE_S: ${MEDIA_WORKER_HEARTBEAT_MAX_AGE_S:-30}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
     healthcheck:
-      test: ["CMD", "python", "-c", "import os; os.kill(1, 0)"]
+      test: ["CMD", "python", "-c", "import os, urllib.request; urllib.request.urlopen(f\"http://localhost:{os.environ['MEDIA_WORKER_PORT']}/healthz\", timeout=2)"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -198,9 +243,9 @@ services:
       redis:
         condition: service_healthy
     environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER:-tint}:${POSTGRES_PASSWORD:-tint}@postgres:5432/${POSTGRES_DB:-tint}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-tint}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-tint}
       REDIS_URL: redis://redis:6379
-      JWT_SECRET: ${JWT_SECRET:-dev-secret-change-in-prod}
+      JWT_SECRET: ${JWT_SECRET}
       JWT_ISSUER: ${JWT_ISSUER:-tint-identity}
       JWT_AUDIENCE: ${JWT_AUDIENCE:-tint:room}
       ANALYTICS_PORT: ${ANALYTICS_PORT:-8084}
@@ -213,6 +258,7 @@ services:
       ANALYTICS_TIMEZONE: ${ANALYTICS_TIMEZONE:-America/Bogota}
       # Contraseña compartida del panel de negocio (/analitica); vacía = panel deshabilitado.
       ANALYTICS_ADMIN_PASSWORD: ${ANALYTICS_ADMIN_PASSWORD:-}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
     ports:
       - "${ANALYTICS_PORT:-8084}:${ANALYTICS_PORT:-8084}"
     healthcheck:
@@ -231,15 +277,22 @@ services:
     environment:
       SOCIAL_CORE_ADDR: ":8082"
       REDIS_URL: redis://redis:6379
-      JWT_SECRET: ${JWT_SECRET:-dev-secret-change-in-prod}
+      JWT_SECRET: ${JWT_SECRET}
       JWT_ISSUER: ${JWT_ISSUER:-tint-identity}
       JWT_AUDIENCE: ${JWT_AUDIENCE:-tint:room}
       FIREBASE_PROJECT_ID: ${FIREBASE_PROJECT_ID:-tint-login}
       # Orígenes (host[:puerto]) que pueden abrir /ws/social.
-      ALLOWED_ORIGINS: ${SOCIAL_ALLOWED_ORIGINS:-localhost:5173,127.0.0.1:5173}
+      ALLOWED_ORIGINS: ${SOCIAL_ALLOWED_ORIGINS:-localhost:5173,127.0.0.1:5173,localhost}
       SOCIAL_REACTION_LIMIT: ${SOCIAL_REACTION_LIMIT:-5}
       SOCIAL_REACTION_IP_LIMIT: ${SOCIAL_REACTION_IP_LIMIT:-5}
       SOCIAL_REACTION_WINDOW_MS: ${SOCIAL_REACTION_WINDOW_MS:-1000}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      # Metadatos del chat en MongoDB (ADR 0025), sin texto: usuario de aplicación,
+      # no el raíz. No depende de mongodb: si MongoDB cae, el chat sigue y los
+      # metadatos esperan en Redis.
+      MONGO_URI: mongodb://${MONGO_APP_USER:-social_core}:${MONGO_APP_PASSWORD}@mongodb:27017/social?authSource=social
+      CHAT_META_PEPPER: ${CHAT_META_PEPPER}
+      CHAT_META_RETENTION_DAYS: ${CHAT_META_RETENTION_DAYS:-90}
     depends_on:
       env-check:
         condition: service_completed_successfully
@@ -264,10 +317,11 @@ services:
     environment:
       SYNC_CORE_ADDR: ":8080"
       REDIS_URL: redis://redis:6379
-      JWT_SECRET: ${JWT_SECRET:-dev-secret-change-in-prod}
+      JWT_SECRET: ${JWT_SECRET}
       JWT_ISSUER: ${JWT_ISSUER:-tint-identity}
       JWT_AUDIENCE: ${JWT_AUDIENCE:-tint:room}
-      ALLOWED_ORIGINS: ${SYNC_ALLOWED_ORIGINS:-localhost:5173,127.0.0.1:5173}
+      ALLOWED_ORIGINS: ${SYNC_ALLOWED_ORIGINS:-localhost:5173,127.0.0.1:5173,localhost}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
     ports:
       - "8083:8080"
     healthcheck:
@@ -292,22 +346,29 @@ services:
         condition: service_completed_successfully
     environment:
       IDENTITY_API_PORT: 8081
-      NODE_ENV: production
+      # Desarrollo local: permite el modo Firebase Auth Emulator. El override de producción
+      # fija production, con el que identity-api no arranca si hay emulador (ADR 0024).
+      NODE_ENV: development
       AUTH_PROVIDER: ${AUTH_PROVIDER:-firebase}
       SYNC_CORE_URL: http://sync-core:8080
       SOCIAL_CORE_URL: http://social-core:8082
       ANALYTICS_URL: http://analytics:8084
-      DATABASE_URL: postgresql://${POSTGRES_USER:-tint}:${POSTGRES_PASSWORD:-tint}@postgres:5432/${POSTGRES_DB:-tint}
+      STREAM_CORE_URL: http://stream-core:8086
+      INTERNAL_API_SECRET: ${INTERNAL_API_SECRET}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-tint}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-tint}
       REDIS_URL: redis://redis:6379
-      JWT_SECRET: ${JWT_SECRET:-dev-secret-change-in-prod}
+      JWT_SECRET: ${JWT_SECRET}
       JWT_ISSUER: ${JWT_ISSUER:-tint-identity}
       JWT_AUDIENCE: ${JWT_AUDIENCE:-tint:room}
       FIREBASE_PROJECT_ID: ${FIREBASE_PROJECT_ID:-tint-login}
+      # Solo desarrollo (ADR 0024): acepta los ID tokens sin firma del emulador. Vacío = Firebase real.
+      FIREBASE_AUTH_EMULATOR_HOST: ${FIREBASE_AUTH_EMULATOR_HOST:-}
       MINIO_ENDPOINT: http://minio:9000
       MINIO_PUBLIC_ENDPOINT: ${MINIO_PUBLIC_ENDPOINT:-http://localhost:9000}
       MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-tintadmin}
-      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-tintadmin123}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
       MINIO_BUCKET: ${MINIO_BUCKET:-tint-media}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
     ports:
       - "8081:8081"
     healthcheck:
@@ -330,17 +391,139 @@ services:
     environment:
       VOICE_CORE_ADDR: "0.0.0.0:8085"
       REDIS_URL: redis://redis:6379
-      JWT_SECRET: ${JWT_SECRET:-dev-secret-change-in-prod}
+      JWT_SECRET: ${JWT_SECRET}
       JWT_ISSUER: ${JWT_ISSUER:-tint-identity}
       JWT_AUDIENCE: ${JWT_AUDIENCE:-tint:room}
-      ALLOWED_ORIGINS: ${VOICE_ALLOWED_ORIGINS:-localhost:5173,127.0.0.1:5173}
+      ALLOWED_ORIGINS: ${VOICE_ALLOWED_ORIGINS:-localhost:5173,127.0.0.1:5173,localhost}
       VOICE_MAX_MEMBERS: ${VOICE_MAX_MEMBERS:-8}
       STUN_URLS: ${STUN_URLS:-stun:localhost:3478}
       TURN_URLS: ${TURN_URLS:-turn:localhost:3478?transport=udp,turn:localhost:3478?transport=tcp}
-      TURN_SECRET: ${TURN_SECRET:-dev-turn-secret-change-in-prod}
+      TURN_SECRET: ${TURN_SECRET}
       TURN_TTL_SECONDS: ${TURN_TTL_SECONDS:-3600}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
     ports:
       - "8085:8085"
+    healthcheck:
+      test: ["CMD", "curl", "-fs", "http://localhost:8085/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  # Base de datos documental: historial de chat (SOC-02, SOC-07, DAT-02).
+  # social-core escribe aquí; la colección y los índices se crean en el primer
+  # arranque de social-core (ver services/social-core PR SOC-07).
+  mongodb:
+    image: mongo:8.0
+    container_name: tint-mongodb
+    restart: unless-stopped
+    <<: *env-check
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USER:-tint}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD}
+      MONGO_INITDB_DATABASE: ${MONGO_DB:-tint}
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo-data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # Usuario de aplicación de social-core (ADR 0025): readWrite sobre la base social
+  # más el rol chat_meta_schema (solo collMod, para actualizar el validador y el TTL),
+  # nunca el usuario raíz. Idempotente: en cada arranque crea el rol y el usuario o
+  # actualiza su contraseña y sus permisos (también con un volumen ya inicializado).
+  mongo-init:
+    image: mongo:8.0
+    container_name: tint-mongo-init
+    depends_on:
+      env-check:
+        condition: service_completed_successfully
+      mongodb:
+        condition: service_healthy
+    environment:
+      MONGO_ROOT_USER: ${MONGO_ROOT_USER:-tint}
+      MONGO_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD}
+      MONGO_APP_USER: ${MONGO_APP_USER:-social_core}
+      MONGO_APP_PASSWORD: ${MONGO_APP_PASSWORD}
+    entrypoint:
+      - /bin/sh
+      - -ec
+      - |
+        mongosh --quiet "mongodb://mongodb:27017/admin" \
+          --username "$$MONGO_ROOT_USER" --password "$$MONGO_ROOT_PASSWORD" --eval '
+          const social = db.getSiblingDB("social");
+          const user = process.env.MONGO_APP_USER;
+          const pwd = process.env.MONGO_APP_PASSWORD;
+          const schema = [{ resource: { db: "social", collection: "" }, actions: ["collMod"] }];
+          if (social.getRole("chat_meta_schema")) { social.updateRole("chat_meta_schema", { privileges: schema, roles: [] }); }
+          else { social.createRole({ role: "chat_meta_schema", privileges: schema, roles: [] }); }
+          const roles = [{ role: "readWrite", db: "social" }, { role: "chat_meta_schema", db: "social" }];
+          if (social.getUser(user)) { social.updateUser(user, { pwd, roles }); }
+          else { social.createUser({ user, pwd, roles }); }
+          print("usuario " + user + " listo (readWrite y chat_meta_schema sobre social)");
+        '
+
+  # Transmisión en vivo (C++ SFU, ADR 0018): señalización WHIP/WHEP (/api/v1/stream/*) y medios
+  # WebRTC en un solo puerto UDP (ICE UDP mux). STREAM_PUBLIC_IP es la IP que el navegador
+  # alcanza (127.0.0.1 si navegas en la misma máquina; la IP de la LAN para otros equipos).
+  stream-core:
+    build: ./services/stream-core
+    container_name: tint-stream-core
+    <<: *env-check
+    depends_on:
+      env-check:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    environment:
+      STREAM_CORE_ADDR: "0.0.0.0:8086"
+      STREAM_UDP_PORT: ${STREAM_UDP_PORT:-8087}
+      STREAM_PUBLIC_IP: ${STREAM_PUBLIC_IP:-127.0.0.1}
+      STREAM_MAX_VIEWERS: ${STREAM_MAX_VIEWERS:-50}
+      STREAM_HOST_GRACE_S: ${STREAM_HOST_GRACE_S:-60}
+      REDIS_URL: redis://redis:6379
+      JWT_SECRET: ${JWT_SECRET}
+      JWT_ISSUER: ${JWT_ISSUER:-tint-identity}
+      JWT_AUDIENCE: ${JWT_AUDIENCE:-tint:room}
+      ALLOWED_ORIGINS: ${STREAM_ALLOWED_ORIGINS:-localhost:5173,127.0.0.1:5173,localhost}
+      IDENTITY_API_URL: http://identity-api:8081
+      INTERNAL_API_SECRET: ${INTERNAL_API_SECRET}
+      STUN_URLS: ${STUN_URLS:-stun:localhost:3478}
+      TURN_URLS: ${TURN_URLS:-turn:localhost:3478?transport=udp,turn:localhost:3478?transport=tcp}
+      TURN_SECRET: ${TURN_SECRET}
+      TURN_TTL_SECONDS: ${TURN_TTL_SECONDS:-3600}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    ports:
+      - "8086:8086"
+      - "${STREAM_UDP_PORT:-8087}:${STREAM_UDP_PORT:-8087}/udp"
+    healthcheck:
+      test: ["CMD", "curl", "-fs", "http://localhost:8086/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  # Firebase Auth Emulator (solo desarrollo, ADR 0024): login local del host sin un proyecto
+  # real de Firebase. Emite ID tokens SIN firma; el navegador lo usa en http://localhost:9099
+  # (solo loopback). docker-compose.production.yml no lo arranca.
+  firebase-auth-emulator:
+    build: ./firebase-auth-emulator
+    container_name: tint-firebase-auth-emulator
+    <<: *env-check
+    environment:
+      FIREBASE_PROJECT_ID: ${FIREBASE_PROJECT_ID:-demo-tint}
+    ports:
+      - "127.0.0.1:9099:9099"
+    healthcheck:
+      test: ["CMD-SHELL", "wget --quiet --output-document=- http://127.0.0.1:9099/ | grep -Eq '\"ready\": *true'"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
 
   # STUN/TURN para la voz. Red del host: el relay debe anunciar direcciones alcanzables
   # desde el navegador (en Linux). Credenciales efímeras firmadas con TURN_SECRET (REST API de TURN).
@@ -354,13 +537,19 @@ services:
       - "--min-port=49160"
       - "--max-port=49200"
       - "--use-auth-secret"
-      - "--static-auth-secret=${TURN_SECRET:-dev-turn-secret-change-in-prod}"
+      - "--static-auth-secret=${TURN_SECRET}"
       - "--realm=tint.local"
       - "--fingerprint"
       - "--no-cli"
       - "--no-tls"
       - "--no-dtls"
       - "--log-file=stdout"
+    healthcheck:
+      test: ["CMD", "turnutils_stunclient", "-p", "3478", "127.0.0.1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
 volumes:
   gateway-data:
@@ -368,3 +557,4 @@ volumes:
   postgres-data:
   redis-data:
   minio-data:
+  mongo-data:

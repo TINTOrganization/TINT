@@ -10,6 +10,7 @@ import (
 	"github.com/HanamDavid/tint-monorepo/services/sync-core/internal/auth"
 	"github.com/HanamDavid/tint-monorepo/services/sync-core/internal/codec"
 	"github.com/HanamDavid/tint-monorepo/services/sync-core/internal/drift"
+	"github.com/HanamDavid/tint-monorepo/services/sync-core/internal/store"
 	"github.com/HanamDavid/tint-monorepo/services/sync-core/internal/syncevent"
 )
 
@@ -18,6 +19,9 @@ var (
 	ErrStale        = errors.New("cliente sin responder SYNC_CHECK")
 	ErrClosed       = errors.New("conexión cerrada")
 	ErrRevoked      = errors.New("token revocado")
+	// ErrRoomClosed: la sala fue deshabilitada (ROOM_CLOSED o
+	// room:{id}:closed); la capa ws cierra con 4010.
+	ErrRoomClosed = store.ErrRoomClosed
 )
 
 // Client es una conexión al Canal Sync. Solo la goroutine escritora lee de

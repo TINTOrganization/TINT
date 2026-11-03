@@ -594,7 +594,7 @@ sequenceDiagram
     Inv->>MI: GET original (incoming/)
     R-->>MW: XREADGROUP media-workers
     MW->>MI: descarga incoming/{videoId}/original.mp4
-    MW->>MW: ffprobe + normalizar (remux +faststart si ya es MP4 H.264/AAC ≤ 12 Mbps;<br/>si no, re-codificar con keyframe cada 2 s y tope de bitrate) + Ambilight
+    MW->>MW: ffprobe + normalizar (remux +faststart si ya es MP4 H.264/AAC ≤ 12 Mbps,<br/>si no, re-codificar con keyframe cada 2 s y tope de bitrate) + Ambilight
     MW->>MI: PUT {videoId}/source.mp4 (video/mp4) + {videoId}/ambilight.json
     MW->>PG: ready, duration_ms, storage_key = {videoId}/source.mp4
     MW->>R: XACK
@@ -648,13 +648,15 @@ sequenceDiagram
 ```mermaid
 stateDiagram-v2
     [*] --> Validando: GET /ws/sync
-    Validando --> Rechazada: 400 / 401 / 403 / 503
-    Validando --> CerradaTerminal: 101 y cierre 4001 (revocado) / 4003 (expirado), sin hub.Connect
+    Validando --> Rechazada: 400 / 401 / 403 / 503 (también si no se puede leer la clave closed)
+    Validando --> CerradaTerminal: 101 y cierre 4001 (revocado) / 4003 (expirado) / 4010 (sala cerrada), sin hub.Connect
     Validando --> Conectada: 101 + hub.Connect
-    Validando --> Cerrada1011: Redis no disponible al conectar
+    Validando --> Cerrada1011: Redis cae entre la comprobación del handshake y hub.Connect
     Conectada --> Cerrada1008: cola llena (64) o 3 latidos sin respuesta
     Conectada --> Cerrada1009: mensaje > 4 KB
     Conectada --> Cerrada4001: REVOKED de identity-api
+    Conectada --> Cerrada4010: ROOM_CLOSED de identity-api (ADR 0019)
+    Cerrada4010 --> Desconectada
     Conectada --> Cerrada1000: el cliente cierra
     Cerrada1008 --> Desconectada
     Cerrada1009 --> Desconectada

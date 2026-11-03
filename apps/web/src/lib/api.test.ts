@@ -19,6 +19,7 @@ describe('apiFetch', () => {
   it('retorna el json si la respuesta es ok', async () => {
     mockedFetch.mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ a: 1 }) });
     await expect(apiFetch('/x')).resolves.toEqual({ a: 1 });
+    expect(mockedFetch).toHaveBeenCalledWith('/api/v1/x', expect.anything());
   });
 
   it('una respuesta 204 sin cuerpo devuelve null (p. ej. DELETE) sin intentar leer JSON', async () => {

@@ -154,8 +154,8 @@ stateDiagram-v2
     Recuperar --> Reclamar: pendientes propios procesados
     Reclamar --> Leer: huérfanos procesados
     Leer --> Leer: mensaje procesado y XACK
-    Leer --> Leer: el handler lanza (intento menor que 3): reencola con attempt + 1
-    Leer --> Leer: el handler lanza (intento 3): failed y XACK
+    Leer --> Leer: el handler lanza con intento menor que 3, reencola con attempt + 1
+    Leer --> Leer: el handler lanza en el intento 3, failed y XACK
     Leer --> Reclamar: cada 60 s con la cola vacía
     Leer --> [*]: SIGTERM o SIGINT
 ```

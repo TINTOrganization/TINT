@@ -12,6 +12,7 @@ Este repositorio es un monorepo multi-lenguaje (Go, TypeScript, Python y C++). *
 | Media Worker | `services/media-worker` | Python 3.11, FFmpeg, MinIO | [services/media-worker/AGENTS.md](services/media-worker/AGENTS.md) |
 | Analítica | `services/analytics` | Python 3.11, Redis Streams, PostgreSQL, API HTTP de solo lectura | [services/analytics/AGENTS.md](services/analytics/AGENTS.md) |
 | Voz | `services/voice-core` | C++23, Boost.Beast, hiredis, WebRTC P2P (solo señalización) | [services/voice-core/AGENTS.md](services/voice-core/AGENTS.md) |
+| Transmisión en vivo | `services/stream-core` | C++23, libdatachannel v0.24.6 (SFU, WHIP/WHEP), Boost.Beast, hiredis | [services/stream-core/AGENTS.md](services/stream-core/AGENTS.md) |
 | Infra / CI | raíz, `.github/`, `scripts/` | Docker Compose, GitHub Actions | este archivo |
 
 ## Documentación
@@ -21,6 +22,7 @@ La documentación de features vive en [`docs/`](docs/README.md), con diagramas M
 - [Usuarios, identidad y permisos](docs/usuarios-e-identidad.md): tipos de usuario, permisos, esquema de BD y tokens.
 - [Dominio de Reproducción](docs/dominio-reproduccion.md): Canal Sync v2.
 - [Dominio de Voz](docs/dominio-voz.md): canal de voz (voice-core).
+- [Dominio de Transmisión en vivo](docs/dominio-transmision.md): transmisión del host por SFU (stream-core), salas `live` y cierre `ROOM_CLOSED`.
 - [Contrato de eventos de analítica](docs/contrato-eventos-analitica.md): `analytics:events` y la API de KPIs.
 
 **Actualiza el documento en el mismo PR** en el que cambie un flujo, un contrato, una tabla o una variable de entorno.
@@ -30,7 +32,7 @@ La documentación de features vive en [`docs/`](docs/README.md), con diagramas M
 2. **TDD obligatorio:** Red → Green → Refactor. Cobertura mínima **85 %** por servicio; el CI (`.github/workflows/ci-pipeline.yml`) bloquea el merge si no se cumple.
 3. **Conventional Commits en español:** `tipo(alcance): descripción`, con el dominio como alcance: `feat(sync-core): …`, `fix(identity-api): …`, `docs(web): …`, `perf(sync-core): …`, `ci: …`, `chore: …`. El cuerpo explica el *porqué* y, si hay mediciones, las incluye.
 4. **Ramas:** `main` (producción) y `develop` (integración) están protegidas. Trabaja en `feat/*`, `fix/*` o `chore/*` y abre el PR hacia `develop`.
-5. **Infraestructura local:** `docker compose up -d` (PostgreSQL, Redis, MinIO, media-worker, analytics, social-core, sync-core, voice-core y coturn). **Nunca subas `.env`** ni credenciales; documenta las variables nuevas en el `.env.example` correspondiente.
+5. **Infraestructura local:** `docker compose up -d` (PostgreSQL, Redis, MinIO, media-worker, analytics, social-core, sync-core, voice-core, stream-core, coturn y el Firebase Auth Emulator para el login local del host, [ADR 0024](docs/adr/0024-login-local-con-firebase-auth-emulator.md)). **Nunca subas `.env`** ni credenciales; documenta las variables nuevas en el `.env.example` correspondiente. Los secretos se inyectan en tiempo de creación desde `.env` sin fallbacks inseguros en Compose (ADR 0022).
 6. **Verificación:** `make test-all` antes de abrir un PR, más los comandos propios del dominio.
 7. **Archivos ajenos:** los `.docx` de planeación en la raíz no se versionan. No los agregues a commits.
 8. **Dependencias:** no agregues dependencias sin justificarlas en el commit y en el Stack Técnico del `AGENTS.md` del dominio. Fija versiones exactas en Go y prefiere versiones exactas en npm.
@@ -43,13 +45,17 @@ Cambiar uno exige actualizar **ambos lados**, sus pruebas y [docs/arquitectura.m
 | Claims JWT HS256 (`sub`, `room_id`, `role`, `nick`, `jti`, `iss`, `aud`, `exp`) | identity-api ↔ sync-core, social-core, analytics, voice-core | [usuarios-e-identidad §4](docs/usuarios-e-identidad.md#4-esquemas-de-tokens) |
 | `JWT_SECRET` / `JWT_ISSUER` / `JWT_AUDIENCE` | identity-api ↔ sync-core, social-core, analytics, voice-core | `.env.example` raíz |
 | Protocolo del Canal Sync v2 (incl. `VOLUME`/`QUALITY`) | sync-core ↔ web | [sync-core/AGENTS.md](services/sync-core/AGENTS.md#protocolo-del-canal-sync) |
-| Protocolo del Canal Social (chat con spoilers, reacciones, láser, encuestas, trivias, recap; moderación del chat —modo lento y silencio—, láser, encuestas y programación de trivias con sync-ticket del host) | social-core ↔ web | [social-core/AGENTS.md](services/social-core/AGENTS.md#protocolo-del-canal-social) |
+| Protocolo del Canal Social (chat con spoilers, reacciones, láser, encuestas, trivias, recap; moderación del chat —modo lento y silencio—, láser, encuestas y programación de trivias con sync-ticket del host; `trivia_launch_now`; cierres `4001`/`4003`/`4010` tras el upgrade) y REST `GET /api/v1/social/rooms/{id}/chat` | social-core ↔ web | [social-core/AGENTS.md](services/social-core/AGENTS.md#protocolo-del-canal-social) |
 | Comandos de reproducción en `room:{id}:sync` (solo lectura, para el recap) | sync-core → social-core | [arquitectura §5](docs/arquitectura.md#5-contratos-compartidos-entre-dominios) |
 | Revocación `token:revoked:{jti}` + `REVOKED` (cierre `4001`; token caducado `4003`) | identity-api → sync-core, social-core, analytics, voice-core, web | [dominio-reproduccion §6.6](docs/dominio-reproduccion.md#66-retirar-a-un-invitado-f5) |
 | Stream `media:uploads` + tabla `videos` (`id`, `storage_key`, `duration_ms`, `status`, `renditions`, `failure_reason`) + staging `incoming/{id}/original.*` (el worker publica `{id}/source.*` y reescribe `storage_key`; también `{id}/720p.mp4`/`{id}/360p.mp4` y sus alturas en `renditions`) | identity-api → media-worker | [dominio-reproduccion §6.7](docs/dominio-reproduccion.md#67-subida-y-cambio-de-vídeo) |
-| Protocolo del Canal de Voz (`/ws/voice`: `voice_state`, `peer_joined`/`peer_left`, `signal`, `self_mute`/`host_mute` → `peer_muted`, `leave`, `error`; cierre `4008` con la voz llena) y REST `PUT/DELETE /api/v1/voice/rooms/{id}/mutes/{user_id}` (403 sin rol host/cohost) | voice-core ↔ web | [voice-core/AGENTS.md](services/voice-core/AGENTS.md#protocolo-del-canal-de-voz) |
-| `TURN_SECRET` (credenciales TURN efímeras) | voice-core ↔ coturn | `.env.example` raíz |
-| Puertos locales: social-core 8082, sync-core 8083, analytics 8084, voice-core 8085, coturn 3478 | infra ↔ web | `docker-compose.yml`, `.env.example` de la web |
+| Protocolo del Canal de Voz (`/ws/voice`: `voice_state`, `peer_joined`/`peer_left`, `signal`, `self_mute`/`host_mute` → `peer_muted`, `leave`, `error`; cierre `4008` con la voz llena, `4009` fuera del escenario y `4010` con la sala deshabilitada) y REST `PUT/DELETE /api/v1/voice/rooms/{id}/mutes/{user_id}` y `…/stage/{user_id}` (403 sin rol host/cohost) | voice-core ↔ web | [voice-core/AGENTS.md](services/voice-core/AGENTS.md#protocolo-del-canal-de-voz) |
+| Cierre de sala `ROOM_CLOSED` en `room:{id}:sync` + clave `room:{id}:closed` + cierre `4010` + `410 {error:"Disabled"}` | identity-api → sync-core, social-core, voice-core, stream-core, web | [ADR 0019](docs/adr/0019-salas-live-y-cierre-room-closed.md) |
+| API WHIP/WHEP `/api/v1/stream/*` + DataChannel `stream-events`; internos `/internal/events/start/{id}` y `/api/v1/internal/rooms/{id}/disable` | stream-core ↔ web, identity-api | [dominio-transmision §3–6](docs/dominio-transmision.md#3-api-whipwhep-apiv1stream) |
+| `TURN_SECRET` (credenciales TURN efímeras) | voice-core, stream-core ↔ coturn | `.env.example` raíz |
+| Puertos locales: social-core 8082, sync-core 8083, analytics 8084, voice-core 8085, stream-core 8086 (+ UDP 8087), coturn 3478, Firebase Auth Emulator 9099 (solo desarrollo, `127.0.0.1`) | infra ↔ web | `docker-compose.yml`, `.env.example` de la web |
+| Observabilidad y salud (`/healthz` con `status`/`service`; logs JSON a stdout con `LOG_LEVEL` configurable) | Todos los servicios (gateway, web, identity, sync, social, media-worker, analytics, voice, stream, coturn) | [ADR 0021](docs/adr/0021-observabilidad-salud-y-logs.md) · [arquitectura §8.2](docs/arquitectura.md#82-observabilidad-salud-y-logs) |
+| Inyección de secretos exclusivamente por entorno (`.env`, `env-check` fail-closed, sin fallbacks en Compose, `docker compose up -d --no-build`) | infra ↔ todos los servicios | [ADR 0022](docs/adr/0022-secretos-por-variables-de-entorno.md) · [arquitectura §7.4](docs/arquitectura.md#74-gestion-de-secretos-y-variables-de-entorno-ops-05-adr-0022) |
 | API REST `/api/v1` (incl. bloqueo por dispositivo `room_bans` + `deviceId` en el claim, y biblioteca `GET /videos`) | identity-api → web | [identity-api/AGENTS.md](services/identity-api/AGENTS.md#api) |
 | Stream `analytics:events` (sin PII) | identity-api, social-core, sync-core, media-worker → analytics | [docs/contrato-eventos-analitica.md](docs/contrato-eventos-analitica.md) |
 | API de lectura de analytics (`/api/v1/rooms/{id}/kpis`, `/reactions/heatmap`, `/timeline`) + `analytics-ticket` (`POST /api/v1/rooms/:id/analytics-ticket`) | identity-api → web → analytics | [analytics/AGENTS.md](services/analytics/AGENTS.md#api-solo-lectura-puerto-analytics_port-por-defecto-8084) |
@@ -72,6 +78,11 @@ Cambiar uno exige actualizar **ambos lados**, sus pruebas y [docs/arquitectura.m
 | Python (`media-worker`, `analytics`) | `ruff check . && ruff format --check .` · `pytest --cov=src --cov-fail-under=85` |
 | C++ (`voice-core`) | `clang-format --dry-run --Werror` · `ctest` con `-DVOICE_SANITIZE=address` y `=thread` · `gcovr --fail-under-line 85` (`make test-cpp`; ver su AGENTS.md para correrlo en Docker) |
 | Carga del Canal Sync | `k6 run -e VUS=50 -e DURATION=20s services/sync-core/loadtest/sync.js` (CI); 500 VUs desde otra máquina |
+| Infra / Secretos | `make secrets` (contrato estático y sintaxis compose) · escaneo Gitleaks en CI |
+| C++ (`stream-core`) | `make test-stream`: en la imagen dev (libdatachannel no está empaquetada) corre `clang-format`, ctest y `gcovr ≥ 85`. CI añade ASan+UBSan (con loopback de libdatachannel), TSan (`-DSTREAM_BUILD_RTC=OFF`), la imagen de runtime, `/healthz` y `scripts/smoke.py` (job `cpp-stream`) |
+| Carga de la Transmisión | `make load-stream`: publicador VP8 simulcast y 50 viewers bot (libdatachannel) contra el contenedor; exige TTFF p95 < 2 s, 0 fallos y `409` al viewer 51. CI: `stream-load-smoke` (20 viewers, 15 s) |
+| E2E de la transmisión | `make e2e-stream`: Chromium real (host y dos viewers con la web) contra un entorno propio y aislado (local, fuera de CI) |
+| E2E del sistema | `make e2e-system` (con `make up`): Chromium real por `https://localhost` (gateway, forward_auth, CORS y orígenes reales) con login del Firebase Auth Emulator; flujos `watch` y `live` de punta a punta (local, fuera de CI). Corre antes de dar por buena una feature que cruce dominios |
 | Carga y E2E del Canal de Voz | `k6 run … services/voice-core/loadtest/voice.js` (CI, `voice-load-smoke`; local con `make load-voice`) · `make e2e-voice`: dos Chromium reales contra la web y `docker compose` (local) |
 
 ## Lecciones aprendidas (no repetir)
@@ -79,7 +90,10 @@ Cambiar uno exige actualizar **ambos lados**, sus pruebas y [docs/arquitectura.m
 - **Orden de mensajes:** el `STATE` inicial debe encolarse antes de cualquier publicación por el bus; los clientes filtran por `version`.
 - **Falla cerrado** en todo lo relacionado con autorización (revocación, tokens).
 - **No relajes umbrales** para que una prueba pase: documenta el resultado y la causa probable.
-- **Nunca confíes en un token sin verificar su firma**, ni como "respaldo": social-core aceptaba ID tokens de Firebase falsificados (bug hunting 2026-10).
+- **Nunca confíes en un token sin verificar su firma**, ni como "respaldo": social-core aceptaba ID tokens de Firebase falsificados (bug hunting 2026-10). Única excepción acotada: los tokens `alg: none` del Firebase Auth Emulator en identity-api, solo en desarrollo y fallando cerrado en producción ([ADR 0024](docs/adr/0024-login-local-con-firebase-auth-emulator.md)).
 - **No compares relojes distintos** (cliente vs. servidor) para rechazar mensajes: un navegador adelantado perdía el chat en silencio.
 - **Rechazar antes del upgrade del WebSocket no le dice nada al navegador** (solo ve `1006` y reintenta): para estados terminales, haz upgrade y cierra con un código `4xxx`.
+- **Prueba por la entrada real:** los E2E que iban directo a los puertos de cada servicio no vieron que ningún WebSocket pasaba el `forward_auth` del gateway (el navegador no manda `Authorization` en el handshake), ni que los orígenes y el CORS por defecto no incluían `https://localhost`. `make e2e-system` recorre el sistema por el gateway.
+- **Un parón no es una desconexión:** un watchdog que declara perdido al host debe poder deshacerse si el medio vuelve por la misma sesión (stream-core cerraba la sala a los 60 s con el host transmitiendo).
+- **Lo que el usuario escribe tarda:** un formulario que propone "este momento" debe tolerar que el momento pase mientras se rellena (trivia "en este momento").
 - Los subagentes trabajan en worktrees aislados: hay que integrar sus commits (`cherry-pick`), volver a correr las pruebas en el árbol principal y borrar los worktrees al terminar.

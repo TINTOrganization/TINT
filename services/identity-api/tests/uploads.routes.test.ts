@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import request from 'supertest';
+import { logger } from '../src/logging.js';
 
 vi.mock('../src/middlewares/auth.js', () => ({
   requireAuthHost: (req: any, _res: any, next: any) => {
@@ -162,7 +163,7 @@ describe('limpieza perezosa de subidas huérfanas al reservar', () => {
   });
 
   it('un fallo al limpiar (BD o MinIO) se registra pero no impide reservar', async () => {
-    const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const log = vi.spyOn(logger, 'error').mockImplementation(() => {});
     vi.mocked(removeStalePendingByRoom).mockRejectedValueOnce(new Error('db down'));
     expect((await start({ filename: 'a.mp4', contentType: 'video/mp4', sizeBytes: 1 })).status).toBe(200);
     vi.mocked(removeStalePendingByRoom).mockResolvedValueOnce([{ id: OLD, storageKey: 'incoming/x/original.mp4' }] as any);
@@ -223,7 +224,7 @@ describe('DELETE /rooms/:id/media/uploads/:videoId (cancelar subida)', () => {
   });
 
   it('204 aunque falle el borrado del objeto (la limpieza perezosa lo recogerá)', async () => {
-    const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const log = vi.spyOn(logger, 'error').mockImplementation(() => {});
     vi.mocked(findVideo).mockResolvedValueOnce(pending as any);
     vi.mocked(removePendingById).mockResolvedValueOnce(pending as any);
     remove.mockRejectedValueOnce(new Error('minio down'));
@@ -253,7 +254,7 @@ describe('POST /rooms/:id/media/uploads/:videoId/complete', () => {
     expect(res.body).toEqual({ mediaId: VID, mediaKey: pending.storageKey, status: 'processing' });
     expect(stat).toHaveBeenCalledWith(pending.storageKey);
     expect(transitionStatus).toHaveBeenCalledWith(VID, 'pending', 'processing');
-    expect(xadd).toHaveBeenCalledWith('media:uploads', '*', 'video_id', VID);
+    expect(xadd).toHaveBeenCalledWith('media:uploads', 'MAXLEN', '~', 10_000, '*', 'video_id', VID);
     expect(setMedia).toHaveBeenCalledWith('room-1', { mediaId: VID, mediaKey: pending.storageKey });
   });
 
@@ -289,7 +290,7 @@ describe('POST /rooms/:id/media/uploads/:videoId/complete', () => {
   });
 
   it('413 aunque falle el borrado del objeto (se registra y se responde igual)', async () => {
-    const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const log = vi.spyOn(logger, 'error').mockImplementation(() => {});
     vi.mocked(findVideo).mockResolvedValueOnce(pending as any);
     stat.mockResolvedValueOnce({ size: pending.sizeBytes + 1 });
     remove.mockRejectedValueOnce(new Error('minio down'));

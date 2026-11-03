@@ -13,7 +13,7 @@ El host programa preguntas de trivia en un **momento del vídeo** (`at_ms`) y la
 
 ## Decisión
 1. **Posición de la sala sin preguntarle a sync-core:** social-core ya escuchaba en solo lectura los comandos de `room:{id}:sync` para el recap. Guarda el último como ancla en `room:{id}:recap:last_pos` (`pos`, `status`, `rate`, `updated_at_ms`, `version`) **más `seen_at_ms`, el reloj de social-core al procesar el evento**. La posición proyectada es `recap.Store.Position(now) = pos + (now − seen_at_ms) × rate`. Nunca se usa `updated_at_ms` (reloj de sync-core) para proyectar.
-2. **Disparo:** cada réplica con clientes en la sala mantiene un timer hacia la próxima pregunta pendiente con `at_ms ≥ posición`, solo si se reproduce; se rearma con cada evento de sync, al programar o borrar y al entrar alguien. Al vencer, el Lua `launch` (`HSETNX launched`) deja que **una sola réplica** emita `trivia_question` (sin `correct`). Un `SEEK` que salta la marca no la dispara; si el timer vence con la posición más de 1 s por debajo de la marca, se rearma.
+2. **Disparo:** cada réplica con clientes en la sala mantiene un timer hacia la próxima pregunta pendiente con `at_ms ≥ posición`, solo si se reproduce; se rearma con cada evento de sync, al programar o borrar y al entrar alguien. Al vencer, el Lua `launch` (`HSETNX launched`) deja que **una sola réplica** emita `trivia_question` (sin `correct`). Un `SEEK` que salta la marca no la dispara; si el timer vence con la posición más de 1 s por debajo de la marca, se rearma. **Actualización 2026-11-02:** una pregunta programada o editada con la marca ya pasada hace ≤ 60 s (`TriviaLateLaunchMS`) se lanza en el acto. "Agregar pregunta en este momento" propone el segundo actual y el vídeo sigue mientras el host escribe; sin esa regla la pregunta quedaba pendiente para siempre. Más atrás sigue pendiente, y un seek sigue saltándola.
 3. **Tiempo de respuesta:** `elapsed = now(servidor) − opens_at_ms`. El reloj del cliente no interviene; `trivia.Score` da 0 si falla y 1000 + bono lineal de hasta 1000 si acierta en 10 s.
 4. **Cierre:** a `closes_at_ms`, `HSETNX closed` deja que una réplica emita `trivia_result`; cada réplica lo personaliza con `my_score`/`my_total` para sus conexiones. Rankings en Sorted Sets con desempate por la respuesta más temprana.
 5. **Web:** la cuenta regresiva se ancla al reloj local de **llegada** del mensaje más `closes_at_ms − opens_at_ms`, sin comparar relojes; solo es informativa.
@@ -33,6 +33,7 @@ sequenceDiagram
     A->>R: ancla last_pos con seen_at_ms del reloj de A
     A->>A: timer hasta at_ms según Position de now
     B->>B: timer hasta at_ms
+    Note over A,B: trivia_schedule con at_ms pasada hace 60 s o menos se lanza en el acto, sin timer
     A->>R: EVALSHA launch HSETNX launched
     R-->>A: ganó
     B->>R: EVALSHA launch

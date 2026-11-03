@@ -145,6 +145,8 @@ Reglas que el diagrama hace visibles:
 
 `Login` abre el popup de Google, guarda el ID token en `tint_token`, borra restos de invitado y llama a `POST /auth/verify`. Después, `authSession.ts` mantiene el token fresco: el ID token de Firebase caduca a la hora.
 
+En local, `docker compose` construye la web con `VITE_FIREBASE_AUTH_EMULATOR_URL=http://localhost:9099`: el popup es el del **Firebase Auth Emulator** (botón *Add new account* con cualquier nombre y email) y no hace falta un proyecto real de Firebase ([ADR 0024](../../docs/adr/0024-login-local-con-firebase-auth-emulator.md)).
+
 ```mermaid
 sequenceDiagram
     actor H as Host
@@ -540,13 +542,15 @@ Copia `.env.example` a `.env` (nunca lo subas). Todas las variables son opcional
 
 | Variable | Por defecto | Para qué |
 | :--- | :--- | :--- |
-| `VITE_IDENTITY_API_URL` | `http://localhost:8081/api/v1` | identity-api (REST). |
-| `VITE_SYNC_WS_URL` | `ws://localhost:8083/ws/sync` | Canal Sync de sync-core. |
-| `VITE_SOCIAL_WS_URL` | `ws://localhost:8082/ws/social` | Canal Social de social-core. |
+| `VITE_IDENTITY_API_URL` | `/api/v1` | identity-api (REST) a través del gateway. |
+| `VITE_SYNC_WS_URL` | `/ws/sync` | Canal Sync de sync-core a través del gateway (`wss` bajo HTTPS). |
+| `VITE_SOCIAL_WS_URL` | `/ws/social` | Canal Social de social-core a través del gateway (`wss` bajo HTTPS). |
+| `VITE_VOICE_WS_URL` | `/ws/voice` | Señalización del Canal de Voz a través del gateway (`wss` bajo HTTPS). |
 | `VITE_SYNC_ENCODING` | `json` | `json` o `msgpack` (pide el subprotocolo `tint.sync.msgpack`; si sync-core no lo acepta, sigue en JSON). |
-| `VITE_ANALYTICS_API_URL` | `http://localhost:8084/api/v1` | API de lectura de analytics. |
+| `VITE_ANALYTICS_API_URL` | `/api/v1` | API de lectura de analytics a través del gateway. |
 | `VITE_DEMO_VIDEO_URL` | vacío | Vídeo de respaldo, solo si la sala no tiene vídeo (`mediaId: null`). |
 | `VITE_FIREBASE_API_KEY` · `VITE_FIREBASE_AUTH_DOMAIN` · `VITE_FIREBASE_PROJECT_ID` | `test` | Configuración del cliente de Firebase Auth (login del host). |
+| `VITE_FIREBASE_AUTH_EMULATOR_URL` | vacío | **Solo desarrollo** ([ADR 0024](../../docs/adr/0024-login-local-con-firebase-auth-emulator.md)): origen http(s) del Firebase Auth Emulator (`http://localhost:9099` en `docker compose`). Con valor, `src/lib/authEmulator.ts` llama a `connectAuthEmulator(auth, url, { disableWarnings: true })` y el popup de Google es el del emulador. Un valor que no sea http(s) se ignora. El override de producción lo deja vacío. |
 
 Puertos locales: web (Vite) `5173`, identity-api `8081`, social-core `8082`, sync-core `8083`, analytics `8084`, MinIO `9000`. El backend se levanta desde la raíz con `docker compose up -d`.
 

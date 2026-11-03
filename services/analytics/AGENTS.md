@@ -83,6 +83,7 @@ El plano interno de coordinación expone `POST /internal/events/start/{room_id}`
 | `ANALYTICS_ROOM_GRACE_HOURS` | `12` | Entero ≥ 0: horas sin actividad para consolidar una sala como `grace_expired` (REQ-07). |
 | `ANALYTICS_TIMEZONE` | `America/Bogota` | Nombre IANA del corte del día en DAU/MAU. |
 | `ANALYTICS_ADMIN_PASSWORD` | — (panel deshabilitado) | Contraseña compartida del panel de negocio. Es un control de acceso débil, pensado para el equipo: no hay usuarios ni límite de intentos. |
+| `LOG_LEVEL` | `info` | Nivel mínimo de log (`debug`, `info`, `warn`, `error`). Logs JSON a stdout (ADR 0021). |
 
 ## Reglas de Dominio
 1. **Privacy by Design (Ley 1581):** NUNCA analices o almacenes el texto plano de las conversaciones de chat. Registra únicamente `message_length` (se respeta el que envía el productor; solo se deriva si llegara texto). Se descartan también `nick`, `email` y nombres.

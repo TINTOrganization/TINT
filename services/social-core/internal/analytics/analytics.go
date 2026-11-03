@@ -10,7 +10,7 @@ package analytics
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"strconv"
 	"sync/atomic"
 	"time"
@@ -182,7 +182,7 @@ func (e *Emitter) write(ctx context.Context, ev map[string]any) {
 	err := e.rdb.XAdd(ctx, &redis.XAddArgs{Stream: StreamKey, MaxLen: maxLen, Approx: true, Values: ev}).Err()
 	if err != nil {
 		e.failed.Add(1)
-		log.Printf("analytics: XADD falló: %v", err)
+		slog.Error("analytics: XADD falló", "error", err)
 	}
 }
 

@@ -1,14 +1,16 @@
 import { Router, type Response } from 'express';
 import { z } from 'zod';
 import { env } from '../config/env.js';
+import { logger } from '../logging.js';
 import { validate } from '../middlewares/validate.js';
 import { requireAuthHost } from '../middlewares/auth.js';
 import { centralTokenCheck } from '../middlewares/centralAuth.js';
 import { requireRoomOwner } from '../middlewares/requireRoomOwner.js';
 import { upsertByProvider } from '../modules/users/users.repo.js';
 import { requireRoomHostOrGuest } from '../middlewares/guestAuth.js';
-import { requireActiveRoom } from '../middlewares/activeRoom.js';
-import { create as createRoom, listByHost, findById, softRemoveById, updateTitle, setMedia } from '../modules/rooms/rooms.repo.js';
+import { requireActiveRoom, requireReadableRoom, inactiveRoomError } from '../middlewares/activeRoom.js';
+import { createRoomWithInvitation } from '../modules/rooms/rooms.create.js';
+import { listByHost, findById, softRemoveById, updateTitle, setMedia } from '../modules/rooms/rooms.repo.js';
 import { create as createInvitation, findByCode, setRevoked, listByRoom, listLatestActiveByRooms } from '../modules/invitations/invitations.repo.js';
 import { issueGuestToken, generateHostTicket } from '../modules/auth/auth.service.js';
 import { publishAnalyticsEvent } from '../modules/analytics/analytics.events.js';
@@ -47,6 +49,8 @@ import { markTokenRevoked, publishRevoked } from '../modules/tokens/revocation.j
 import { v4 as uuidv4 } from 'uuid';
 import { defaultEventStartDeps } from '../modules/eventStart/eventStart.clients.js';
 import { EventStartError, startEvent } from '../modules/eventStart/eventStart.service.js';
+import { requireInternalToken } from '../middlewares/internalToken.js';
+import { closeLiveRoom, type CloseResult } from '../modules/rooms/rooms.close.js';
 
 const router = Router();
 
@@ -74,17 +78,22 @@ router.post('/auth/verify', requireAuthHost, validate(verifySchema), async (req,
 
 const startEventSchema = z.object({
   title: z.string().trim().min(1).max(150),
+  // watch: vídeo sincronizado (por defecto) · live: transmisión del host por stream-core (ADR 0019).
+  kind: z.enum(['watch', 'live']).default('watch'),
 });
 router.post('/events/start', requireAuthHost, validate(startEventSchema), async (req, res) => {
   try {
     const result = await startEvent(
-      { title: req.body.title, user: req.user! },
+      { title: req.body.title, kind: req.body.kind, user: req.user! },
       defaultEventStartDeps(),
     );
     res.json(result);
   } catch (error) {
     if (error instanceof EventStartError) {
-      console.error(`[event-start] ${error.service}:`, (error.cause as Error)?.message ?? String(error.cause));
+      logger.error('event-start: fallo al iniciar un servicio', {
+        service: error.service,
+        error: (error.cause as Error)?.message ?? String(error.cause),
+      });
       return res.status(503).json({ error: 'No se pudo iniciar el evento' });
     }
     throw error;
@@ -96,15 +105,12 @@ const createRoomSchema = z.object({
 });
 router.post('/rooms', requireAuthHost, validate(createRoomSchema), async (req, res) => {
   const { title } = req.body;
-  const room = await createRoom({ title, hostId: req.user!.id });
   const ttlHours = parseInt(env.INVITATION_DEFAULT_TTL_HOURS, 10);
   const expiresAt = new Date(Date.now() + ttlHours * 60 * 60 * 1000);
-  const invitation = await createInvitation({
-    roomId: room.id,
-    createdBy: req.user!.id,
-    expiresAt,
-    revoked: false,
-  });
+  const { room, invitation } = await createRoomWithInvitation(
+    { title, hostId: req.user!.id },
+    { createdBy: req.user!.id, expiresAt, revoked: false },
+  );
   res.json({
     room,
     invitation: {
@@ -164,8 +170,10 @@ router.patch('/rooms/:id', requireAuthHost, requireRoomOwner, validate(updateRoo
   if (!room) {
     return res.status(404).json({ error: 'Not found' });
   }
-  if (room.status === 'deleted') {
-    return res.status(410).json({ error: 'Deleted' });
+  // Falla cerrado: ni renombrar una sala borrada (Deleted) ni una terminada (Disabled).
+  const inactive = inactiveRoomError(room);
+  if (inactive) {
+    return res.status(410).json(inactive);
   }
   const updated = await updateTitle(roomId, req.body.title);
   res.json({ room: updated });
@@ -187,7 +195,9 @@ async function revokeActiveGuestSessions(roomId: string) {
       }),
     );
   } catch (err) {
-    console.error('[rooms] no se pudieron revocar las sesiones de la sala borrada:', (err as Error).message);
+    logger.error('rooms: no se pudieron revocar las sesiones de la sala borrada', {
+      error: (err as Error).message,
+    });
     return false;
   }
   await setGuestSessionsRevoked(sessions.map((s) => s.jti));
@@ -218,6 +228,30 @@ router.delete('/rooms/:id', requireAuthHost, requireRoomOwner, async (req, res) 
   void publishAnalyticsEvent('room_closed', { room_id: roomId, user_id: req.user!.providerSub, reason: 'deleted' });
 });
 
+function sendCloseResult(res: Response, result: CloseResult) {
+  if (result.ok) return res.json(result.body);
+  return res.status(result.status).json(result.body);
+}
+
+// Fin de una sala live por el host (HU-LIVE-05, ADR 0019). Una sala watch se borra con DELETE.
+router.post('/rooms/:id/end', requireAuthHost, requireRoomOwner, async (req, res) => {
+  sendCloseResult(res, await closeLiveRoom(getRoomId(req), 'host_ended', req.user!.providerSub));
+});
+
+// Una sala deshabilitada no se reactiva: la UI ofrece crear un evento nuevo (HU-LIVE-09 AC4).
+router.post('/rooms/:id/reactivate', requireAuthHost, requireRoomOwner, (_req, res) => {
+  res.status(409).json({ error: 'NotReactivable' });
+});
+
+// Gracia del host vencida: lo llama stream-core (servicio a servicio, sin ID token de Firebase).
+// Caddy no expone /api/v1/internal/* (salvo auth/check). Único reason aceptado: grace_expired.
+const internalDisableSchema = z
+  .object({ reason: z.literal('grace_expired').default('grace_expired') })
+  .default({ reason: 'grace_expired' });
+router.post('/internal/rooms/:id/disable', requireInternalToken, validate(internalDisableSchema), async (req, res) => {
+  sendCloseResult(res, await closeLiveRoom(getRoomId(req), req.body.reason));
+});
+
 const createInvitationSchema = z.object({
   // Máximo 30 días: sin cota, un número enorme producía una fecha inválida y un 500.
   ttlHours: z.number().int().positive().max(720).optional(),
@@ -229,8 +263,10 @@ router.post('/rooms/:id/invitations', requireAuthHost, requireRoomOwner, validat
   if (!room) {
     return res.status(404).json({ error: 'Not found' });
   }
-  if (room.status === 'deleted') {
-    return res.status(410).json({ error: 'Deleted' });
+  // No tiene sentido invitar a una sala borrada (Deleted) ni a una terminada (Disabled).
+  const inactive = inactiveRoomError(room);
+  if (inactive) {
+    return res.status(410).json(inactive);
   }
   const ttlHours = req.body.ttlHours || parseInt(env.INVITATION_DEFAULT_TTL_HOURS, 10);
   const expiresAt = new Date(Date.now() + ttlHours * 60 * 60 * 1000);
@@ -258,7 +294,10 @@ function hostNick(user: { displayName?: string | null; email?: string | null }) 
   return localPart || 'Host';
 }
 
-router.post('/rooms/:id/sync-ticket', requireAuthHost, requireRoomOwner, requireActiveRoom, async (req, res) => {
+// También con la sala `disabled` (no `deleted`): social-core exige un HS256 de host para leer el
+// historial de chat de una sala terminada (HU-LIVE-09 AC3). No reabre nada en vivo: sync, social,
+// voice y stream cierran con 4010 por room:{id}:closed en cada handshake (ADR 0019).
+router.post('/rooms/:id/sync-ticket', requireAuthHost, requireRoomOwner, requireReadableRoom, async (req, res) => {
   const rawId = req.params.id;
   const roomId = Array.isArray(rawId) ? rawId[0] : rawId;
   const user = req.user!;
@@ -374,7 +413,9 @@ async function discardUploadObject(storageKey: string) {
   try {
     await getMediaStore().remove(storageKey);
   } catch (err) {
-    console.error('[uploads] no se pudo borrar el objeto de una subida descartada:', (err as Error).message);
+    logger.error('uploads: no se pudo borrar el objeto de una subida descartada', {
+      error: (err as Error).message,
+    });
   }
 }
 
@@ -389,7 +430,9 @@ async function cleanupStaleUploads(roomId: string) {
     const stale = await removeStalePendingVideos(roomId, cutoff);
     await Promise.all(stale.map((v) => discardUploadObject(v.storageKey)));
   } catch (err) {
-    console.error('[uploads] no se pudieron limpiar las subidas abandonadas:', (err as Error).message);
+    logger.error('uploads: no se pudieron limpiar las subidas abandonadas', {
+      error: (err as Error).message,
+    });
   }
 }
 
@@ -485,7 +528,9 @@ router.post('/rooms/:id/media/uploads/:videoId/complete', requireAuthHost, requi
     try {
       await store.remove(video.storageKey);
     } catch (err) {
-      console.error('[uploads] no se pudo borrar un objeto que supera el tamaño:', (err as Error).message);
+      logger.error('uploads: no se pudo borrar un objeto que supera el tamaño', {
+        error: (err as Error).message,
+      });
     }
     return tooLarge(res);
   }
@@ -498,7 +543,9 @@ router.post('/rooms/:id/media/uploads/:videoId/complete', requireAuthHost, requi
   try {
     await enqueueMediaUpload(video.id);
   } catch (err) {
-    console.error('[uploads] no se pudo encolar media:uploads:', (err as Error).message);
+    logger.error('uploads: no se pudo encolar media:uploads', {
+      error: (err as Error).message,
+    });
     // Vuelve a pending para que el reintento pueda encolar.
     await transitionVideoStatus(video.id, 'processing', 'pending');
     return res.status(503).json({ error: 'Service unavailable' });
@@ -668,7 +715,9 @@ router.post('/rooms/:id/bans', requireAuthHost, requireRoomOwner, validate(creat
       await publishRevoked(roomId, s.jti);
     }
   } catch (err) {
-    console.error('[bans] no se pudieron revocar las sesiones del invitado bloqueado:', (err as Error).message);
+    logger.error('bans: no se pudieron revocar las sesiones del invitado bloqueado', {
+      error: (err as Error).message,
+    });
     return res.status(503).json({ error: 'Service unavailable' });
   }
   for (const s of live) {
@@ -753,8 +802,9 @@ router.post('/invitations/claim', validate(claimSchema), async (req, res) => {
     return res.status(410).json({ error: 'Expired' });
   }
   const room = await findById(invitation.roomId);
-  if (room && room.status === 'deleted') {
-    return res.status(410).json({ error: 'Deleted' });
+  const inactive = room && inactiveRoomError(room);
+  if (inactive) {
+    return res.status(410).json(inactive);
   }
   if (deviceId && (await findBanByDevice(invitation.roomId, deviceId))) {
     return res.status(403).json({ error: 'BANNED' });
@@ -770,7 +820,8 @@ router.post('/invitations/claim', validate(claimSchema), async (req, res) => {
     expiresAt: new Date(payload.exp * 1000),
     deviceId: deviceId ?? null,
   });
-  res.json({ token, roomId: invitation.roomId, nick, roomTitle: room?.title ?? null });
+  // roomKind: la web decide si abre /watch/:id o /live/:id (ADR 0019).
+  res.json({ token, roomId: invitation.roomId, nick, roomTitle: room?.title ?? null, roomKind: room?.kind ?? 'watch' });
   void publishAnalyticsEvent('invitation_claimed', { room_id: payload.room_id, user_id: payload.sub });
 });
 

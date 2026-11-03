@@ -4,6 +4,7 @@
 
 #include "support/fake_mute_store.hpp"
 #include "support/fake_revocation.hpp"
+#include "support/fake_room_state.hpp"
 #include "support/jwt.hpp"
 
 using namespace voice::net;
@@ -15,7 +16,7 @@ class HandshakeTest : public ::testing::Test {
  protected:
   HandshakeDecision decide(const std::string& target,
                            std::optional<std::string_view> origin = "http://localhost:5173") {
-    return decide_handshake({target, origin}, verifier, revocation, mutes, allowed, kNow);
+    return decide_handshake({target, origin}, verifier, revocation, mutes, rooms, allowed, kNow);
   }
   std::string target(const std::string& token, const std::string& room = "room-1") {
     return "/ws/voice?room_id=" + room + "&token=" + token;
@@ -28,6 +29,7 @@ class HandshakeTest : public ::testing::Test {
   voice::auth::TokenVerifier verifier{kSecret, kIssuer, kAudience};
   FakeRevocation revocation;
   FakeMuteStore mutes;
+  FakeRoomState rooms;
   std::vector<std::string> allowed{"localhost:5173", "127.0.0.1:5173"};
 };
 
@@ -147,4 +149,118 @@ TEST(UrlDecode, DecodesPercentAndPlus) {
   EXPECT_EQ(url_decode("guest%3Aana"), "guest:ana");
   EXPECT_EQ(url_decode("a+b"), "a b");
   EXPECT_EQ(url_decode("100%"), "100%");
+}
+
+// --- ADR 0019: sala deshabilitada (ROOM_CLOSED, 4010) y modo escenario (4009) -------------
+
+namespace {
+
+class RoomStateHandshakeTest : public HandshakeTest {
+ protected:
+  std::uint16_t close_code(const HandshakeDecision& d) {
+    auto* c = std::get_if<AcceptThenClose>(&d);
+    return c ? c->code : 0;
+  }
+  static nlohmann::json role_claims(const std::string& role, const std::string& sub) {
+    auto c = guest_claims("room-1", sub, "jti-" + sub, sub);
+    c["role"] = role;
+    return c;
+  }
+};
+
+}  // namespace
+
+// HU-LIVE-09 AC1 / HU-LIVE-08 AC3: quien llega o se reconecta a una sala deshabilitada ve 4010.
+TEST_F(RoomStateHandshakeTest, ClosedRoomUpgradesAndCloses4010) {
+  rooms.close("room-1");
+  auto d = decide(target(sign_jwt(guest_claims())));
+  EXPECT_EQ(close_code(d), 4010) << "room:{id}:closed existe: upgrade y cierre 4010 ROOM_DISABLED";
+}
+
+TEST_F(RoomStateHandshakeTest, ClosedRoomAlsoClosesTheHostWith4010) {
+  rooms.close("room-1");
+  EXPECT_EQ(close_code(decide(target(sign_jwt(host_claims())))), 4010);
+}
+
+TEST_F(RoomStateHandshakeTest, RoomStateUnavailableFailsClosedWith503) {
+  rooms.unavailable = true;
+  EXPECT_EQ(rejected_status(decide(target(sign_jwt(guest_claims())))), 503u)
+      << "sin poder leer room:{id}:closed / room:{id}:kind no se entra";
+}
+
+TEST_F(RoomStateHandshakeTest, InvalidTokenDoesNotQueryRoomState) {
+  rooms.close("room-1");
+  EXPECT_EQ(rejected_status(decide(target("basura"))), 401u);
+  EXPECT_EQ(rooms.calls, 0) << "no consulta Redis con un token sin firma válida";
+}
+
+TEST_F(RoomStateHandshakeTest, OpenWatchRoomIsUnchanged) {
+  auto d = decide(target(sign_jwt(guest_claims())));
+  EXPECT_TRUE(std::holds_alternative<Accept>(d)) << "sala watch sin cerrar: igual que hoy";
+}
+
+TEST_F(RoomStateHandshakeTest, ValidTokenQueriesRoomState) {
+  decide(target(sign_jwt(guest_claims())));
+  EXPECT_GE(rooms.calls, 1) << "cada handshake válido consulta room:{id}:closed (y kind)";
+}
+
+// Modo escenario (ADR 0019): en una sala live solo entran host/cohost y los invitados.
+TEST_F(RoomStateHandshakeTest, LiveRoomParticipantNotOnStageUpgradesAndCloses4009) {
+  rooms.make_live("room-1");
+  auto d = decide(target(sign_jwt(guest_claims())));
+  EXPECT_EQ(close_code(d), 4009) << "room:{id}:kind=live y guest:ana no está en room:{id}:voice:stage";
+}
+
+TEST_F(RoomStateHandshakeTest, LiveRoomStageGuestJoins) {
+  rooms.make_live("room-1");
+  rooms.set_on_stage("room-1", "guest:ana", true);
+  EXPECT_TRUE(std::holds_alternative<Accept>(decide(target(sign_jwt(guest_claims())))));
+}
+
+TEST_F(RoomStateHandshakeTest, LiveRoomHostAndCohostJoinWithoutStage) {
+  rooms.make_live("room-1");
+  EXPECT_TRUE(std::holds_alternative<Accept>(decide(target(sign_jwt(role_claims("host", "user-h"))))));
+  EXPECT_TRUE(std::holds_alternative<Accept>(decide(target(sign_jwt(role_claims("cohost", "user-c"))))));
+}
+
+TEST_F(RoomStateHandshakeTest, StageOfAnotherRoomDoesNotCount) {
+  rooms.make_live("room-1");
+  rooms.set_on_stage("room-2", "guest:ana", true);
+  EXPECT_EQ(close_code(decide(target(sign_jwt(guest_claims())))), 4009);
+}
+
+TEST_F(RoomStateHandshakeTest, LeftTheStageCannotRejoin) {
+  rooms.make_live("room-1");
+  rooms.set_on_stage("room-1", "guest:ana", true);
+  rooms.set_on_stage("room-1", "guest:ana", false);
+  EXPECT_EQ(close_code(decide(target(sign_jwt(guest_claims())))), 4009);
+}
+
+TEST_F(RoomStateHandshakeTest, ClosedWinsOverNotOnStage) {
+  rooms.make_live("room-1");
+  rooms.close("room-1");
+  EXPECT_EQ(close_code(decide(target(sign_jwt(guest_claims())))), 4010)
+      << "'el evento terminó' es más informativo que 'no estás en el escenario'";
+}
+
+TEST_F(RoomStateHandshakeTest, RevokedWinsOverClosed) {
+  rooms.close("room-1");
+  revocation.revoke("jti-ana");
+  EXPECT_EQ(close_code(decide(target(sign_jwt(guest_claims())))), 4001);
+}
+
+TEST_F(RoomStateHandshakeTest, LiveRoomFailsClosedWhenTheStageCannotBeRead) {
+  rooms.make_live("room-1");
+  rooms.stage_unavailable = true;
+  EXPECT_EQ(rejected_status(decide(target(sign_jwt(guest_claims())))), 503u);
+  rooms.stage_unavailable = false;
+  rooms.live_unavailable = true;
+  EXPECT_EQ(rejected_status(decide(target(sign_jwt(guest_claims())))), 503u);
+  EXPECT_TRUE(std::holds_alternative<Accept>(decide(target(sign_jwt(host_claims())))))
+      << "host y cohost no necesitan leer el tipo de sala";
+}
+
+TEST_F(RoomStateHandshakeTest, WatchRoomIgnoresTheStage) {
+  rooms.set_on_stage("room-1", "otro", true);
+  EXPECT_TRUE(std::holds_alternative<Accept>(decide(target(sign_jwt(guest_claims())))));
 }

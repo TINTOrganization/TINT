@@ -28,6 +28,7 @@ struct ServerShared {
   std::shared_ptr<auth::TokenVerifier> verifier;
   std::shared_ptr<RevocationChecker> revocation;
   std::shared_ptr<moderation::MuteStore> mutes;
+  std::shared_ptr<rooms::RoomStateStore> rooms;
   std::shared_ptr<hub::Hub> hub;
   asio::thread_pool::executor_type blocking;
 };
@@ -175,41 +176,47 @@ class HttpSession : public std::enable_shared_from_this<HttpSession> {
     req_ = std::move(req);
     if (!websocket::is_upgrade(req_)) {
       if (req_.method() == http::verb::get && req_.target() == "/healthz")
-        return respond(http::status::ok, R"({"status":"ok"})");
-      if (parse_mute_path(req_.target())) return on_mute_request();
+        return respond(http::status::ok, R"({"status":"ok","service":"voice-core"})");
+      if (parse_mute_path(req_.target())) return on_moderation_request(false);
+      if (parse_stage_path(req_.target())) return on_moderation_request(true);
+      if (target_path(req_.target()).starts_with(kMutesApiPrefix))
+        return respond(http::status::not_found, R"({"error":"NOT_FOUND"})");
       return respond(http::status::not_found, R"({"error":"not found"})");
     }
     // decide_handshake consulta Redis (bloqueante): fuera del io_context.
     asio::post(shared_->blocking, [self = shared_from_this()] {
       std::optional<std::string_view> origin;
       if (auto it = self->req_.find(http::field::origin); it != self->req_.end()) origin = it->value();
-      auto decision = decide_handshake({self->req_.target(), origin}, *self->shared_->verifier,
-                                       *self->shared_->revocation, *self->shared_->mutes,
-                                       self->shared_->options.allowed_origins, now_s());
+      auto decision = decide_handshake(
+          {self->req_.target(), origin}, *self->shared_->verifier, *self->shared_->revocation,
+          *self->shared_->mutes, *self->shared_->rooms, self->shared_->options.allowed_origins, now_s());
       asio::post(self->stream_.get_executor(), [self, decision = std::move(decision)]() mutable {
         self->on_decision(std::move(decision));
       });
     });
   }
 
-  // REST de silencios del host (HU-VOZ-04). CORS solo para los orígenes permitidos.
-  void on_mute_request() {
+  // REST de silencios del host (HU-VOZ-04) y del escenario (ADR 0019). CORS solo para los
+  // orígenes permitidos. Las rutas del escenario responden errores {"error":"UPPER_SNAKE"}.
+  void on_moderation_request(bool stage) {
     if (auto it = req_.find(http::field::origin); it != req_.end()) {
       if (!origin_allowed(it->value(), shared_->options.allowed_origins))
-        return respond(http::status::forbidden, R"({"error":"origin not allowed"})");
+        return respond(http::status::forbidden,
+                       stage ? R"({"error":"FORBIDDEN"})" : R"({"error":"origin not allowed"})");
       cors_origin_ = it->value();
     }
     if (req_.method() == http::verb::options) return respond_preflight();
-    asio::post(shared_->blocking, [self = shared_from_this()] {
+    asio::post(shared_->blocking, [self = shared_from_this(), stage] {
       std::optional<std::string_view> authorization;
       if (auto it = self->req_.find(http::field::authorization); it != self->req_.end())
         authorization = it->value();
       auto decision = decide_mute_request({self->req_.method_string(), self->req_.target(), authorization},
                                           *self->shared_->verifier, *self->shared_->revocation, now_s());
       if (auto* reject = std::get_if<Reject>(&decision)) {
-        nlohmann::json body{{"error", reject->reason}};
+        nlohmann::json body{{"error", stage ? std::string(rest_error_code(reject->status)) : reject->reason}};
         return self->respond_from_pool(static_cast<http::status>(reject->status), body.dump());
       }
+      if (auto* command = std::get_if<StageCommand>(&decision)) return self->apply_stage(*command);
       auto& command = std::get<MuteCommand>(decision);
       // Falla cerrado: solo se anuncia lo que quedó guardado.
       if (!self->shared_->mutes->set_muted(command.room_id, command.user_id, command.muted))
@@ -218,6 +225,21 @@ class HttpSession : public std::enable_shared_from_this<HttpSession> {
       self->shared_->hub->apply_host_mute(command.room_id, command.user_id, command.muted);
       self->respond_from_pool(http::status::no_content, "");
     });
+  }
+
+  // En el pool bloqueante. PUT = SADD; DELETE = SREM y, si la sala es live, cierra con 4009
+  // la conexión del usuario (en una sala watch el escenario no se usa: no se echa a nadie).
+  void apply_stage(const StageCommand& command) {
+    constexpr std::string_view kUnavailable = R"({"error":"UNAVAILABLE"})";
+    auto& store = *shared_->rooms;
+    if (!store.set_on_stage(command.room_id, command.user_id, command.on_stage))
+      return respond_from_pool(http::status::service_unavailable, std::string(kUnavailable));
+    if (!command.on_stage) {
+      auto live = store.is_live(command.room_id);
+      if (!live) return respond_from_pool(http::status::service_unavailable, std::string(kUnavailable));
+      if (*live) shared_->hub->remove_from_stage(command.room_id, command.user_id);
+    }
+    respond_from_pool(http::status::no_content, "");
   }
 
   void respond_from_pool(http::status status, std::string body) {
@@ -282,11 +304,11 @@ class HttpSession : public std::enable_shared_from_this<HttpSession> {
 
 Server::Server(asio::io_context& ioc, ServerOptions options, std::shared_ptr<auth::TokenVerifier> verifier,
                std::shared_ptr<RevocationChecker> revocation, std::shared_ptr<moderation::MuteStore> mutes,
-               std::shared_ptr<hub::Hub> hub)
+               std::shared_ptr<rooms::RoomStateStore> rooms, std::shared_ptr<hub::Hub> hub)
     : ioc_(ioc), acceptor_(asio::make_strand(ioc)) {
-  shared_ = std::make_shared<ServerShared>(ServerShared{std::move(options), std::move(verifier),
-                                                        std::move(revocation), std::move(mutes),
-                                                        std::move(hub), blocking_pool_.get_executor()});
+  shared_ = std::make_shared<ServerShared>(
+      ServerShared{std::move(options), std::move(verifier), std::move(revocation), std::move(mutes),
+                   std::move(rooms), std::move(hub), blocking_pool_.get_executor()});
 }
 
 Server::~Server() {

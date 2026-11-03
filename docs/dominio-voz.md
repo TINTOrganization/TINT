@@ -83,6 +83,12 @@ Un invitado bloqueado por el host ([ADR 0013](adr/0013-bloqueo-de-invitados-por-
 - **Al intentar entrar:** upgrade y cierre `4001` ([ADR 0014](adr/0014-upgrade-y-cierre-4xxx-para-estados-terminales.md)).
 - **Si ya estaba hablando:** voice-core recibe `REVOKED{jti}` por `room:{id}:sync` y cierra con `4001` todas sus conexiones de voz; los demás reciben `peer_left`.
 
+### 3.1b Salas `live`: escenario y cierre ([ADR 0019](adr/0019-salas-live-y-cierre-room-closed.md))
+
+- **Sala deshabilitada:** `ROOM_CLOSED` por `room:{id}:sync` cierra con `4010` todas las conexiones; un handshake con `room:{id}:closed` hace upgrade y cierra con `4010`. Tras el cierre, voice-core recuerda la sala 60 s para cubrir la carrera con el handshake.
+- **Escenario:** en una sala `live` (`room:{id}:kind=live`) solo entran el host, el cohost y quien esté en `room:{id}:voice:stage` (TTL 24 h). El resto recibe upgrade y cierre `4009 NOT_ON_STAGE`. El host invita o retira con `PUT/DELETE /api/v1/voice/rooms/{id}/stage/{user_id}` (`204`); el `DELETE` cierra con `4009` la conexión de ese usuario.
+- **Orden del handshake:** revocado (`4001`) → sala cerrada (`4010`) → fuera del escenario (`4009`) → silencios.
+
 ### 3.2 Salir (AC3)
 
 | Cómo sale | Qué detecta voice-core | Tiempo |
