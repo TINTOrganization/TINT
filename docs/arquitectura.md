@@ -197,6 +197,35 @@ flowchart LR
 | C19 | Orquestación de arranque | identity-api → sync-core, social-core, analytics | `POST`/`DELETE /internal/events/start/{room_id}`; identidad llama en orden y compensa en orden inverso; deadline de 5 s por dependencia; no se publica por Caddy | Síncrono | Issue #75; `services/identity-api/src/modules/eventStart` |
 | C15 | Redis Stream | identity-api, sync-core, social-core, media-worker → analytics | `XADD analytics:events MAXLEN ~ 100000` → `XREADGROUP` grupo `analytics-workers` + `XACK` tras el commit | Asíncrono, best-effort | [contrato-eventos-analitica](contrato-eventos-analitica.md) · [ADR 0010](adr/0010-eventos-de-analitica-sin-pii.md) |
 
+#### Handshake WebSocket por el gateway (C0)
+
+El navegador no puede mandar `Authorization` al abrir un WebSocket. La web pone el token en `?token=`; Caddy lo reenvía al `forward_auth` en `X-Forwarded-Uri`, e identity-api solo exige firma, `iss` y `aud`. La caducidad y la revocación las decide el servicio **después** del upgrade, para que el navegador reciba un código `4xxx` y no un `1006` ([ADR 0014](adr/0014-upgrade-y-cierre-4xxx-para-estados-terminales.md)).
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant B as Navegador
+    participant GW as Caddy gateway
+    participant ID as identity-api
+    participant S as sync-core, social-core o voice-core
+
+    B->>GW: GET /ws/sync?room_id=...&token=JWT (Upgrade, o CONNECT en HTTP/2)
+    GW->>ID: GET /api/v1/internal/auth/check con X-Forwarded-Uri
+    alt firma, iss o aud inválidos (o alg none)
+        ID-->>GW: 401
+        GW-->>B: 401 sin upgrade
+    else token auténtico, aunque esté caducado o revocado
+        ID-->>GW: 204 con X-User-*
+        GW->>S: upgrade (Origin https://localhost en ALLOWED_ORIGINS)
+        S->>S: verifica de nuevo firma, exp, revocación y sala cerrada
+        alt válido
+            S-->>B: 101 y mensajes del canal
+        else caducado, revocado o sala deshabilitada
+            S-->>B: 101 y cierre 4003, 4001 o 4010
+        end
+    end
+```
+
 ### 4.2 C&C del flujo de reproducción
 
 ```mermaid
@@ -592,6 +621,7 @@ Campos obligatorios: `timestamp` (ISO UTC con ms), `level` (`debug|info|warn|err
 - **Diferencia con el gate de AGENTS:** el gate de `apps/web` en el [AGENTS raíz](../AGENTS.md#gates-por-dominio) incluye `npm run build`, pero el job `web` del CI no lo ejecuta (solo lint, typecheck y vitest).
 - **Carga:** el job `voice-load-smoke` corre 50 VUs de señalización de voz (rotación en salas de 5, umbrales de entrada, reenvío y autorización); el job `sync-load-smoke` corre 50 VUs; la prueba completa de 500 conexiones (SYNC-TEST-01) se corre a mano desde otra máquina ([dominio-reproduccion §14](dominio-reproduccion.md#14-verificación-y-resultados)).
 - **Local:** `make test-all` (Go, Python, web, identity-api y C++) y `make up`/`make down`.
+- **E2E con navegador real (local, fuera de CI):** `make e2e-system` recorre el sistema completo por `https://localhost` con el login del Firebase Auth Emulator: flujo `watch` (subida, invitada, sincronía, chat, encuesta, trivia y KPIs) y flujo `live` (WHIP/WHEP, encuesta, trivia, voz en escenario y fin del evento). `make e2e-voice` y `make e2e-stream` prueban cada servicio por separado contra sus puertos.
 
 ## 10. Decisiones de arquitectura (ADRs)
 
@@ -614,10 +644,16 @@ Campos obligatorios: `timestamp` (ISO UTC con ms), `level` (`debug|info|warn|err
 | [0013](adr/0013-bloqueo-de-invitados-por-dispositivo.md) | Bloqueo de invitados por dispositivo |
 | [0014](adr/0014-upgrade-y-cierre-4xxx-para-estados-terminales.md) | Upgrade y cierre `4xxx` para estados terminales en el Canal Sync |
 | [0015](adr/0015-voice-core-en-cpp-con-webrtc-p2p.md) | Canal de Voz en un servicio C++ con WebRTC P2P |
-| [0017](adr/0017-despliegue-orientado-a-contenedores.md) | Despliegue orientado a contenedores y MongoDB (OPS-02) |
+| [0016](adr/0016-ranking-de-trivia-persistente-y-desempate.md) | Ranking de trivia persistente y desempate por tiempo acumulado |
+| [0017](adr/0017-despliegue-orientado-a-contenedores.md) | Despliegue orientado a contenedores y aprovisionamiento de MongoDB |
 | [0018](adr/0018-stream-core-sfu-cpp-con-libdatachannel.md) | Transmisión en vivo con un SFU propio en C++ sobre libdatachannel (propuesta) |
-| [0019](adr/0019-salas-live-y-cierre-room-closed.md) | Salas `live` y cierre de sala `ROOM_CLOSED` en todos los servicios (propuesta) |
-| [0021](adr/0021-observabilidad-salud-y-logs.md) | Observabilidad: salud y logs uniformes en contenedores (OPS-04) |
+| [0019](adr/0019-salas-live-y-cierre-room-closed.md) | Salas `live` y cierre de sala `ROOM_CLOSED` en todos los servicios |
+| [0020](adr/0020-entrada-unica-https-y-topologia-produccion.md) | Entrada única HTTPS y topología de producción Compose |
+| [0021](adr/0021-observabilidad-salud-y-logs.md) | Salud y logs uniformes para operar los contenedores |
+| [0022](adr/0022-secretos-por-variables-de-entorno.md) | Secretos exclusivamente por variables de entorno |
+| [0023](adr/0023-instrucciones-de-ejecucion-del-prototipo.md) | Instrucciones de ejecución del prototipo y guía de revisión (OPS-06) |
+| [0024](adr/0024-login-local-con-firebase-auth-emulator.md) | Login local del host con el Firebase Auth Emulator |
+| [0025](adr/0025-metadatos-del-chat-en-mongodb.md) | Metadatos del chat en MongoDB, sin el texto (SOC-07, DAT-02) (propuesta) |
 
 ## 11. Documentación por servicio
 
@@ -630,3 +666,4 @@ Campos obligatorios: `timestamp` (ISO UTC con ms), `level` (`debug|info|warn|err
 | media-worker | [services/media-worker/README.md](../services/media-worker/README.md) | [services/media-worker/AGENTS.md](../services/media-worker/AGENTS.md) |
 | analytics | [services/analytics/README.md](../services/analytics/README.md) | [services/analytics/AGENTS.md](../services/analytics/AGENTS.md) |
 | voice-core | [services/voice-core/README.md](../services/voice-core/README.md) | [services/voice-core/AGENTS.md](../services/voice-core/AGENTS.md) |
+| stream-core | [services/stream-core/README.md](../services/stream-core/README.md) | [services/stream-core/AGENTS.md](../services/stream-core/AGENTS.md) |

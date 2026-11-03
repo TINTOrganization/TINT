@@ -360,7 +360,7 @@ Una vez finalizado el arranque (típicamente 2–4 minutos):
   ```bash
   docker compose ps
   ```
-  *Todos los servicios (`tint-gateway`, `tint-web`, `tint-identity-api`, `tint-sync-core`, `tint-social-core`, `tint-analytics`, `tint-media-worker`, `tint-voice-core`, `tint-postgres`, `tint-redis`, `tint-mongodb`, `tint-minio`, `tint-firebase-auth-emulator`) deben figurar en estado `Up` y `healthy`.*
+  *Todos los servicios (`tint-gateway`, `tint-web`, `tint-identity-api`, `tint-sync-core`, `tint-social-core`, `tint-analytics`, `tint-media-worker`, `tint-voice-core`, `tint-stream-core`, `tint-coturn`, `tint-postgres`, `tint-redis`, `tint-mongodb`, `tint-minio`, `tint-firebase-auth-emulator`) deben figurar en estado `Up` y `healthy`.*
 
 - **Sonda de salud HTTP (Liveness)**:
   ```bash
@@ -376,6 +376,8 @@ Una vez finalizado el arranque (típicamente 2–4 minutos):
     - [`/arquitectura`](https://localhost/arquitectura): Mapa visual interactivo de componentes y conectores del sistema.
     - [`/analitica`](https://localhost/analitica): Panel de KPIs y telemetría de salas.
   - **Login del host sin Firebase real**: en [`/login`](https://localhost/login), *Continuar con Google* abre el popup del **Firebase Auth Emulator** (`http://localhost:9099`, proyecto `demo-tint`): *Add new account* → *Auto-generate user information* → *Sign in*. Solo desarrollo: sus tokens no llevan firma y producción no lo arranca ([ADR 0024](docs/adr/0024-login-local-con-firebase-auth-emulator.md)).
+
+- **Prueba de punta a punta con navegador real** (opcional, unos 6 min): `make e2e-system`. Abre Chromium por `https://localhost`, inicia sesión con el emulador y recorre dos flujos. En la watch party: subida de vídeo, invitada por link, reproducción sincronizada, chat, encuesta, trivia y KPIs. En la transmisión en vivo: pantalla del host, invitada viéndola, chat, encuesta, trivia, voz en escenario y fin del evento. Con `OUT=/ruta make e2e-system` guarda una captura de cada paso.
 
 - **Si ya tenías un `.env`** de una versión anterior: `make env-sync` no modifica valores existentes. Añade `,localhost` a `SYNC_ALLOWED_ORIGINS`, `SOCIAL_ALLOWED_ORIGINS` y `VOICE_ALLOWED_ORIGINS`, y define `MINIO_CORS_ALLOW_ORIGIN=https://localhost,http://localhost:5173`. Si falta alguno, por `https://localhost` la voz se queda en "Reconectando…" o la subida de vídeos falla por CORS.
 

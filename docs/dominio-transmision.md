@@ -99,13 +99,20 @@ El host envía `scene` al servidor (C → S) por su DataChannel de vídeo, y el 
 stateDiagram-v2
     [*] --> Waiting: POST /internal/events/start (kind=live)
     Waiting --> Live: primer keyframe del host (STREAM_STARTED, SET NX started_at)
+    Waiting --> HostGrace: 3 s sin RTP tras el WHIP (arranque lento)
     Live --> HostGrace: PC del host Disconnected/Failed o 3 s sin RTP
-    HostGrace --> Live: nuevo WHIP del host antes de 60 s (PLI a todas las capas)
-    HostGrace --> Ended: vence la gracia (POST /internal/rooms/{id}/disable)
+    HostGrace --> Live: nuevo WHIP antes de 60 s, o vuelve el RTP por la misma sesión
+    HostGrace --> Waiting: vuelve el RTP sin keyframe y nunca hubo imagen
+    HostGrace --> Ended: vence la gracia (POST /internal/rooms/{id}/disable) o ROOM_CLOSED
     Live --> Ended: ROOM_CLOSED (POST /rooms/{id}/end)
     Waiting --> Ended: ROOM_CLOSED
     Ended --> [*]: cierra todas las sesiones (sala cerrada)
 ```
+
+La gracia tiene dos orígenes y no se tratan igual:
+
+- **Watchdog (3 s sin RTP) con la PeerConnection del host abierta.** Es un parón: el codificador arranca tarde con la CPU cargada, la pestaña pasa a segundo plano, etc. Si el RTP vuelve por esa misma sesión, la sala vuelve a `live`, o a `waiting` si nunca hubo keyframe. Se avisa por el DataChannel y no se reinicia `STREAM_STARTED`. Antes de 2026-11-02 ese RTP se ignoraba y la sala se deshabilitaba a los 60 s con el host transmitiendo; lo encontró `make e2e-system`.
+- **PeerConnection del host cerrada o fallida (`on_host_lost`).** Solo un WHIP nuevo devuelve al host. Los paquetes rezagados no lo reviven.
 
 ## 6. Contratos con otros dominios
 
@@ -287,6 +294,7 @@ Las demás pruebas:
   - **Web real:** host y viewers usan `/live/:id` y el hook `useLiveStream`: 2 WHIP, simulcast `l`/`m`/`h`, DataChannel `negotiated:true,id:0`, compositor, mezclador y WHEP. Lo único que se sustituye es la fuente: `getDisplayMedia` devuelve un canvas con `Date.now()` codificado en bloques blanco y negro (y su complemento, para descartar lecturas corruptas) y un tono como audio del PC.
   - **identity-api es un stub HTTP** del script. Responde a la web: sala `live` y un sync-ticket de host firmado con `JWT_SECRET`, sin Firebase. También registra el `POST …/internal/rooms/{id}/disable` de stream-core.
   - **Qué comprueba:** S1 (3 `outbound-rtp` en Chrome y 3 capas activas en `host_stats` en < 10 s), TTFF < 5 s y p95 < 2 s, glass-to-glass p95 < 500 ms con ≥ 30 muestras, audio Opus, pares `relay` y la gracia (`reconnecting` → `ended`/`grace_expired`, llamada a identity-api y aviso de fin).
+- **E2E del sistema** (`make e2e-system`, modo `live`; `scripts/e2e/`). A diferencia del anterior, recorre el stack completo de `make up` por `https://localhost`: gateway con `forward_auth`, identity-api real con login del Firebase Auth Emulator, social-core y voice-core. Pasos: crear la sala `live` → "Empezar a transmitir" → la invitada entra por el link y ve el vídeo → chat, encuesta y trivia "lanzar ahora" → host e invitada en la voz del escenario → "Terminar evento" → la invitada ve "El evento terminó". En verde el 2026-11-02, después de corregir los WS por el gateway (#152), los orígenes por defecto (#154) y la gracia por parón (#153).
 
 ## 9. Fase 0: spikes
 

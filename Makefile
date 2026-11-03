@@ -5,7 +5,7 @@ COVERAGE_MIN := 85
 NODE_SERVICES := services/identity-api
 CPP_SERVICES := services/voice-core
 
-.PHONY: up down env-sync backup restore smoke-persistence test-all test-go test-python test-web test-node test-cpp test-stream smoke-stream load-stream load-voice e2e-voice observability health logs smoke-observability secrets smoke-secrets prototype-health e2e-stream
+.PHONY: up down env-sync backup restore smoke-persistence test-all test-go test-python test-web test-node test-cpp test-stream smoke-stream load-stream load-voice e2e-voice observability health logs smoke-observability secrets smoke-secrets prototype-health e2e-stream e2e-system
 
 # Arranque recomendado: completa .env con lo que falte de .env.example y reconstruye
 # (tras un git pull, las imágenes viejas no tienen el código nuevo).
@@ -100,6 +100,12 @@ e2e-voice:
 # Levanta su propio entorno aislado (Redis, stream-core de este árbol, la web y coturn) y lo borra al terminar.
 e2e-stream:
 	services/stream-core/e2e/run.sh
+
+# E2E del sistema completo con Chromium real por https://localhost (gateway): login con el Firebase
+# Auth Emulator, watch party (subida, invitada, sincronía, chat, encuesta, trivia, KPIs) y live
+# (WHIP/WHEP, chat, encuesta, trivia, voz en escenario, fin del evento). Necesita `make up`.
+e2e-system:
+	scripts/e2e/run.sh
 
 # Observabilidad (OPS-04)
 observability:

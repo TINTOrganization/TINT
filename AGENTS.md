@@ -82,6 +82,7 @@ Cambiar uno exige actualizar **ambos lados**, sus pruebas y [docs/arquitectura.m
 | C++ (`stream-core`) | `make test-stream`: en la imagen dev (libdatachannel no está empaquetada) corre `clang-format`, ctest y `gcovr ≥ 85`. CI añade ASan+UBSan (con loopback de libdatachannel), TSan (`-DSTREAM_BUILD_RTC=OFF`), la imagen de runtime, `/healthz` y `scripts/smoke.py` (job `cpp-stream`) |
 | Carga de la Transmisión | `make load-stream`: publicador VP8 simulcast y 50 viewers bot (libdatachannel) contra el contenedor; exige TTFF p95 < 2 s, 0 fallos y `409` al viewer 51. CI: `stream-load-smoke` (20 viewers, 15 s) |
 | E2E de la transmisión | `make e2e-stream`: Chromium real (host y dos viewers con la web) contra un entorno propio y aislado (local, fuera de CI) |
+| E2E del sistema | `make e2e-system` (con `make up`): Chromium real por `https://localhost` (gateway, forward_auth, CORS y orígenes reales) con login del Firebase Auth Emulator; flujos `watch` y `live` de punta a punta (local, fuera de CI). Corre antes de dar por buena una feature que cruce dominios |
 | Carga y E2E del Canal de Voz | `k6 run … services/voice-core/loadtest/voice.js` (CI, `voice-load-smoke`; local con `make load-voice`) · `make e2e-voice`: dos Chromium reales contra la web y `docker compose` (local) |
 
 ## Lecciones aprendidas (no repetir)
@@ -92,4 +93,7 @@ Cambiar uno exige actualizar **ambos lados**, sus pruebas y [docs/arquitectura.m
 - **Nunca confíes en un token sin verificar su firma**, ni como "respaldo": social-core aceptaba ID tokens de Firebase falsificados (bug hunting 2026-10). Única excepción acotada: los tokens `alg: none` del Firebase Auth Emulator en identity-api, solo en desarrollo y fallando cerrado en producción ([ADR 0024](docs/adr/0024-login-local-con-firebase-auth-emulator.md)).
 - **No compares relojes distintos** (cliente vs. servidor) para rechazar mensajes: un navegador adelantado perdía el chat en silencio.
 - **Rechazar antes del upgrade del WebSocket no le dice nada al navegador** (solo ve `1006` y reintenta): para estados terminales, haz upgrade y cierra con un código `4xxx`.
+- **Prueba por la entrada real:** los E2E que iban directo a los puertos de cada servicio no vieron que ningún WebSocket pasaba el `forward_auth` del gateway (el navegador no manda `Authorization` en el handshake), ni que los orígenes y el CORS por defecto no incluían `https://localhost`. `make e2e-system` recorre el sistema por el gateway.
+- **Un parón no es una desconexión:** un watchdog que declara perdido al host debe poder deshacerse si el medio vuelve por la misma sesión (stream-core cerraba la sala a los 60 s con el host transmitiendo).
+- **Lo que el usuario escribe tarda:** un formulario que propone "este momento" debe tolerar que el momento pase mientras se rellena (trivia "en este momento").
 - Los subagentes trabajan en worktrees aislados: hay que integrar sus commits (`cherry-pick`), volver a correr las pruebas en el árbol principal y borrar los worktrees al terminar.
