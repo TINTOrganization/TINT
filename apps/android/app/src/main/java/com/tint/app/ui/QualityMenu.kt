@@ -37,6 +37,7 @@ import com.tint.app.sync.QualityPref
 fun QualityMenu(
     qualities: List<PlaybackQuality>,
     current: PlaybackQuality?,
+    auto: PlaybackQuality?,
     pref: QualityPref,
     metered: Boolean,
     onSelect: (QualityPref) -> Unit,
@@ -59,7 +60,7 @@ fun QualityMenu(
                 text = {
                     Column {
                         Text((if (option == pref) "✓ " else "") + option.label, fontWeight = if (option == pref) FontWeight.Bold else FontWeight.Normal)
-                        QualityPolicy.dataPerHour(if (option == QualityPref.AUTO) current?.id.orEmpty() else option.wire)
+                        QualityPolicy.dataPerHour(if (option == QualityPref.AUTO) auto?.id.orEmpty() else option.wire)
                             ?.let { Text(it, fontSize = 12.sp, color = TintMuted) }
                     }
                 },

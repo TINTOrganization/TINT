@@ -253,4 +253,15 @@ class RoomControllerTest {
         assertEquals(emptyList<PlaybackQuality>(), controller.ui.value.qualities)
         assertNull(controller.ui.value.currentQuality)
     }
+
+    @Test
+    fun `auto informa que calidad elegiria aunque se haya fijado otra`() {
+        playback.results += loadedWithQualities()
+        session.flow.value = withMedia("m1")
+
+        controller.setQuality(QualityPref.Q360)
+
+        assertEquals("360p", controller.ui.value.currentQuality?.id)
+        assertEquals("720p", controller.ui.value.autoQuality?.id)
+    }
 }

@@ -256,7 +256,7 @@ fun RoomScreen(room: JoinedRoom, container: AppContainer, onLeave: () -> Unit) {
                 onToggleAudio = { audioMuted = !audioMuted },
                 onReact = { social.sendReaction(it, tracker.current() ?: 0) },
                 onExit = { fullscreen = false },
-                trailing = { QualityMenu(ui.qualities, ui.currentQuality, ui.qualityPref, ui.metered, controller::setQuality) },
+                trailing = { QualityMenu(ui.qualities, ui.currentQuality, ui.autoQuality, ui.qualityPref, ui.metered, controller::setQuality) },
             )
             else -> RoomScaffold(
                 layout = layout,
@@ -335,7 +335,7 @@ private fun WatchVideo(
                 horizontalArrangement = Arrangement.End,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                QualityMenu(ui.qualities, ui.currentQuality, ui.qualityPref, ui.metered, controller::setQuality)
+                QualityMenu(ui.qualities, ui.currentQuality, ui.autoQuality, ui.qualityPref, ui.metered, controller::setQuality)
                 IconButton(onClick = onToggleAudio) {
                     Icon(if (audioMuted()) TintIcons.VolumeOff else TintIcons.Volume, if (audioMuted()) "Activar el sonido" else "Silenciar solo para mí", tint = Color.White)
                 }

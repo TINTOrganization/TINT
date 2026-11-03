@@ -16,6 +16,8 @@ data class RoomUiState(
     val qualities: List<PlaybackQuality> = emptyList(),
     val currentQuality: PlaybackQuality? = null,
     val qualityPref: QualityPref = QualityPref.AUTO,
+    /** La que `auto` elegiría ahora (para estimar sus datos aunque haya otra fijada). */
+    val autoQuality: PlaybackQuality? = null,
     /** Datos móviles o ahorro de datos: se avisa en el menú de calidad. */
     val metered: Boolean = false,
     val loading: Boolean = false,
@@ -64,7 +66,7 @@ class RoomController(
     private fun applyQuality(state: RoomUiState): RoomUiState {
         if (state.qualities.isEmpty()) return state
         val chosen = QualityPolicy.resolve(state.qualityPref, state.qualities, hints) ?: return state
-        return state.copy(currentQuality = chosen, videoUrl = chosen.url)
+        return state.copy(currentQuality = chosen, videoUrl = chosen.url, autoQuality = QualityPolicy.resolve(QualityPref.AUTO, state.qualities, hints))
     }
 
     /** Vuelve a pedir la URL del vídeo actual (reproductor con error, URL caducada, reintento manual). */
@@ -99,6 +101,7 @@ class RoomController(
                 videoUrl = if (reset) null else it.videoUrl,
                 qualities = if (reset) emptyList() else it.qualities,
                 currentQuality = if (reset) null else it.currentQuality,
+                autoQuality = if (reset) null else it.autoQuality,
                 loading = true,
                 noVideo = false,
                 error = null,
