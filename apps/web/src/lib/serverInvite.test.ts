@@ -21,7 +21,7 @@ describe('serverInvite - fetchRoomDetails', () => {
     });
 
     const result = await fetchRoomDetails(inviteCode, {
-      apiBaseUrl: 'http://identity-api:8081/api/v1',
+      apiBaseUrl: 'http://identity-api/api/v1',
       fetchFn: mockFetch,
     });
 
@@ -54,7 +54,7 @@ describe('serverInvite - fetchRoomDetails', () => {
     });
 
     const result = await fetchRoomDetails('ABC123XYZ', {
-      apiBaseUrl: 'http://identity-api:8081/api/v1',
+      apiBaseUrl: 'http://identity-api/api/v1',
       fetchFn: mockFetch,
     });
 
