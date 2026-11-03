@@ -16,6 +16,8 @@ class ResilientSocket(
     private val scope: CoroutineScope,
     private val sleep: suspend (Long) -> Unit,
     private val listener: Listener,
+    /** Cierres en los que no se reconecta, además de 4001, 4003 y 4010 (p. ej. la voz llena de voice-core). */
+    private val extraTerminalCodes: Set<Int> = emptySet(),
 ) {
     interface Listener {
         /** Antes de abrir cada socket (también en las reconexiones). */
@@ -110,7 +112,8 @@ class ResilientSocket(
             if (gen != generation) return
             socket = null
             epoch = reconnectEpoch
-            val terminal = code == SyncProtocol.CLOSE_REVOKED || code == SyncProtocol.CLOSE_EXPIRED || code == SyncProtocol.CLOSE_ROOM_CLOSED
+            val terminal = code == SyncProtocol.CLOSE_REVOKED || code == SyncProtocol.CLOSE_EXPIRED ||
+                code == SyncProtocol.CLOSE_ROOM_CLOSED || code in extraTerminalCodes
             reconnectIn = if (terminal || !running) null else SyncProtocol.backoffDelay(attempt).also { attempt++ }
             attemptNow = attempt
         }

@@ -31,6 +31,7 @@ android {
         buildConfigField("String", "SYNC_WS_URL", "\"${endpoint("tintSyncWsUrl")}\"")
         buildConfigField("String", "SOCIAL_WS_URL", "\"${endpoint("tintSocialWsUrl")}\"")
         buildConfigField("String", "STREAM_API_URL", "\"${endpoint("tintStreamApiUrl")}\"")
+        buildConfigField("String", "VOICE_WS_URL", "\"${endpoint("tintVoiceWsUrl")}\"")
     }
 
     buildFeatures {
@@ -68,6 +69,7 @@ kover {
                     "com.tint.app.sync.OkHttpSyncSocketFactory*",
                     "com.tint.app.sync.ExoPlayerPort*",
                     "com.tint.app.live.WebRtc*",
+                    "com.tint.app.voice.WebRtc*",
                     "com.tint.app.BuildConfig",
                     "*ComposableSingletons*",
                 )

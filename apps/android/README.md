@@ -14,7 +14,7 @@ Cliente móvil nativo (Kotlin + Jetpack Compose) de TINT. Usa los mismos endpoin
 | AND-05 | Trivia (pregunta con cuenta regresiva, respuesta, puntaje y ranking) | ✅ Verificado en una tablet contra el servidor desplegado con un host real (ver «Trivia») |
 | — | Encuestas (ver y votar) y puntero láser del host (ver) | ✅ Verificado en una tablet contra el servidor desplegado con un host real (ver «Encuestas y láser»). Crear encuestas y dibujar el láser son del host y piden el sync-ticket: no están en la app de invitado |
 | AND-06 | Transmisión en vivo (espectador por WHEP contra stream-core) | ✅ Verificado en una tablet contra el servidor desplegado con un host real transmitiendo desde el navegador (ver «Transmisión en vivo») |
-| AND-07 | Voz | ⏳ El backend `voice-core` ya existe ([docs/dominio-voz.md](../../docs/dominio-voz.md)); falta el cliente móvil (WebRTC nativo y permiso de micrófono). No he revisado si su contrato sirve tal cual para Android |
+| AND-07 | Voz (malla P2P por voice-core, permiso de micrófono y silencio) | ✅ Verificado en una tablet contra el servidor desplegado con la web como segunda participante (ver «Voz») |
 
 ## Requisitos
 - **JDK 17** (Gradle/AGP no soportan JDK 26). Apúntalo con `JAVA_HOME`.
@@ -41,7 +41,8 @@ Las URLs viven en `gradle.properties` y se pueden sobrescribir al compilar:
   -PtintIdentityApiUrl=https://mi-host/api/v1 \
   -PtintSyncWsUrl=wss://mi-host/ws/sync \
   -PtintSocialWsUrl=wss://mi-host/ws/social \
-  -PtintStreamApiUrl=https://mi-host
+  -PtintStreamApiUrl=https://mi-host \
+  -PtintVoiceWsUrl=wss://mi-host/ws/voice
 ```
 
 **En un dispositivo físico con el backend local**, las URLs por defecto (`localhost:8081/8082/8083`) sirven si esos puertos llegan al PC: redirígelos por adb y `localhost` llegará al PC. Ojo: el `docker-compose.yml` actual de `develop` publica `social-core` (8082) y `sync-core` (8083), pero **no** `identity-api` (8081) ni la web; la entrada es el gateway en 80/443 y espera a `identity-api` en el host (`IDENTITY_API_UPSTREAM`). **No he probado la app contra ese stack local ni contra el gateway**: todas las pruebas documentadas fueron contra un servidor desplegado.
@@ -123,6 +124,25 @@ gateway) y la tablet entrando con el link:
 La app habla WHEP con el guest token (`POST /api/v1/stream/rooms/{id}/whep`, ICE completo antes de ofrecer, DataChannel
 `stream-events` negociado con id 0). Para probar contra un servidor en la LAN, stream-core debe anunciar una IP que la
 tablet alcance (`STREAM_PUBLIC_IP` del `.env`, no `127.0.0.1`) y el puerto UDP 8087 debe estar abierto.
+
+### Voz (AND-07)
+Con la web (Chromium, micrófono simulado con un tono de 440 Hz) y la tablet en la misma voz, midiendo los paquetes de
+audio por par (`adb logcat -s TintVoice` en la tablet y `getStats()` en la web):
+
+- **AC1:** al tocar «Unirme a la voz» sin permiso, la app muestra el diálogo del sistema («¿Permitir que TINT grabe
+  audio?») y **la voz no empieza hasta que se concede**; el micrófono no se pide al abrir la app.
+- **AC2:** al negarlo aparece «Sin permiso de micrófono no puedes hablar, pero el resto de la sala sigue funcionando»
+  con un botón a Ajustes; el chat, la reproducción y las reacciones siguen funcionando.
+- **AC3:** al «Silenciarme», la web **dejó de recibir audio de inmediato** (+187 paquetes en 3 s antes; **0 en 4 s**
+  silenciada; +193 al reactivar) y el contador de envío de la tablet se congeló. El silencio del host también se aplica:
+  la tablet muestra «El host te silenció» y no deja activarse.
+- **Audio en los dos sentidos:** la tablet envía ~50 paquetes/s y recibe el tono de la web (`level ≈ 0,31`). Se probó
+  tanto cuando la tablet **ofrece** (llega después) como cuando **responde** (la web llega después).
+
+La señalización usa la forma de la web (`signal.data = {description}` o `{candidate}`), no la `{sdp}` de la tabla de
+voice-core: así la app y el navegador se entienden. En segundo plano se sale de la voz (Android no deja capturar el
+micrófono sin un servicio en primer plano). En una sala `live` solo hablan el host y quienes él sube al escenario; la
+app avisa («No estás en el escenario») pero **no se probó** contra una transmisión real.
 
 ### Latencia host → tablet (AC1)
 Con Playwright controlando la sala del host (Chromium con `--remote-debugging-port`) y la tablet escribiendo una

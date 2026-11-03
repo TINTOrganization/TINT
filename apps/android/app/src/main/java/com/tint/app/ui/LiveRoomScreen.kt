@@ -14,6 +14,8 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -168,7 +170,11 @@ fun LiveRoomScreen(room: JoinedRoom, container: AppContainer, onLeave: () -> Uni
         when {
             socialState.revoked -> Notice("Tu invitación ya no es válida. El host te retiró de la sala.")
             socialState.expired -> Notice("Tu invitación caducó. Vuelve a unirte con el link.")
-            else -> {
+            // Todo lo de la sala se desplaza: con tarjetas (encuesta, trivia, voz) el chat ya no se queda sin espacio.
+            else -> Column(
+                Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
                 Box(Modifier.fillMaxWidth().aspectRatio(16f / 9f).background(Color.Black), contentAlignment = Alignment.Center) {
                     AndroidView(modifier = Modifier.fillMaxSize(), factory = { renderer })
                     LaserOverlay(socialState.laser, nowMs = clock, onPrune = social::pruneLaser, modifier = Modifier.fillMaxSize())
@@ -187,12 +193,13 @@ fun LiveRoomScreen(room: JoinedRoom, container: AppContainer, onLeave: () -> Uni
                 ReactionBar(socialState) { emoji ->
                     social.sendReaction(emoji, if (liveSinceMs > 0) clock() - liveSinceMs else 0L)
                 }
+                VoicePanel(room.roomId, container, sharedEnv = env)
                 ChatPanel(
                     state = socialState,
                     selfUserId = TokenClaims.subject(container.tokens.guestToken),
                     nowMs = clock,
                     onSend = social::send,
-                    modifier = Modifier.weight(1f),
+                    modifier = Modifier.fillMaxWidth().height(CHAT_HEIGHT),
                 )
             }
         }
@@ -232,3 +239,6 @@ private fun statusLine(live: LiveUiState): String = when (live.status) {
     LiveStatus.ENDED -> endedMessage(live.endReason)
     LiveStatus.ERROR -> "No se pudo ver la transmisión"
 }
+
+/** Alto del chat dentro de la sala, que ahora se desplaza. */
+private val CHAT_HEIGHT = 320.dp

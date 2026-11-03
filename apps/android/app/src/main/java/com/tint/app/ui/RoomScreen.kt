@@ -13,6 +13,8 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -191,7 +193,11 @@ fun RoomScreen(room: JoinedRoom, container: AppContainer, onLeave: () -> Unit) {
         when {
             ui.revoked || socialState.revoked -> Notice("Tu invitación ya no es válida. El host te retiró de la sala.")
             ui.expired || socialState.expired -> Notice("Tu invitación caducó. Vuelve a unirte con el link.")
-            else -> {
+            // Todo lo de la sala se desplaza: con tarjetas (encuesta, trivia, voz) el chat ya no se queda sin espacio.
+            else -> Column(
+                Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
                 Box(Modifier.fillMaxWidth().aspectRatio(16f / 9f).background(Color.Black), contentAlignment = Alignment.Center) {
                     AndroidView(
                         modifier = Modifier.fillMaxSize(),
@@ -224,12 +230,13 @@ fun RoomScreen(room: JoinedRoom, container: AppContainer, onLeave: () -> Unit) {
                 ReactionBar(socialState) { emoji ->
                     social.sendReaction(emoji, tracker.current() ?: 0)
                 }
+                VoicePanel(room.roomId, container)
                 ChatPanel(
                     state = socialState,
                     selfUserId = TokenClaims.subject(container.tokens.guestToken),
                     nowMs = clock,
                     onSend = social::send,
-                    modifier = Modifier.weight(1f),
+                    modifier = Modifier.fillMaxWidth().height(CHAT_HEIGHT),
                 )
             }
         }
@@ -252,3 +259,6 @@ private fun statusLine(connected: Boolean, hostOnline: Boolean?, attempt: Int, r
 private const val POSITION_TICK_MS = 200L
 private const val TICKS_PER_LOG = 5
 private const val TAG = "TintSync"
+
+/** Alto del chat dentro de la sala, que ahora se desplaza. */
+private val CHAT_HEIGHT = 320.dp

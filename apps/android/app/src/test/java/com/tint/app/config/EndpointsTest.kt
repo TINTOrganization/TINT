@@ -67,4 +67,30 @@ class EndpointsTest {
 
         assertEquals("http://h:8081", blank.streamApiUrl)
     }
+
+    @Test
+    fun `el canal de voz por defecto cuelga del mismo host que el social`() {
+        val behindGateway = Endpoints("https://h/api/v1", "wss://h/ws/sync", "wss://h/ws/social")
+
+        assertEquals("wss://h/ws/voice?room_id=abc&token=h.p.s", behindGateway.voiceUrl("abc", "h.p.s"))
+    }
+
+    @Test
+    fun `el canal de voz se puede apuntar a voice-core directo`() {
+        val direct = Endpoints(
+            "http://192.168.1.7:8081/api/v1",
+            "ws://192.168.1.7:8083/ws/sync",
+            "ws://192.168.1.7:8082/ws/social",
+            voiceWsUrl = "ws://192.168.1.7:8085/ws/voice/",
+        )
+
+        assertEquals("ws://192.168.1.7:8085/ws/voice?room_id=a%26b&token=x%3Dy", direct.voiceUrl("a&b", "x=y"))
+    }
+
+    @Test
+    fun `un canal de voz vacio usa el derivado del social`() {
+        val blank = Endpoints("http://h/api/v1", "ws://h/ws/sync", "ws://h:8082/ws/social", voiceWsUrl = " ")
+
+        assertEquals("ws://h:8082/ws/voice?room_id=r&token=t", blank.voiceUrl("r", "t"))
+    }
 }

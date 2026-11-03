@@ -18,6 +18,7 @@ class AppContainer(context: Context) {
         syncWsUrl = BuildConfig.SYNC_WS_URL,
         socialWsUrl = BuildConfig.SOCIAL_WS_URL,
         streamApiUrl = BuildConfig.STREAM_API_URL,
+        voiceWsUrl = BuildConfig.VOICE_WS_URL,
     )
 
     private val store = PrefsKeyValueStore(context.getSharedPreferences("tint", Context.MODE_PRIVATE))
