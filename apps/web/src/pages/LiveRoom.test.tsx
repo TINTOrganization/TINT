@@ -281,7 +281,8 @@ describe('LiveRoom — host', () => {
     await userEvent.click(within(confirmDialog).getByRole('button', { name: 'Terminar evento' }));
     await flush();
     expect(mockedApi).toHaveBeenCalledWith('/rooms/r1/end', { method: 'POST' }, 'host');
-    expect(live.stop).toHaveBeenCalled();
+    // /end ya cerró las sesiones en stream-core: un DELETE solo daría 404.
+    expect(live.stop).toHaveBeenCalledWith({ remote: false });
     expect(screen.getByRole('alert')).toHaveTextContent(/el evento terminó/i);
     await userEvent.click(screen.getByRole('link', { name: 'Ir al dashboard' }));
     expect(await screen.findByText('Dashboard OK')).toBeInTheDocument();
