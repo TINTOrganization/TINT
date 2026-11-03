@@ -34,6 +34,7 @@ class WebRtcVoiceMesh(
     private val selfId: String,
     private val iceServers: List<IceServer>,
     private val sendSignal: (to: String, data: SignalData) -> Unit,
+    private val onLevels: (Map<String, Double>) -> Unit = {},
 ) : VoiceMesh {
     private val links = ConcurrentHashMap<String, Link>()
     private val deafTo: MutableSet<String> = ConcurrentHashMap.newKeySet()
@@ -74,7 +75,37 @@ class WebRtcVoiceMesh(
         }
     }
 
+    /**
+     * Cada 300 ms lee el `audioLevel` de lo que llega de cada par (`inbound-rtp`) y de mi micrófono (`media-source`)
+     * y se lo da al cliente, que decide quién está hablando. Las lecturas son asíncronas: se juntan en `levels`.
+     */
+    private val levelPoller = object : Runnable {
+        override fun run() {
+            if (closed) return
+            val snapshot = links.toMap()
+            if (snapshot.isNotEmpty()) {
+                val levels = ConcurrentHashMap<String, Double>()
+                val pending = java.util.concurrent.atomic.AtomicInteger(snapshot.size)
+                snapshot.forEach { (peerId, link) ->
+                    link.pc.getStats { report ->
+                        report.statsMap.values.forEach { st ->
+                            if (st.members["kind"] != "audio") return@forEach
+                            val level = (st.members["audioLevel"] as? Number)?.toDouble() ?: return@forEach
+                            when (st.type) {
+                                "inbound-rtp" -> levels[peerId] = level
+                                "media-source" -> levels.merge(selfId, level, ::maxOf)
+                            }
+                        }
+                        if (pending.decrementAndGet() == 0 && !closed) onLevels(levels.toMap())
+                    }
+                }
+            }
+            main.postDelayed(this, LEVEL_POLL_MS)
+        }
+    }
+
     init {
+        main.postDelayed(levelPoller, LEVEL_POLL_MS)
         if (BuildConfig.DEBUG) main.postDelayed(statsLogger, STATS_LOG_MS)
     }
 
@@ -134,6 +165,7 @@ class WebRtcVoiceMesh(
     override fun close() {
         closed = true
         main.removeCallbacks(statsLogger)
+        main.removeCallbacks(levelPoller)
         links.keys.toList().forEach(::remove)
         localTrack.dispose()
         audioSource.dispose()
@@ -289,6 +321,7 @@ class WebRtcVoiceMesh(
     private companion object {
         const val DISCONNECT_GRACE_MS = 3_000L
         const val STATS_LOG_MS = 2_000L
+        const val LEVEL_POLL_MS = 300L
         const val TAG = "TintVoice"
     }
 }

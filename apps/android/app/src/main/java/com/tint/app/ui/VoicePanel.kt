@@ -83,7 +83,7 @@ fun rememberVoiceClient(roomId: String, container: AppContainer, sharedEnv: WebR
             token = { container.tokens.guestToken },
             urlFor = container.endpoints::voiceUrl,
             sockets = OkHttpSyncSocketFactory(container.http),
-            meshes = VoiceMeshFactory { selfId, ice, send -> WebRtcVoiceMesh(env(), selfId, ice, send) },
+            meshes = VoiceMeshFactory { selfId, ice, send, levels -> WebRtcVoiceMesh(env(), selfId, ice, send, levels) },
             scope = scope,
         )
     }

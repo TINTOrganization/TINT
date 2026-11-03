@@ -31,7 +31,7 @@ class VoiceClientTest {
         }
     }
 
-    private class FakeMesh(val selfId: String, val ice: List<IceServer>, val sendSignal: (String, SignalData) -> Unit) : VoiceMesh {
+    private class FakeMesh(val selfId: String, val ice: List<IceServer>, val sendSignal: (String, SignalData) -> Unit, val onLevels: (Map<String, Double>) -> Unit = {}) : VoiceMesh {
         val connected = mutableListOf<String>()
         val signals = mutableListOf<Pair<String, SignalData>>()
         val sending = mutableListOf<Boolean>()
@@ -68,6 +68,7 @@ class VoiceClientTest {
     private val meshes = mutableListOf<FakeMesh>()
     private var token: String? = "guest-jwt"
     private var ids = 0
+    private var clockMs = 1_793_719_500_000L
     private lateinit var client: VoiceClient
 
     private val socket get() = sockets.last()
@@ -81,11 +82,11 @@ class VoiceClientTest {
             token = { token },
             urlFor = { room, t -> "ws://h/ws/voice?room_id=$room&token=$t" },
             sockets = SyncSocketFactory { url, listener -> FakeSocket(url, listener).also { sockets += it } },
-            meshes = VoiceMeshFactory { selfId, ice, send -> FakeMesh(selfId, ice, send).also { meshes += it } },
+            meshes = VoiceMeshFactory { selfId, ice, send, levels -> FakeMesh(selfId, ice, send, levels).also { meshes += it } },
             scope = CoroutineScope(Dispatchers.Unconfined),
             sleep = { },
             newId = { "id-${ids++}" },
-            wallNowMs = { 1_793_719_500_000L },
+            wallNowMs = { clockMs },
         )
     }
 
@@ -462,5 +463,47 @@ class VoiceClientTest {
         socket.listener.onMessage("""{"type":"desconocido"}""")
 
         assertTrue(before === state)
+    }
+
+    // ---- Quién habla ----
+
+    @Test
+    fun `los niveles de audio marcan a quien habla`() {
+        joined()
+
+        mesh.onLevels(mapOf("p1" to 0.3, "p2" to 0.0))
+
+        assertEquals(setOf("p1"), state.speaking)
+    }
+
+    @Test
+    fun `quien calla deja de hablar tras el plazo`() {
+        joined()
+        mesh.onLevels(mapOf("p1" to 0.3))
+
+        clockMs += 1_000
+        mesh.onLevels(mapOf("p1" to 0.0))
+
+        assertEquals(emptySet<String>(), state.speaking)
+    }
+
+    @Test
+    fun `mi propio aro no se enciende si estoy en silencio`() {
+        joined()
+        client.toggleMute()
+
+        mesh.onLevels(mapOf("me" to 0.4))
+
+        assertEquals(emptySet<String>(), state.speaking)
+    }
+
+    @Test
+    fun `salir de la voz apaga todos los aros`() {
+        joined()
+        mesh.onLevels(mapOf("p1" to 0.3))
+
+        client.leave()
+
+        assertEquals(emptySet<String>(), state.speaking)
     }
 }

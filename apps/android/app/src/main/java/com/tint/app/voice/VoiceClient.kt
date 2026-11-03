@@ -36,7 +36,12 @@ interface VoiceMesh {
 
 fun interface VoiceMeshFactory {
     /** `sendSignal` entrega al canal lo que la malla necesita decirle a un par (oferta, respuesta, candidato). */
-    fun create(selfId: String, iceServers: List<IceServer>, sendSignal: (to: String, data: SignalData) -> Unit): VoiceMesh
+    fun create(
+        selfId: String,
+        iceServers: List<IceServer>,
+        sendSignal: (to: String, data: SignalData) -> Unit,
+        onLevels: (levels: Map<String, Double>) -> Unit,
+    ): VoiceMesh
 }
 
 enum class VoiceStatus { IDLE, JOINING, CONNECTED, RECONNECTING, ENDED }
@@ -84,6 +89,7 @@ class VoiceClient(
     private var hostMuted = false
     private var selfId = ""
     private var mesh: VoiceMesh? = null
+    private val speakingTracker = SpeakingTracker()
 
     private val connection: ResilientSocket = ResilientSocket(
         token = token,
@@ -187,9 +193,13 @@ class VoiceClient(
         selfId = msg.self.peerId
         hostMuted = msg.self.hostMuted
         if (msg.self.hostMuted) wantMuted = true
-        val created = meshes.create(msg.self.peerId, msg.iceServers) { to, data ->
-            connection.send(VoiceProtocol.signal(to, data, newId(), wallNowMs()))
-        }
+        speakingTracker.reset()
+        val created = meshes.create(
+            msg.self.peerId,
+            msg.iceServers,
+            { to, data -> connection.send(VoiceProtocol.signal(to, data, newId(), wallNowMs())) },
+            ::onLevels,
+        )
         mesh = created
         applySending()
         // Quien llega ofrece a cada uno de los que ya estaban.
@@ -245,6 +255,13 @@ class VoiceClient(
         }
     }
 
+    /** Niveles de audio de la malla: se convierten en los aros de quien habla. Mi aro solo cuenta si mi micrófono está abierto. */
+    private fun onLevels(levels: Map<String, Double>) {
+        val sending = !wantMuted && !hostMuted
+        val speaking = speakingTracker.update(levels.filterKeys { it != selfId || sending }, wallNowMs())
+        _state.update { if (it.speaking == speaking) it else it.copy(speaking = speaking) }
+    }
+
     private fun applySending() {
         mesh?.setSending(!wantMuted && !hostMuted)
     }
@@ -252,6 +269,7 @@ class VoiceClient(
     private fun closeMesh() {
         val old = mesh
         mesh = null
+        speakingTracker.reset()
         old?.close()
     }
 
