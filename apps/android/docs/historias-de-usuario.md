@@ -198,9 +198,9 @@ As a mobile viewer, I want to see who is in the voice channel and who is speakin
 As a mobile viewer, I want a short summary when the event ends, so that I remember the highlights of the session.
 
 **Acceptance Criteria:**
-- [ ] AC1. Given the host ends the session, when the recap arrives, then the screen shows the top reactor, the most paused moment and the reaction peak.
-- [ ] AC2. Given the recap has missing blocks, when it is shown, then the blocks without data are hidden.
-- [ ] AC3. Given the user taps Close, when the recap is dismissed, then they return to the home screen.
+- [x] AC1. Given the host ends the session, when the recap arrives, then the screen shows the top reactor, the most paused moment and the reaction peak. *(Verificado en la tablet. Se pide cuando el video llega a ≤ 1,5 s del final y se rearma al alejarse 5 s: con la sala en pausa en el último instante ExoPlayer se quedaba a 1 ms y nunca pasaba a `STATE_ENDED`.)*
+- [x] AC2. Given the recap has missing blocks, when it is shown, then the blocks without data are hidden.
+- [x] AC3. Given the user taps Close, when the recap is dismissed, then they return to the home screen.
 
 ### AND-22: Invite friends from the room
 **User Story:**

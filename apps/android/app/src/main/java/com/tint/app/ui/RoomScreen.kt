@@ -64,6 +64,7 @@ import com.tint.app.BuildConfig
 import com.tint.app.join.InviteLink
 import com.tint.app.join.JoinedRoom
 import com.tint.app.layout.RoomLayout
+import com.tint.app.layout.VideoEnd
 import com.tint.app.layout.VideoTime
 import com.tint.app.net.TokenClaims
 import com.tint.app.social.SocialClient
@@ -123,6 +124,14 @@ fun RoomScreen(room: JoinedRoom, container: AppContainer, onLeave: () -> Unit) {
     var fullscreen by rememberSaveable { mutableStateOf(false) }
     var tab by rememberSaveable { mutableStateOf(RoomTab.CHAT) }
     var audioMuted by rememberSaveable { mutableStateOf(false) }
+    // El recap se pide una vez por final; volver a verla (alejarse del final) lo rearma.
+    var recapAsked by remember { mutableStateOf(false) }
+    val askRecapOnce = {
+        if (!recapAsked) {
+            recapAsked = true
+            social.requestRecap()
+        }
+    }
     var positionMs by remember { mutableLongStateOf(0L) }
     var durationMs by remember { mutableLongStateOf(0L) }
     FullscreenEffect(fullscreen) { fullscreen = false }
@@ -154,7 +163,7 @@ fun RoomScreen(room: JoinedRoom, container: AppContainer, onLeave: () -> Unit) {
 
             // Como la web: cuando el video termina se pide el resumen de la sesión.
             override fun onPlaybackStateChanged(state: Int) {
-                if (state == Player.STATE_ENDED) social.requestRecap()
+                if (state == Player.STATE_ENDED) askRecapOnce()
             }
         }
         player.addListener(listener)
@@ -223,6 +232,7 @@ fun RoomScreen(room: JoinedRoom, container: AppContainer, onLeave: () -> Unit) {
             tracker.update(player.currentPosition, if (advancing) player.playbackParameters.speed.toDouble() else 0.0)
             positionMs = player.currentPosition
             durationMs = player.duration.coerceAtLeast(0L)
+            if (VideoEnd.reached(positionMs, durationMs)) askRecapOnce() else if (VideoEnd.rearmed(positionMs, durationMs)) recapAsked = false
             playback.tick()
             // Solo en debug: una línea por segundo para observar la sincronía con `adb logcat -s TintSync`.
             if (BuildConfig.DEBUG && ticks++ % TICKS_PER_LOG == 0) {
