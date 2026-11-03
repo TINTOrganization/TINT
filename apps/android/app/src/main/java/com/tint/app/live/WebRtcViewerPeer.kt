@@ -4,6 +4,7 @@ import android.content.Context
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeoutOrNull
+import org.webrtc.AudioTrack
 import org.webrtc.DataChannel
 import org.webrtc.DefaultVideoDecoderFactory
 import org.webrtc.DefaultVideoEncoderFactory
@@ -61,6 +62,9 @@ class WebRtcViewerPeer(
     private var connection: PeerConnection? = null
     private var channel: DataChannel? = null
     private val gathered = CompletableDeferred<Unit>()
+    private var audioTrack: AudioTrack? = null
+
+    @Volatile private var audioEnabled = true
 
     override suspend fun createOffer(iceServers: List<IceServer>): String {
         val servers = iceServers.map { s ->
@@ -97,6 +101,11 @@ class WebRtcViewerPeer(
     override suspend fun setAnswer(sdp: String) {
         val pc = connection ?: throw IllegalStateException("La PeerConnection ya se cerró")
         setSdp { pc.setRemoteDescription(it, SessionDescription(SessionDescription.Type.ANSWER, sdp)) }
+    }
+
+    override fun setAudioEnabled(on: Boolean) {
+        audioEnabled = on
+        audioTrack?.setEnabled(on)
     }
 
     override fun close() {
@@ -171,7 +180,13 @@ class WebRtcViewerPeer(
         }
 
         override fun onTrack(transceiver: RtpTransceiver) {
-            (transceiver.receiver.track() as? VideoTrack)?.let(onVideo)
+            when (val track = transceiver.receiver.track()) {
+                is VideoTrack -> onVideo(track)
+                is AudioTrack -> {
+                    audioTrack = track
+                    track.setEnabled(audioEnabled)
+                }
+            }
         }
 
         override fun onSignalingChange(state: PeerConnection.SignalingState) = Unit

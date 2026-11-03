@@ -29,8 +29,8 @@ import com.tint.app.social.RankEntry
 import com.tint.app.social.TriviaState
 import kotlinx.coroutines.delay
 
-private val CardBg = Color(0xFF1B1E26)
-private val Good = Color(0xFF6EE7B7)
+private val CardBg = TintSurface
+private val Good = TintGoodText
 
 /**
  * Pregunta de trivia sobre la sala. Cuenta regresiva (reloj local), opciones, lo que pasó con mi respuesta

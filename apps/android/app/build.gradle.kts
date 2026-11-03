@@ -32,6 +32,7 @@ android {
         buildConfigField("String", "SOCIAL_WS_URL", "\"${endpoint("tintSocialWsUrl")}\"")
         buildConfigField("String", "STREAM_API_URL", "\"${endpoint("tintStreamApiUrl")}\"")
         buildConfigField("String", "VOICE_WS_URL", "\"${endpoint("tintVoiceWsUrl")}\"")
+        buildConfigField("String", "INVITE_HOST", "\"${endpoint("tintInviteHost")}\"")
     }
 
     buildFeatures {

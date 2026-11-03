@@ -31,6 +31,8 @@ data class SocialUiState(
     val connected: Boolean = false,
     val messages: List<ChatItem> = emptyList(),
     val reactions: List<Reaction> = emptyList(),
+    /** Las reacciones recientes con su hora de llegada local, para dibujarlas flotando sobre el video. */
+    val floating: List<ReactionArrival> = emptyList(),
     /** Modo lento de la sala en segundos (0 = apagado). */
     val slowModeS: Int = 0,
     val mutedUserIds: List<String> = emptyList(),
@@ -42,6 +44,12 @@ data class SocialUiState(
     val error: String? = null,
     val errorSeq: Int = 0,
     val trivia: TriviaState? = null,
+    /** Ranking acumulado de la sala (hasta 10 filas) y mi lugar y puntos, si ya puntué. */
+    val leaderboard: List<RankEntry> = emptyList(),
+    val myRank: Int? = null,
+    val myTotal: Int? = null,
+    /** Resumen de fin de sesión, cuando social-core lo manda. */
+    val recap: RecapSummary? = null,
     /** Encuesta vigente (o la última cerrada, hasta que la descarte). `myVote` ya resuelto. */
     val poll: PollState? = null,
     /** Puntos recientes del láser del host, con su hora de llegada local. */
@@ -191,6 +199,13 @@ class SocialClient(
         return true
     }
 
+    /** Pide el resumen de la sesión (la web lo hace cuando el video termina). */
+    fun requestRecap(): Boolean = connection.send(SocialProtocol.recapRequest(roomId, newId()))
+
+    fun dismissRecap() {
+        _state.update { it.copy(recap = null) }
+    }
+
     fun dismissPoll() {
         val id = _state.value.poll?.pollId
         if (id != null) synchronized(lock) {
@@ -198,6 +213,15 @@ class SocialClient(
             if (dismissedPolls.size > DISMISSED_CAP) dismissedPolls.remove(dismissedPolls.first())
         }
         _state.update { it.copy(poll = null) }
+    }
+
+    /** Tira las reacciones que ya no se ven; se llama de vez en cuando mientras alguna sube por el video. */
+    fun pruneReactions() {
+        val now = nowMs()
+        _state.update { cur ->
+            val kept = cur.floating.filter { FloatingReactions.isVisible(it, now) }
+            if (kept.size == cur.floating.size) cur else cur.copy(floating = kept)
+        }
     }
 
     /** Tira los puntos del láser que ya no se ven; se llama de vez en cuando mientras hay trazo en pantalla. */
@@ -231,7 +255,13 @@ class SocialClient(
                 }
             }
             is SocialMessage.ReactionMsg -> if (!remember(msg.reaction.eventId)) {
-                _state.update { it.copy(reactions = (it.reactions + msg.reaction).takeLast(REACTION_LIMIT)) }
+                val arrival = ReactionArrival(msg.reaction, nowMs())
+                _state.update {
+                    it.copy(
+                        reactions = (it.reactions + msg.reaction).takeLast(REACTION_LIMIT),
+                        floating = (it.floating + arrival).takeLast(FLOATING_LIMIT),
+                    )
+                }
             }
             is SocialMessage.TriviaQuestionMsg -> _state.update {
                 // La misma pregunta reenviada al reconectar no reinicia mi respuesta ni la cuenta regresiva.
@@ -245,9 +275,18 @@ class SocialClient(
             }
             is SocialMessage.TriviaResultMsg -> _state.update {
                 val t = it.trivia
-                if (t == null || t.question.triviaId != msg.result.triviaId) it
-                else it.copy(trivia = t.copy(result = msg.result))
+                // El ranking acumulado sigue al resultado aunque la pregunta ya no esté en pantalla.
+                val board = it.copy(
+                    leaderboard = msg.result.leaderboard.ifEmpty { it.leaderboard },
+                    myTotal = msg.result.myTotal ?: it.myTotal,
+                )
+                if (t == null || t.question.triviaId != msg.result.triviaId) board
+                else board.copy(trivia = t.copy(result = msg.result))
             }
+            is SocialMessage.LeaderboardMsg -> _state.update {
+                it.copy(leaderboard = msg.entries, myRank = msg.myRank, myTotal = msg.myTotal ?: it.myTotal)
+            }
+            is SocialMessage.RecapMsg -> _state.update { it.copy(recap = msg.recap) }
             is SocialMessage.PollStateMsg -> {
                 val dismissed = synchronized(lock) { msg.poll.pollId in dismissedPolls }
                 if (!dismissed) _state.update {
@@ -283,6 +322,7 @@ class SocialClient(
     private companion object {
         const val REACTION_LIMIT = 20
         const val LASER_LIMIT = 120
+        const val FLOATING_LIMIT = 40
         const val DISMISSED_CAP = 50
         const val MIN_REACTION_GAP_MS = 200L
         const val SEEN_CAP = 2000

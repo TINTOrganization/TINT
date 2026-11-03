@@ -54,6 +54,8 @@ data class VoiceUiState(
     /** Una transmisión en vivo: solo hablan el host y quienes él invitó al escenario. */
     val notOnStage: Boolean = false,
     val roomClosed: Boolean = false,
+    /** `peer_id` de quienes están hablando ahora (se llena con la energía del audio de cada conexión). */
+    val speaking: Set<String> = emptySet(),
 )
 
 /**

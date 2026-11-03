@@ -9,11 +9,20 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
@@ -39,7 +48,7 @@ import com.tint.app.social.SocialProtocol
 import com.tint.app.social.SocialUiState
 import kotlinx.coroutines.delay
 
-private val Bubble = Color(0xFF1B1E26)
+private val Bubble = TintCard
 
 /** Tira con las reacciones de la sala y los botones para reaccionar. */
 @Composable
@@ -117,20 +126,24 @@ fun ChatPanel(
         if (state.error != null) {
             Text(state.error, color = MaterialTheme.colorScheme.error, fontSize = 12.sp, modifier = Modifier.padding(vertical = 2.dp))
         }
-        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth().padding(top = 6.dp)) {
             OutlinedTextField(
                 value = draft,
                 onValueChange = { if (it.length <= SocialProtocol.CHAT_MAX_LENGTH) draft = it },
                 enabled = !state.muted,
                 singleLine = true,
-                placeholder = { Text(if (state.muted) "El host te silenció; puedes leer el chat." else "Escribe un mensaje") },
+                shape = RoundedCornerShape(24.dp),
+                placeholder = { Text(if (state.muted) "El host te silenció" else "Escribe un mensaje", maxLines = 1, softWrap = false) },
                 modifier = Modifier.weight(1f),
             )
-            Spacer(Modifier.width(4.dp))
-            TextButton(onClick = { spoiler = !spoiler }, enabled = !state.muted) {
-                Text(if (spoiler) "Spoiler ✓" else "Spoiler", color = if (spoiler) TintAccent else Color.Gray, fontSize = 12.sp)
-            }
-            Button(
+            // El spoiler es un interruptor de icono: en el panel estrecho del móvil horizontal no cabe una palabra.
+            IconButton(
+                onClick = { spoiler = !spoiler },
+                enabled = !state.muted,
+                modifier = Modifier.size(48.dp).clip(CircleShape).background(if (spoiler) TintAccent.copy(alpha = 0.3f) else TintCard)
+                    .semantics { contentDescription = if (spoiler) "Enviar como spoiler: activado" else "Enviar como spoiler" },
+            ) { Icon(TintIcons.EyeOff, null, tint = if (spoiler) TintAccentSoft else TintText) }
+            IconButton(
                 enabled = !state.muted && draft.isNotBlank() && waitS == 0,
                 onClick = {
                     if (onSend(draft, spoiler)) {
@@ -138,7 +151,11 @@ fun ChatPanel(
                         spoiler = false
                     }
                 },
-            ) { Text(if (waitS > 0) "${waitS}s" else "Enviar") }
+                modifier = Modifier.size(48.dp).clip(CircleShape).background(if (!state.muted && draft.isNotBlank() && waitS == 0) TintAccent else TintCard),
+            ) {
+                if (waitS > 0) Text("${waitS}s", color = TintMuted, fontSize = 12.sp)
+                else Icon(Icons.AutoMirrored.Filled.Send, "Enviar", tint = if (draft.isNotBlank() && !state.muted) TintBackground else TintMuted)
+            }
         }
         if (state.slowModeS > 0) {
             Text("Modo lento: 1 mensaje cada ${state.slowModeS} s", color = Color.Gray, fontSize = 11.sp)

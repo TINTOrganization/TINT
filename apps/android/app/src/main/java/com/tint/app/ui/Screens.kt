@@ -21,8 +21,6 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.tint.app.auth.LoginState
 
-val TintAccent = Color(0xFFFF8A1A)
-val TintBackground = Color(0xFF0F1115)
 
 @Composable
 fun LoginScreen(state: LoginState, onSignIn: () -> Unit, onJoin: () -> Unit) {

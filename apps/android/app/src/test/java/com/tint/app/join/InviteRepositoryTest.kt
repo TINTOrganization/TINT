@@ -42,7 +42,7 @@ class InviteRepositoryTest {
 
         val result = repo.claim("wVRbfj_3dEnd", "Ana")
 
-        assertEquals(ClaimResult.Joined(JoinedRoom("r1", "Peli", "Ana")), result)
+        assertEquals(ClaimResult.Joined(JoinedRoom("r1", "Peli", "Ana", inviteCode = "wVRbfj_3dEnd")), result)
         assertEquals("guest-jwt", tokens.guestToken)
         val request = server.takeRequest()
         assertEquals("/api/v1/invitations/claim", request.path)
@@ -55,7 +55,7 @@ class InviteRepositoryTest {
 
         val result = repo.claim("abcdef", "Ana")
 
-        assertEquals(ClaimResult.Joined(JoinedRoom("r1", null, "Ana")), result)
+        assertEquals(ClaimResult.Joined(JoinedRoom("r1", null, "Ana", inviteCode = "abcdef")), result)
     }
 
     @Test
@@ -115,7 +115,7 @@ class InviteRepositoryTest {
 
         val result = repo.claim("abcdef", "Ana")
 
-        assertEquals(ClaimResult.Joined(JoinedRoom("r1", "Concierto", "Ana", RoomKind.LIVE)), result)
+        assertEquals(ClaimResult.Joined(JoinedRoom("r1", "Concierto", "Ana", RoomKind.LIVE, inviteCode = "abcdef")), result)
     }
 
     @Test

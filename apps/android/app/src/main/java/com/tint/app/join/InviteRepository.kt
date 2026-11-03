@@ -20,7 +20,14 @@ enum class RoomKind {
     }
 }
 
-data class JoinedRoom(val roomId: String, val title: String?, val nick: String, val kind: RoomKind = RoomKind.WATCH)
+data class JoinedRoom(
+    val roomId: String,
+    val title: String?,
+    val nick: String,
+    val kind: RoomKind = RoomKind.WATCH,
+    /** El código con el que se entró: sirve para volver a compartir la invitación desde la sala. */
+    val inviteCode: String? = null,
+)
 
 sealed interface ClaimResult {
     data class Joined(val room: JoinedRoom) : ClaimResult
@@ -62,7 +69,7 @@ class InviteRepository(
             ApiAuth.NONE,
         )
         tokens.guestToken = res.token
-        ClaimResult.Joined(JoinedRoom(res.roomId, res.roomTitle, res.nick ?: nick, RoomKind.fromWire(res.roomKind)))
+        ClaimResult.Joined(JoinedRoom(res.roomId, res.roomTitle, res.nick ?: nick, RoomKind.fromWire(res.roomKind), inviteCode = code))
     } catch (e: CancellationException) {
         throw e
     } catch (e: Exception) {

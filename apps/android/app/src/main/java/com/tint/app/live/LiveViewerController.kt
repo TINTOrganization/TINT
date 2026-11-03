@@ -29,6 +29,9 @@ interface ViewerPeer {
 
     suspend fun setAnswer(sdp: String)
 
+    /** Oír o no el audio de la transmisión en este aparato (no afecta a nadie más). */
+    fun setAudioEnabled(on: Boolean)
+
     fun close()
 }
 
@@ -73,6 +76,7 @@ class LiveViewerController(
     private var attempt = 0
     private var peer: ViewerPeer? = null
     private var sessionUrl = ""
+    private var audioOn = true
 
     fun start() {
         val gen = synchronized(lock) {
@@ -101,6 +105,15 @@ class LiveViewerController(
         _state.value = LiveUiState()
     }
 
+    /** Silencia o reactiva el audio de la transmisión solo en este aparato; se recuerda entre reconexiones. */
+    fun setAudioEnabled(on: Boolean) {
+        val current = synchronized(lock) {
+            audioOn = on
+            peer
+        }
+        current?.setAudioEnabled(on)
+    }
+
     /** La sala se cerró por otro canal (`ROOM_CLOSED`, cierre 4010): el evento terminó. */
     fun roomClosed() = finishEnded(null)
 
@@ -112,6 +125,7 @@ class LiveViewerController(
             if (!current(gen)) return
             val created = peers.create(listenerFor(gen))
             synchronized(lock) { peer = created }
+            created.setAudioEnabled(audioOn)
             val offer = created.createOffer(ice)
             if (!current(gen)) return
             val session = signaling.whep(roomId, offer)

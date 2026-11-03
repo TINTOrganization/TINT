@@ -32,8 +32,8 @@ import com.tint.app.social.PollState
 import com.tint.app.social.SocialProtocol
 import kotlinx.coroutines.delay
 
-private val CardBg = Color(0xFF1B1E26)
-private val BarBg = Color(0xFF262A35)
+private val CardBg = TintSurface
+private val BarBg = TintCard
 
 /**
  * Encuesta de la sala. Mientras está abierta cada opción es un botón que vota (se puede cambiar el voto) y

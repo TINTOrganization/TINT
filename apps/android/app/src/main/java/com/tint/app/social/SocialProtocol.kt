@@ -79,6 +79,28 @@ data class LaserPoint(
     val end: Boolean,
 )
 
+/** Quién reaccionó más durante la sesión. */
+data class RecapReactor(val userId: String, val nick: String, val count: Int)
+
+/** Un momento del video (en ms) y cuántas veces pasó algo ahí. */
+data class RecapMoment(val positionMs: Long, val count: Int)
+
+data class RecapPeak(val positionMs: Long, val count: Int, val laughs: Int)
+
+data class RecapTotals(val reactions: Int, val pauses: Int, val rewinds: Int, val polls: Int)
+
+/** Resumen de la sesión que calcula social-core (cada bloque puede faltar si no hubo datos). */
+data class RecapSummary(
+    val topReactor: RecapReactor?,
+    val mostPaused: RecapMoment?,
+    val peak: RecapPeak?,
+    val totals: RecapTotals,
+) {
+    val isEmpty: Boolean
+        get() = topReactor == null && mostPaused == null && peak == null &&
+            totals == RecapTotals(0, 0, 0, 0)
+}
+
 sealed interface SocialMessage {
     /** Se manda al entrar: los últimos mensajes de la sala. */
     data class History(val items: List<ChatItem>) : SocialMessage
@@ -101,6 +123,11 @@ sealed interface SocialMessage {
     data class PollStateMsg(val poll: PollState) : SocialMessage
 
     data class LaserMsg(val point: LaserPoint) : SocialMessage
+
+    /** Ranking acumulado de la sala, que llega al entrar. `myRank`/`myTotal` son los míos, si ya puntué. */
+    data class LeaderboardMsg(val entries: List<RankEntry>, val myRank: Int?, val myTotal: Int?) : SocialMessage
+
+    data class RecapMsg(val recap: RecapSummary) : SocialMessage
 }
 
 /**
@@ -160,6 +187,8 @@ object SocialProtocol {
             "trivia_result" -> triviaResult(obj)?.let { SocialMessage.TriviaResultMsg(it) }
             "poll_state" -> pollState(obj)?.let { SocialMessage.PollStateMsg(it) }
             "laser" -> laser(obj)?.let { SocialMessage.LaserMsg(it) }
+            "trivia_leaderboard" -> SocialMessage.LeaderboardMsg(rank(obj["leaderboard"]), obj.long("my_rank")?.toInt(), obj.long("my_total")?.toInt())
+            "recap" -> SocialMessage.RecapMsg(recap(obj))
             else -> null
         }
     }
@@ -248,6 +277,25 @@ object SocialProtocol {
         )
     }
 
+    private fun recap(o: JsonObject): RecapSummary {
+        val totals = o["totals"] as? JsonObject
+        return RecapSummary(
+            topReactor = (o["top_emoji_user"] as? JsonObject)?.let {
+                RecapReactor(it.string("user_id") ?: return@let null, it.string("nick") ?: return@let null, it.long("count")?.toInt() ?: 0)
+            },
+            mostPaused = (o["most_paused"] as? JsonObject)?.let { RecapMoment(it.long("position_ms") ?: return@let null, it.long("count")?.toInt() ?: 0) },
+            peak = (o["peak_reactions"] as? JsonObject)?.let {
+                RecapPeak(it.long("position_ms") ?: return@let null, it.long("count")?.toInt() ?: 0, it.long("laughs")?.toInt() ?: 0)
+            },
+            totals = RecapTotals(
+                reactions = totals?.long("reactions")?.toInt() ?: 0,
+                pauses = totals?.long("pauses")?.toInt() ?: 0,
+                rewinds = totals?.long("rewinds")?.toInt() ?: 0,
+                polls = totals?.long("polls")?.toInt() ?: 0,
+            ),
+        )
+    }
+
     private fun rank(element: kotlinx.serialization.json.JsonElement?): List<RankEntry> =
         (element as? JsonArray).orEmpty().mapNotNull { e ->
             val o = e as? JsonObject ?: return@mapNotNull null
@@ -271,6 +319,13 @@ object SocialProtocol {
             put("room_id", roomId)
             put("poll_id", pollId)
             put("option", option)
+        }.toString()
+
+    fun recapRequest(roomId: String, eventId: String): String =
+        buildJsonObject {
+            put("event_id", eventId)
+            put("type", "recap_request")
+            put("room_id", roomId)
         }.toString()
 
     fun triviaAnswer(roomId: String, triviaId: String, option: Int, eventId: String): String =

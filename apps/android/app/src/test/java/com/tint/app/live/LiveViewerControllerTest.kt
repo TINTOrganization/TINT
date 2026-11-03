@@ -16,6 +16,7 @@ class LiveViewerControllerTest {
         var closed = false
         var iceServers: List<IceServer> = emptyList()
         var failOffer: Exception? = null
+        val audio = mutableListOf<Boolean>()
 
         override suspend fun createOffer(iceServers: List<IceServer>): String {
             failOffer?.let { throw it }
@@ -25,6 +26,10 @@ class LiveViewerControllerTest {
 
         override suspend fun setAnswer(sdp: String) {
             answers += sdp
+        }
+
+        override fun setAudioEnabled(on: Boolean) {
+            audio += on
         }
 
         override fun close() {
@@ -447,5 +452,36 @@ class LiveViewerControllerTest {
         old.listener.onEvent("""{"type":"stream_state","state":"ended","reason":"host_ended"}""")
 
         assertTrue(state.status != LiveStatus.ENDED)
+    }
+
+    // ---- Audio solo para mí (AND-17) ----
+
+    @Test
+    fun `silenciar el audio se lo dice a la conexion actual`() {
+        controller.start()
+
+        controller.setAudioEnabled(false)
+        controller.setAudioEnabled(true)
+
+        assertEquals(listOf(true, false, true), peer.audio)
+    }
+
+    @Test
+    fun `la conexion nueva tras una caida respeta el silencio ya elegido`() {
+        controller.start()
+        controller.setAudioEnabled(false)
+
+        peers[0].listener.onState(PeerState.FAILED)
+
+        assertEquals(false, peers[1].audio.first())
+    }
+
+    @Test
+    fun `sin haber empezado el audio queda listo para la primera conexion`() {
+        controller.setAudioEnabled(false)
+
+        controller.start()
+
+        assertEquals(listOf(false), peer.audio)
     }
 }
