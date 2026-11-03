@@ -128,7 +128,8 @@ export default function LiveRoom() {
     setEndError('');
     try {
       await endLiveEvent(roomId);
-      await stop();
+      // /end ya cerró las sesiones en stream-core: solo se libera lo local (un DELETE daría 404).
+      await stop({ remote: false });
       setEnded(true);
     } catch (err) {
       setEndError(endEventErrorMessage(err));

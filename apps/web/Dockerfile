@@ -33,7 +33,9 @@ RUN npm run build
 FROM nginx:1.27-alpine
 # Plantilla procesada por el entrypoint oficial: solo se sustituye NGINX_ERROR_LOG_LEVEL,
 # para que `$uri`, `$host` y el resto de variables de nginx lleguen intactas (ADR 0021).
-ENV NGINX_ENVSUBST_FILTER=NGINX_ERROR_LOG_LEVEL
+# Valor por defecto para `docker run` sin Compose: sin él nginx no arranca (`error_log stderr ;`).
+ENV NGINX_ENVSUBST_FILTER=NGINX_ERROR_LOG_LEVEL \
+    NGINX_ERROR_LOG_LEVEL=warn
 COPY nginx.conf /etc/nginx/templates/default.conf.template
 COPY --from=build /app/dist /usr/share/nginx/html
 EXPOSE 80

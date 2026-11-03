@@ -160,7 +160,7 @@ services:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-tintadmin}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
       # El navegador sube y reproduce directo desde MinIO con URLs firmadas.
-      MINIO_API_CORS_ALLOW_ORIGIN: ${MINIO_CORS_ALLOW_ORIGIN:-http://localhost:5173}
+      MINIO_API_CORS_ALLOW_ORIGIN: ${MINIO_CORS_ALLOW_ORIGIN:-https://localhost,http://localhost:5173}
     ports:
       - "9000:9000"
       - "9001:9001"
@@ -282,7 +282,7 @@ services:
       JWT_AUDIENCE: ${JWT_AUDIENCE:-tint:room}
       FIREBASE_PROJECT_ID: ${FIREBASE_PROJECT_ID:-tint-login}
       # Orígenes (host[:puerto]) que pueden abrir /ws/social.
-      ALLOWED_ORIGINS: ${SOCIAL_ALLOWED_ORIGINS:-localhost:5173,127.0.0.1:5173}
+      ALLOWED_ORIGINS: ${SOCIAL_ALLOWED_ORIGINS:-localhost:5173,127.0.0.1:5173,localhost}
       SOCIAL_REACTION_LIMIT: ${SOCIAL_REACTION_LIMIT:-5}
       SOCIAL_REACTION_IP_LIMIT: ${SOCIAL_REACTION_IP_LIMIT:-5}
       SOCIAL_REACTION_WINDOW_MS: ${SOCIAL_REACTION_WINDOW_MS:-1000}
@@ -320,7 +320,7 @@ services:
       JWT_SECRET: ${JWT_SECRET}
       JWT_ISSUER: ${JWT_ISSUER:-tint-identity}
       JWT_AUDIENCE: ${JWT_AUDIENCE:-tint:room}
-      ALLOWED_ORIGINS: ${SYNC_ALLOWED_ORIGINS:-localhost:5173,127.0.0.1:5173}
+      ALLOWED_ORIGINS: ${SYNC_ALLOWED_ORIGINS:-localhost:5173,127.0.0.1:5173,localhost}
       LOG_LEVEL: ${LOG_LEVEL:-info}
     ports:
       - "8083:8080"
@@ -394,7 +394,7 @@ services:
       JWT_SECRET: ${JWT_SECRET}
       JWT_ISSUER: ${JWT_ISSUER:-tint-identity}
       JWT_AUDIENCE: ${JWT_AUDIENCE:-tint:room}
-      ALLOWED_ORIGINS: ${VOICE_ALLOWED_ORIGINS:-localhost:5173,127.0.0.1:5173}
+      ALLOWED_ORIGINS: ${VOICE_ALLOWED_ORIGINS:-localhost:5173,127.0.0.1:5173,localhost}
       VOICE_MAX_MEMBERS: ${VOICE_MAX_MEMBERS:-8}
       STUN_URLS: ${STUN_URLS:-stun:localhost:3478}
       TURN_URLS: ${TURN_URLS:-turn:localhost:3478?transport=udp,turn:localhost:3478?transport=tcp}

@@ -370,12 +370,14 @@ Una vez finalizado el arranque (típicamente 2–4 minutos):
 
 - **Acceso visual desde el navegador**:
   - **Entrada Principal HTTPS (Gateway)**: [`https://localhost`](https://localhost) *(aceptar el certificado local de Caddy en desarrollo)*.
-  - **Entrada Directa Web (HTTP)**: [`http://localhost:5173`](http://localhost:5173).
+  - **Entrada Directa Web (HTTP)**: [`http://localhost:5173`](http://localhost:5173): solo los estáticos de la web, sin API ni login (no enruta `/api` ni `/ws`). Para usar el sistema entra por `https://localhost`.
   - **Rutas clave para el revisor (sin requerir credenciales externas de Firebase)**:
     - [`/test-me`](https://localhost/test-me): Cuestionario interactivo con preguntas sobre la arquitectura, contratos y decisiones del monorepo.
     - [`/arquitectura`](https://localhost/arquitectura): Mapa visual interactivo de componentes y conectores del sistema.
     - [`/analitica`](https://localhost/analitica): Panel de KPIs y telemetría de salas.
   - **Login del host sin Firebase real**: en [`/login`](https://localhost/login), *Continuar con Google* abre el popup del **Firebase Auth Emulator** (`http://localhost:9099`, proyecto `demo-tint`): *Add new account* → *Auto-generate user information* → *Sign in*. Solo desarrollo: sus tokens no llevan firma y producción no lo arranca ([ADR 0024](docs/adr/0024-login-local-con-firebase-auth-emulator.md)).
+
+- **Si ya tenías un `.env`** de una versión anterior: `make env-sync` no modifica valores existentes. Añade `,localhost` a `SYNC_ALLOWED_ORIGINS`, `SOCIAL_ALLOWED_ORIGINS` y `VOICE_ALLOWED_ORIGINS`, y define `MINIO_CORS_ALLOW_ORIGIN=https://localhost,http://localhost:5173`. Si falta alguno, por `https://localhost` la voz se queda en "Reconectando…" o la subida de vídeos falla por CORS.
 
 ### 4. Apagado y reinicio
 ```bash

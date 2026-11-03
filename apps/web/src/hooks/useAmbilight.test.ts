@@ -1,4 +1,4 @@
-import { act, renderHook, waitFor } from '@testing-library/react';
+import { act, renderHook } from '@testing-library/react';
 import type { RefObject } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AMBILIGHT_SAMPLE_MS, useAmbilight } from './useAmbilight';
@@ -14,7 +14,7 @@ describe('useAmbilight', () => {
   let fetchMock: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
-    // Solo los intervalos: waitFor sigue usando los temporizadores reales.
+    // Solo los intervalos: setTimeout sigue siendo real (untilSampling).
     vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
     video = { currentTime: 0 };
     videoRef = { current: video as unknown as HTMLVideoElement };
@@ -33,6 +33,19 @@ describe('useAmbilight', () => {
   };
   /** La paleta ya se descargó y hay un muestreo programado. */
   const sampling = () => vi.getTimerCount() > 0;
+  /**
+   * Espera a que llegue la paleta. No usa waitFor: su sondeo va por setInterval, que aquí es
+   * falso, y sin cambios en el DOM (renderHook) solo comprobaba al azar (prueba intermitente en CI).
+   * setTimeout sigue siendo real.
+   */
+  const untilSampling = async () => {
+    for (let i = 0; i < 100 && !sampling(); i++) {
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+    }
+    expect(sampling()).toBe(true);
+  };
 
   it('sin URL no descarga ni da color', () => {
     const { result } = renderHook(() => useAmbilight(null, videoRef));
@@ -43,7 +56,7 @@ describe('useAmbilight', () => {
   it('descarga la paleta y sigue el tiempo del vídeo interpolando', async () => {
     const { result } = renderHook(() => useAmbilight('https://blob/m1/ambilight.json?sig=1', videoRef));
     expect(fetchMock).toHaveBeenCalledWith('https://blob/m1/ambilight.json?sig=1', expect.objectContaining({ signal: expect.anything() }));
-    await waitFor(() => expect(sampling()).toBe(true));
+    await untilSampling();
     // El primer color llega al instante, sin esperar al primer intervalo.
     expect(result.current).toEqual({ top: '#000000', right: '#000000', bottom: '#000000', left: '#000000' });
     video.currentTime = 0.5;
@@ -54,7 +67,7 @@ describe('useAmbilight', () => {
   it('muestrea a ~4 Hz (no en cada fotograma): la transición CSS de 700 ms suaviza', async () => {
     expect(AMBILIGHT_SAMPLE_MS).toBe(250);
     const { result } = renderHook(() => useAmbilight('https://blob/m1/ambilight.json', videoRef));
-    await waitFor(() => expect(sampling()).toBe(true));
+    await untilSampling();
     video.currentTime = 0.5;
     act(() => vi.advanceTimersByTime(AMBILIGHT_SAMPLE_MS - 1));
     expect(result.current?.top).toBe('#000000');
@@ -68,7 +81,7 @@ describe('useAmbilight', () => {
       renders += 1;
       return useAmbilight('https://blob/m1/ambilight.json', videoRef);
     });
-    await waitFor(() => expect(sampling()).toBe(true));
+    await untilSampling();
     runFrame();
     const after = renders;
     runFrame();
@@ -78,7 +91,7 @@ describe('useAmbilight', () => {
 
   it('sin interpolar salta de frame en frame', async () => {
     const { result } = renderHook(() => useAmbilight('https://blob/a.json', videoRef, { interpolate: false }));
-    await waitFor(() => expect(sampling()).toBe(true));
+    await untilSampling();
     video.currentTime = 0.9;
     runFrame();
     expect(result.current?.top).toBe('#000000');
@@ -88,7 +101,7 @@ describe('useAmbilight', () => {
     const { rerender } = renderHook(({ url }) => useAmbilight(url, videoRef), {
       initialProps: { url: 'https://blob/m1/ambilight.json?sig=1' },
     });
-    await waitFor(() => expect(sampling()).toBe(true));
+    await untilSampling();
     rerender({ url: 'https://blob/m1/ambilight.json?sig=2' });
     expect(fetchMock).toHaveBeenCalledTimes(1);
     rerender({ url: 'https://blob/m2/ambilight.json?sig=1' });
@@ -103,7 +116,7 @@ describe('useAmbilight', () => {
     const { result, rerender } = renderHook(({ enabled }) => useAmbilight('https://blob/a.json', videoRef, { enabled }), {
       initialProps: { enabled: true },
     });
-    await waitFor(() => expect(sampling()).toBe(true));
+    await untilSampling();
     runFrame();
     expect(result.current).not.toBeNull();
     rerender({ enabled: false });
@@ -125,7 +138,7 @@ describe('useAmbilight', () => {
   it('sin vídeo montado espera sin fallar', async () => {
     const empty: RefObject<HTMLVideoElement> = { current: null };
     const { result } = renderHook(() => useAmbilight('https://blob/a.json', empty));
-    await waitFor(() => expect(sampling()).toBe(true));
+    await untilSampling();
     runFrame();
     expect(result.current).toBeNull();
     expect(sampling()).toBe(true);
