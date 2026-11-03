@@ -56,6 +56,11 @@ export interface MixerSourceView {
 
 export type MixerView = Record<MixerSourceId, MixerSourceView>;
 
+export interface StopOptions {
+  /** `false`: no hace DELETE de las sesiones (el servidor ya las cerró). Por defecto `true`. */
+  remote?: boolean;
+}
+
 export interface UseLiveStreamOptions {
   role: 'host' | 'guest';
   /** Título de la sala para las escenas del compositor. */
@@ -706,8 +711,11 @@ export function useLiveStream(roomId: string | undefined, opts: UseLiveStreamOpt
     // eslint-disable-next-line react-hooks/exhaustive-deps -- solo refs y setters estables
   }, []);
 
-  /** Deja de publicar o de ver: DELETE de cada sesión y libera pistas. */
-  const stop = useCallback(async () => {
+  /**
+   * Deja de publicar o de ver: DELETE de cada sesión y libera pistas. Con `remote: false` solo
+   * libera lo local: tras `POST /rooms/{id}/end` stream-core ya cerró las sesiones (un DELETE daría 404).
+   */
+  const stop = useCallback(async ({ remote = true }: StopOptions = {}) => {
     const sessions = rt.sessions;
     rt.sessions = [];
     rt.active = false;
@@ -718,7 +726,7 @@ export function useLiveStream(roomId: string | undefined, opts: UseLiveStreamOpt
     setPublishing(false);
     setRemoteStream(null);
     if (!rt.ended) setStatus('idle');
-    await deleteSessions(sessions, rt.token);
+    if (remote) await deleteSessions(sessions, rt.token);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- solo refs y setters estables
   }, []);
 

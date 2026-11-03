@@ -290,6 +290,21 @@ describe('useLiveStream — host: WHIP (HU-LIVE-01 AC1, §3)', () => {
     expect(result.current.publishing).toBe(false);
   });
 
+  it('stop({ remote: false }) libera todo sin DELETE (el servidor ya cerró las sesiones al terminar)', async () => {
+    localStorage.setItem('tint_token', 'host');
+    const { result } = renderHook(() => useLiveStream('r1', { role: 'host' }));
+    await publish(result);
+    const vpc = pcSending('video')!;
+    await act(async () => {
+      await result.current.stop({ remote: false });
+      await flushLive();
+    });
+    expect(callsTo('/api/v1/stream/sessions/', 'DELETE')).toHaveLength(0);
+    expect(screenVideo.stopped).toBe(true);
+    expect(vpc.closed).toBe(true);
+    expect(result.current.publishing).toBe(false);
+  });
+
   it('409 ROOM_FULL y 410 ROOM_DISABLED son estados distintos', async () => {
     localStorage.setItem('tint_token', 'host');
     responses['whip:video'] = () => streamError(409, 'ROOM_FULL');
