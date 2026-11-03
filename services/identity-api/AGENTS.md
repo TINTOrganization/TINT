@@ -60,7 +60,7 @@ Prefijo `/api/v1`. Los errores siempre tienen la forma `{ "error": "<texto>" }`;
 | Método y ruta | Autorización | Descripción |
 | :--- | :--- | :--- |
 | `GET /healthz` | — | Estado del servicio |
-| `GET /internal/auth/check` | Gateway | Verifica Firebase RS256 o tokens propios HS256, comprueba revocación y devuelve 204 con headers `X-User-*`; responde 401 si el token no es válido |
+| `GET /internal/auth/check` | Gateway | Verifica Firebase RS256 o tokens propios HS256, comprueba revocación y devuelve 204 con headers `X-User-*`; responde 401 si el token no es válido. Handshakes `/ws/*`: token de `?token=` (vía `X-Forwarded-Uri`), solo HS256 con firma, `iss` y `aud` válidos; la caducidad y la revocación las cierra el servicio con `4003`/`4001` tras el upgrade |
 | `POST /auth/verify` | Firebase | Verifica el token y crea o recupera el usuario |
 | `POST /rooms` | Firebase | Crea sala (`title` 1–150) + invitación inicial **en una transacción** (`rooms.create.ts`): si la invitación falla no queda la sala |
 | `POST /events/start` | Firebase | `{ title, kind? }` (`kind` `watch` por defecto o `live`; otro valor → 400). Orquesta en orden la creación de identidad y la inicialización de sync/social/analytics (`watch`) o **stream**/social/analytics (`live`, sin sync-core) y devuelve room (con `kind`), invitación y `sessions` (`{ sync, social, analytics }` en `watch`; `{ stream, social, analytics }` en `live`, **sin `sync`**). En `live`, al final escribe `room:{id}:kind=live` (TTL 24 h). Los fallos de dependencias (o de esa escritura) responden 503 y compensan lo ya iniciado (`DELETE …/internal/events/start/{id}` en orden inverso y borrado de la sala) |
