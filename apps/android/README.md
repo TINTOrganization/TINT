@@ -16,6 +16,10 @@ Cliente móvil nativo (Kotlin + Jetpack Compose) de TINT. Usa los mismos endpoin
 | AND-06 | Transmisión en vivo (espectador por WHEP contra stream-core) | ✅ Verificado en una tablet contra el servidor desplegado con un host real transmitiendo desde el navegador (ver «Transmisión en vivo») |
 | AND-07 | Voz (malla P2P por voice-core, permiso de micrófono y silencio) | ✅ Verificado en una tablet contra el servidor desplegado con la web como segunda participante (ver «Voz») |
 
+## Historias y mockups
+Las historias de la segunda ronda (AND-10 a AND-38) y el mapa de mockups para móvil y tableta, en vertical y horizontal,
+más la pantalla completa del video, están en [`docs/historias-de-usuario.md`](docs/historias-de-usuario.md).
+
 ## Requisitos
 - **JDK 17** (Gradle/AGP no soportan JDK 26). Apúntalo con `JAVA_HOME`.
 - **Android SDK** con `platforms;android-35` y `build-tools` (`ANDROID_HOME`, o `sdk.dir` en `local.properties`, que no se versiona).
