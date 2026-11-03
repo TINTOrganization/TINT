@@ -37,6 +37,13 @@ const triviaOpTimeout = 2 * time.Second
 // no lanza la pregunta: se rearma con la posición real.
 const TriviaEarlyToleranceMS = 1000
 
+// TriviaLateLaunchMS: una pregunta programada (o editada) con la marca ya
+// pasada por esto o menos se lanza en el acto. "Agregar pregunta en este
+// momento" propone el segundo actual y, mientras el host escribe, el vídeo
+// sigue; sin esto la pregunta quedaba pendiente para siempre. Más atrás es
+// una escena anterior: espera a que la vuelvan a ver (un seek la salta).
+const TriviaLateLaunchMS = 60_000
+
 // triviaArm es el timer de disparo de una sala; gen invalida cálculos y
 // timers viejos cuando se rearma.
 type triviaArm struct {
@@ -85,8 +92,25 @@ func (d *Deps) handleTriviaSchedule(ctx context.Context, c *websocket.Conn, room
 		writeError(ctx, c, triviaErrorCode(err), in.EventID)
 		return
 	}
+	d.launchIfJustPassed(ctx, roomID, q)
 	d.sendScheduleState(ctx, c, roomID, in.EventID)
 	d.armTrivia(roomID)
+}
+
+// launchIfJustPassed lanza q si la reproducción ya pasó su marca hace
+// TriviaLateLaunchMS o menos (ver la constante).
+func (d *Deps) launchIfJustPassed(ctx context.Context, roomID string, q trivia.Question) {
+	pos, _, ok := d.triviaPosition(ctx, roomID)
+	if !ok || pos <= q.AtMS || pos-q.AtMS > TriviaLateLaunchMS {
+		return
+	}
+	st, won, err := d.Trivia.Launch(ctx, roomID, q.ID, d.now().UnixMilli())
+	if err != nil || !won {
+		return
+	}
+	out := d.triviaQuestion(roomID, q, st)
+	d.emitRoom(ctx, roomID, out.EventID, out)
+	d.observeTriviaClose(roomID, q.ID, st.ClosesAtMS)
 }
 
 func (d *Deps) handleTriviaUpdate(ctx context.Context, c *websocket.Conn, roomID string, claims auth.Claims, raw []byte) {
@@ -116,6 +140,7 @@ func (d *Deps) handleTriviaUpdate(ctx context.Context, c *websocket.Conn, roomID
 		writeError(ctx, c, triviaErrorCode(err), in.EventID)
 		return
 	}
+	d.launchIfJustPassed(ctx, roomID, q)
 	d.sendScheduleState(ctx, c, roomID, in.EventID)
 	d.armTrivia(roomID)
 }
