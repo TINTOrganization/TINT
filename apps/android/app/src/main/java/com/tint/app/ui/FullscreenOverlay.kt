@@ -199,8 +199,11 @@ private fun BottomBar(
                 Text("El host controla", color = TintText, fontSize = 12.sp)
             } else {
                 Box(Modifier.weight(1f))
-                Row(Modifier.clip(RoundedCornerShape(6.dp)).background(TintDanger).padding(horizontal = 10.dp, vertical = 4.dp)) {
-                    Text(liveLabel ?: "EN VIVO", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                // Una cadena vacía es «no está en vivo» (terminó o reconecta): no se muestra el rótulo rojo.
+                if (liveLabel != "") {
+                    Row(Modifier.clip(RoundedCornerShape(6.dp)).background(TintDanger).padding(horizontal = 10.dp, vertical = 4.dp)) {
+                        Text(liveLabel ?: "EN VIVO", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    }
                 }
             }
         }

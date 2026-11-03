@@ -202,7 +202,7 @@ fun LiveRoomScreen(room: JoinedRoom, container: AppContainer, onLeave: () -> Uni
                 state = socialState,
                 nowMs = clock,
                 progress = null,
-                liveLabel = live.viewerCount?.let { "EN VIVO · $it" } ?: "EN VIVO",
+                liveLabel = if (live.status == LiveStatus.LIVE) live.viewerCount?.let { "EN VIVO · $it" } ?: "EN VIVO" else "",
                 audioMuted = audioMuted,
                 onToggleAudio = { audioMuted = !audioMuted },
                 onReact = { social.sendReaction(it, reactionPosition()) },
