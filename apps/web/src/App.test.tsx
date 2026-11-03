@@ -79,4 +79,15 @@ describe('App', () => {
     localStorage.clear();
     window.history.pushState({}, '', '/');
   });
+
+  it('admite la prop url para renderizado estático/SSR sin BrowserRouter', () => {
+    render(<App url="/login" />);
+    expect(screen.getByText('Iniciar sesión con Google')).toBeInTheDocument();
+  });
+
+  it('renderiza la ruta de invitación mediante StaticRouter con url', () => {
+    render(<App url="/invite/INV123" />);
+    expect(screen.getByText('INV123')).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Unirse a la sala' })).toBeInTheDocument();
+  });
 });

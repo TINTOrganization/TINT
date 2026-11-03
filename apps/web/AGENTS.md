@@ -19,6 +19,7 @@ Cómo funciona la SPA por dentro (arquitectura, flujos con diagramas, estado y p
 - Cliente de los dos canales WebSocket: `/ws/sync` (sync-core) y canal social (social-core).
 - Transmisión en vivo de las salas `live`: captura, mezcla y composición en el navegador del host y señalización WHIP/WHEP con stream-core (ver "Transmisión en vivo").
 - Detección y corrección de desfase de reproducción del lado del cliente.
+- Server-Side Rendering (SSR) y meta tags dinámicos (Open Graph / Twitter Cards) para la landing page (/ y /login) y enlaces de invitación (/invite/:code), con hidratación en cliente (hydrateRoot) y aislamiento de rutas de streaming concurrentes.
 
 ## Límites de Dominio
 - ❌ No implementes lógica de negocio autoritativa (puntajes, rate limiting real, estado maestro): eso vive en `services/*`. La UI solo refleja y pre-valida.

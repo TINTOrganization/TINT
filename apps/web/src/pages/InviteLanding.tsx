@@ -4,6 +4,7 @@ import { apiFetch } from '../lib/api';
 import { inviteClaimErrorMessage } from '../lib/invite';
 import { roomPath } from '../lib/rooms';
 import { getDeviceId } from '../lib/deviceId';
+import { readStored } from '../lib/safeStorage';
 import { m, useReducedMotion } from 'framer-motion';
 import { Button, ButtonLink } from '../components/ui/Button';
 import { Field, ErrorAlert, Card, Input } from '../components/ui/Primitives';
@@ -22,7 +23,7 @@ export default function InviteLanding() {
   const reduced = useReducedMotion();
   // Con sesión de host, canjear la invitación la sustituye por una de invitado: se
   // avisa y solo se hace con confirmación explícita ("Entrar como invitado").
-  const [hasHostSession] = useState(() => !!localStorage.getItem('tint_token'));
+  const [hasHostSession] = useState(() => !!readStored('tint_token'));
   /** Ruta de la sala del host con esta invitación: undefined = buscando, null = no es suya. */
   const [hostRoomId, setHostRoomId] = useState<string | null | undefined>(undefined);
 

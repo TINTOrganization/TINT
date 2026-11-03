@@ -1,5 +1,6 @@
 import { lazy, Suspense, type ReactNode } from 'react';
-import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, useLocation } from 'react-router-dom';
+import { StaticRouter } from 'react-router-dom/server';
 import { AnimatePresence } from 'framer-motion';
 import Login from './pages/Login';
 import Dashboard from './pages/Dashboard';
@@ -23,8 +24,12 @@ const LiveRoom = lazy(() => import('./pages/LiveRoom'));
 
 const page = (node: ReactNode) => <PageTransition>{node}</PageTransition>;
 
+export interface AppProps {
+  url?: string;
+}
+
 /** Rutas con transición: AnimatePresence necesita la ubicación para animar la salida. */
-function AnimatedRoutes() {
+export function AnimatedRoutes() {
   const location = useLocation();
   return (
     <AnimatePresence mode="wait" initial={false}>
@@ -48,18 +53,22 @@ function AnimatedRoutes() {
         <Route path="/arquitectura" element={<Suspense fallback={null}><Arquitectura /></Suspense>} />
         {/* Ruta oculta: panel de negocio de analítica (pide la contraseña del equipo). */}
         <Route path="/analitica" element={<Suspense fallback={null}><BusinessAnalytics /></Suspense>} />
-        <Route path="/" element={<Navigate to="/login" replace />} />
+        <Route path="/" element={page(<Login />)} />
       </Routes>
     </AnimatePresence>
   );
 }
 
-export default function App() {
-  return (
+export default function App({ url }: AppProps = {}) {
+  const content = (
     <MotionProvider>
-      <BrowserRouter>
-        <AnimatedRoutes />
-      </BrowserRouter>
+      <AnimatedRoutes />
     </MotionProvider>
   );
+
+  if (url !== undefined) {
+    return <StaticRouter location={url}>{content}</StaticRouter>;
+  }
+
+  return <BrowserRouter>{content}</BrowserRouter>;
 }

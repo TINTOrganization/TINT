@@ -36,7 +36,7 @@ https://{$GATEWAY_HOST:localhost} {
     # El preflight CORS (OPTIONS) no lleva Authorization: cada servicio lo responde.
     @protected {
         path /api/* /ws/*
-        not path /api/v1/healthz /api/v1/invitations/claim
+        not path /api/v1/healthz /api/v1/invitations/claim /api/v1/invitations/*
         not method OPTIONS
     }
 

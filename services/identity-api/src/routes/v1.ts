@@ -741,6 +741,30 @@ router.delete('/rooms/:id/bans/:banId', requireAuthHost, requireRoomOwner, requi
   res.json({ success: true });
 });
 
+router.get('/invitations/:code', async (req, res) => {
+  const code = paramId(req.params.code);
+  const invitation = await findByCode(code);
+  if (!invitation) {
+    return res.status(404).json({ error: 'Not found' });
+  }
+  if (invitation.revoked) {
+    return res.status(409).json({ error: 'Revoked' });
+  }
+  if (invitation.expiresAt < new Date()) {
+    return res.status(410).json({ error: 'Expired' });
+  }
+  const room = await findById(invitation.roomId);
+  if (!room || room.status === 'deleted') {
+    return res.status(410).json({ error: 'Deleted' });
+  }
+  res.json({
+    code: invitation.code,
+    roomId: room.id,
+    roomTitle: room.title,
+    expiresAt: invitation.expiresAt,
+  });
+});
+
 router.post('/invitations/:code/revoke', requireAuthHost, async (req, res) => {
   const rawCode = req.params.code;
   const code = Array.isArray(rawCode) ? rawCode[0] : rawCode;
