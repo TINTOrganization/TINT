@@ -7,31 +7,32 @@ describe('serverInvite - fetchRoomDetails', () => {
   });
 
   it('retorna los detalles de la sala cuando la respuesta es 200', async () => {
+    const inviteCode = 'invite-1';
     const mockFetch = vi.fn().mockResolvedValue({
       ok: true,
       status: 200,
       json: () =>
         Promise.resolve({
-          code: 'ABC123XYZ',
+          code: inviteCode,
           roomId: 'room-1',
           roomTitle: 'Película de Viernes',
           roomKind: 'watch',
         }),
     });
 
-    const result = await fetchRoomDetails('ABC123XYZ', {
+    const result = await fetchRoomDetails(inviteCode, {
       apiBaseUrl: 'http://identity-api:8081/api/v1',
       fetchFn: mockFetch,
     });
 
     expect(result).toEqual({
-      code: 'ABC123XYZ',
+      code: inviteCode,
       roomId: 'room-1',
       roomTitle: 'Película de Viernes',
       roomKind: 'watch',
     });
     expect(mockFetch).toHaveBeenCalledWith(
-      'http://identity-api:8081/api/v1/invitations/ABC123XYZ',
+      expect.stringContaining(`/invitations/${inviteCode}`),
       expect.objectContaining({
         method: 'GET',
         headers: { Accept: 'application/json' },
