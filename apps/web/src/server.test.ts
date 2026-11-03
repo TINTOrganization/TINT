@@ -420,7 +420,7 @@ describe('server - createRequestHandler', () => {
     expect(res.statusCode).toBe(200);
   });
 
-  it('hace fallback seguro al HTML limpio del cliente si ocurre un fallo en el SSR', async () => {
+  it('responde 404 y renderiza error de invitación no válida cuando el fetch de sala falla o devuelve null (AC2)', async () => {
     mockFetchRoom.mockRejectedValue(new Error('Fallo crítico en backend'));
     const handler = createRequestHandler({
       templateHtml: mockTemplate,
@@ -431,11 +431,10 @@ describe('server - createRequestHandler', () => {
 
     await handler(req, res);
 
-    expect(res.statusCode).toBe(200);
+    expect(res.statusCode).toBe(404);
     expect(res.getHeader('content-type')).toContain('text/html');
     const body = res.getBody();
-    expect(body).toContain('<div id="root"></div>');
-    expect(body).not.toContain('<!--ssr-outlet-->');
+    expect(body).toContain('Invitación no válida');
   });
 
   it('responde 500 si el stream de lectura de archivo emite un error', async () => {

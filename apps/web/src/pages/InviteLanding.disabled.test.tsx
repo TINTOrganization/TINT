@@ -39,7 +39,12 @@ beforeEach(() => {
 
 describe('InviteLanding — sala deshabilitada', () => {
   it('410 {error:"Disabled"} avisa que el evento terminó y no entra a la sala', async () => {
-    mockedApi.mockRejectedValueOnce(new ApiError(410, 'Disabled', { error: 'Disabled' }));
+    mockedApi.mockImplementation((path: string) => {
+      if (path === '/invitations/claim') {
+        return Promise.reject(new ApiError(410, 'Disabled', { error: 'Disabled' }));
+      }
+      return Promise.resolve({ code: 'ABC123', roomId: 'r1', roomTitle: 'Directo' });
+    });
     renderInvite();
     await claimAs('Ana');
     expect(await screen.findByText(/el evento terminó/i)).toBeInTheDocument();
@@ -48,7 +53,12 @@ describe('InviteLanding — sala deshabilitada', () => {
   });
 
   it('regresión: 410 de una sala eliminada sigue mostrando su propio mensaje', async () => {
-    mockedApi.mockRejectedValueOnce(new ApiError(410, 'Deleted', { error: 'Deleted' }));
+    mockedApi.mockImplementation((path: string) => {
+      if (path === '/invitations/claim') {
+        return Promise.reject(new ApiError(410, 'Deleted', { error: 'Deleted' }));
+      }
+      return Promise.resolve({ code: 'ABC123', roomId: 'r1', roomTitle: 'Directo' });
+    });
     renderInvite();
     await claimAs('Ana');
     expect(await screen.findByText(/expiró o la sala fue eliminada/i)).toBeInTheDocument();

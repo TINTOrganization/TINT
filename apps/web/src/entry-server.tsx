@@ -48,9 +48,9 @@ export function isSsrRoute(url: string): boolean {
 /**
  * Renderiza síncronamente el componente React principal a string HTML usando StaticRouter.
  */
-export function renderApp(url: string): string {
+export function renderApp(url: string, roomDetails?: RoomDetails | null, isInvalid?: boolean): string {
   const effectiveUrl = url === '/' ? '/login' : url;
-  return renderToString(<App url={effectiveUrl} />);
+  return renderToString(<App url={effectiveUrl} roomDetails={roomDetails} isInvalid={isInvalid} />);
 }
 
 /**
@@ -87,13 +87,18 @@ export async function renderPage(url: string, options?: RenderOptions): Promise<
         roomTitle: options.roomTitle,
       };
     } else {
-      const fetchFn = options?.fetchRoomDetails ?? fetchRoomDetails;
-      roomDetails = await fetchFn(code, { apiBaseUrl: options?.apiBaseUrl });
+      try {
+        const fetchFn = options?.fetchRoomDetails ?? fetchRoomDetails;
+        roomDetails = await fetchFn(code, { apiBaseUrl: options?.apiBaseUrl });
+      } catch {
+        roomDetails = null;
+      }
     }
 
     const metaOptions: MetaTagOptions = getInviteMetaTags(code, roomDetails?.roomTitle);
     const metaTags = generateMetaTags(metaOptions);
-    const appHtml = renderApp(url);
+    const isInvalid = !roomDetails;
+    const appHtml = renderApp(url, roomDetails, isInvalid);
 
     return {
       appHtml,
@@ -138,9 +143,12 @@ export async function renderHtmlPage(
     html = html.replace(/<div id="root">[\s\S]*?<\/div>/i, `<div id="root">${appHtml}</div>`);
   }
 
+  const isInvite = INVITE_ROUTE_REGEX.test(url.split('?')[0].split('#')[0]);
+  const statusCode = isInvite && !roomDetails ? 404 : 200;
+
   return {
     html,
-    statusCode: 200,
+    statusCode,
     roomDetails,
   };
 }
