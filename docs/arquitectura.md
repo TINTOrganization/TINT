@@ -373,15 +373,20 @@ flowchart TB
 
     subgraph ext["Servicios externos"]
         FBA["Firebase Auth<br/>Google"]
+        LE["Let's Encrypt<br/>ACME"]
         GK["Claves públicas de Google<br/>JWKS y certificados x509"]
     end
 
-    subgraph docker["Host Docker - docker compose up -d"]
+    subgraph docker["Host Docker - docker compose up -d · red Compose interna"]
+        ENV["tint-env-check<br/>alpine:3.20<br/>job de validación"]
+        GW["tint-gateway<br/>Caddy 2.9<br/>80:80 · 443:443"]
         subgraph c_infra["Infraestructura"]
             PG["tint-postgres<br/>postgres:16-alpine<br/>5432:5432"]
             RD["tint-redis<br/>redis:7-alpine · AOF<br/>6379:6379"]
-            MI["tint-minio<br/>pgsty/minio:latest<br/>9000:9000 · 9001:9001"]
-            MINIT["tint-minio-init<br/>pgsty/mc:latest<br/>una vez: bucket + regla ILM incoming/ 2 días"]
+            MI["tint-minio<br/>pgsty/minio<br/>digest fijado · 9000:9000 · 9001:9001"]
+            MINIT["tint-minio-init<br/>pgsty/mc<br/>digest fijado · job bucket/ILM"]
+            MDB["tint-mongodb<br/>mongo:8.0<br/>27017:27017"]
+            MONGO_INIT["tint-mongo-init<br/>mongo:8.0<br/>job idempotente"]
         end
         subgraph c_apps["Servicios construidos con build"]
             WEB["tint-web<br/>nginx<br/>5173:80"]
@@ -391,20 +396,27 @@ flowchart TB
             SOC["tint-social-core<br/>distroless/static nonroot<br/>8082:8082"]
             SYN["tint-sync-core<br/>distroless/static nonroot<br/>8083:8080"]
             VOI["tint-voice-core<br/>debian:trixie-slim · C++<br/>8085:8085"]
+            STR["tint-stream-core<br/>C++ + libdatachannel<br/>8086:8086 · UDP"]
+            FBE["tint-firebase-auth-emulator<br/>node:22-alpine<br/>127.0.0.1:9099<br/>solo desarrollo"]
         end
         TRN["tint-coturn<br/>coturn/coturn:4.6.3<br/>red del host · 3478 · relay 49160-49200"]
         V1[("volumen postgres-data")]
         V2[("volumen redis-data")]
         V3[("volumen minio-data")]
+        V4[("volumen mongo-data")]
+        VG1[("volumen gateway-data")]
+        VG2[("volumen gateway-config")]
     end
 
+    ENV -. "valida .env antes de arrancar" .-> GW
+    ENV -. "condición de arranque" .-> PG & WEB & TRN
+    GW -- "HTTPS público<br/>forward_auth + proxy" --> WEB
+    GW -- "HTTP/WS interno" --> IDP & SYN & SOC & AN & VOI & STR
+    GW -- "certificados ACME" --> LE
     WEB -- "sirve la SPA" --> SPA
     SPA -- "login" --> FBA
-    SPA -- "HTTP :8081" --> IDP
-    SPA -- "WS :8083" --> SYN
-    SPA -- "WS :8082" --> SOC
-    SPA -- "HTTP :8084" --> AN
-    SPA -- "WS :8085" --> VOI
+    SPA -. "login local" .-> FBE
+    SPA -- "HTTPS /api y /ws" --> GW
     SPA -- "STUN/TURN :3478" --> TRN
     SPA -- "HTTP :9000 firmado" --> MI
     IDP -- "postgres:5432" --> PG
@@ -412,24 +424,33 @@ flowchart TB
     IDP -- "localhost:9000" --> MI
     IDP -- "HTTPS" --> GK
     SOC -- "HTTPS" --> GK
+    IDP -. "emulador local (desarrollo)" .-> FBE
     PG --- V1
     RD --- V2
     MI --- V3
+    MDB --- V4
+    GW --- VG1 & VG2
     MINIT -- "mc mb + mc ilm import" --> MI
+    MONGO_INIT -- "crea usuario/rol social" --> MDB
     MW -- "postgres:5432 · redis:6379 · minio:9000" --> PG & RD & MI
     AN -- "postgres:5432 · redis:6379" --> PG & RD
-    SOC -- "redis:6379" --> RD
+    SOC -- "redis:6379 · mongodb:27017" --> RD & MDB
     SYN -- "redis:6379" --> RD
     VOI -- "redis:6379" --> RD
+    STR -- "redis:6379" --> RD
 ```
 
-- **Contenedores de aplicación:** `web` construye la SPA y la sirve con nginx en `5173`; `identity-api` compila Node 22, aplica las migraciones y escucha en `8081`. El gateway usa ambos servicios por sus nombres internos.
-- **Orden de arranque** (`depends_on`): `env-check` valida `.env` antes de crear servicios; `minio-init` espera a que MinIO esté sano; `identity-api` y `media-worker` esperan a PostgreSQL, Redis y el bucket; analytics espera a PostgreSQL y Redis; los canales esperan a Redis.
-- **Salud y métricas:** gateway, web, identity-api, analytics, social-core, sync-core y voice-core tienen healthcheck; media-worker se comprueba por proceso (no tiene HTTP). Solo sync-core expone `/metrics` (Prometheus). `env-check` y `minio-init` son tareas de una sola ejecución y deben terminar correctamente.
-- **Réplicas:** compose levanta **una** réplica de cada servicio. El diseño soporta N réplicas de sync-core y social-core (Pub/Sub, CAS y `HSETNX` entre réplicas); voice-core solo admite **una** (membresía en memoria, [dominio-voz §9](dominio-voz.md#9-limitaciones-conocidas)). No no hay balanceador ni configuración multirréplica en el repositorio.
+- **Contenedores de aplicación:** `web` construye la SPA y la sirve con nginx en `5173`; `identity-api` compila Node 22, aplica las migraciones y escucha en `8081`; `stream-core` expone WHIP/WHEP en `8086` y su puerto UDP. El gateway usa los nombres internos de todos los upstreams.
+- **Servicios externos:** Firebase Auth es el proveedor de identidad en producción; el contenedor `firebase-auth-emulator` solo habilita el login local de desarrollo. Caddy solicita certificados públicos a Let's Encrypt mediante ACME; en local puede usar el certificado autofirmado de Caddy.
+- **Orden de arranque** (`depends_on`): `env-check` valida `.env` antes de crear servicios; `minio-init` espera a que MinIO esté sano; `mongo-init` espera a MongoDB sano; `identity-api` y `media-worker` esperan a PostgreSQL, Redis y el bucket; analytics espera a PostgreSQL y Redis; los canales esperan a Redis.
+- **Salud y métricas:** gateway, web, identity-api, analytics, social-core, sync-core, voice-core y stream-core tienen healthcheck; media-worker se comprueba mediante su endpoint HTTP interno en `:8088`, sin publicarlo al host. Solo sync-core expone `/metrics` (Prometheus). `env-check`, `minio-init` y `mongo-init` son tareas de una sola ejecución y deben terminar correctamente.
+- **Réplicas:** compose levanta **una** réplica de cada servicio. El diseño soporta N réplicas de sync-core y social-core (Pub/Sub, CAS y `HSETNX` entre réplicas); voice-core solo admite **una** (membresía en memoria, [dominio-voz §9](dominio-voz.md#9-limitaciones-conocidas)). No hay balanceador ni configuración multirréplica en el repositorio.
+- **Patrones documentados:** despliegue un contenedor por servicio, entrada única HTTPS mediante gateway, jobs one-shot de validación/inicialización, persistencia con volúmenes Docker, healthchecks de liveness, servicios externos para identidad y certificados, `network_mode: host` para coturn y réplicas horizontales previstas solo donde Redis permite compartir estado.
 
 | Nodo | Artefacto | Puertos (host → contenedor) | Volúmenes | Variables principales |
 | :--- | :--- | :--- | :--- | :--- |
+| `tint-env-check` | Imagen `alpine:3.20`, tarea de validación que termina | — | — | Secretos y niveles de log requeridos |
+| `tint-gateway` | Imagen `caddy:2.9-alpine`, entrada HTTPS y reverse proxy | 80 → 80 · 443 → 443 | `gateway-data:/data` · `gateway-config:/config` | `GATEWAY_HOST`, upstreams `*_UPSTREAM`, `GATEWAY_LOG_LEVEL` |
 | `tint-postgres` | Imagen `postgres:16-alpine` | 5432 → 5432 | `postgres-data:/var/lib/postgresql/data` | `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB` |
 | `tint-redis` | Imagen `redis:7-alpine` (`--appendonly yes`) | 6379 → 6379 | `redis-data:/data` | — |
 | `tint-minio` | Imagen `pgsty/minio` fijada por digest SHA-256 (la oficial no está disponible) | 9000 → 9000 (API) · 9001 → 9001 (consola) | `minio-data:/data` | `MINIO_ROOT_USER`, `MINIO_ROOT_PASSWORD`, `MINIO_API_CORS_ALLOW_ORIGIN` (de `MINIO_CORS_ALLOW_ORIGIN`) |
@@ -445,7 +466,9 @@ flowchart TB
 | `tint-sync-core` | `build: ./services/sync-core` (multi-stage `golang:1.22-alpine` → `distroless/static-debian12:nonroot`) | 8083 → 8080 | — | `SYNC_CORE_ADDR`, `REDIS_URL`, `JWT_*`, `ALLOWED_ORIGINS` (de `SYNC_ALLOWED_ORIGINS`) |
 | `tint-identity-api` | `build: ./services/identity-api` (Node 22, migraciones al arrancar) | 8081 → 8081 | — | `DATABASE_URL`, `REDIS_URL`, `FIREBASE_PROJECT_ID`, `FIREBASE_AUTH_EMULATOR_HOST` (solo desarrollo), `NODE_ENV`, `JWT_*`, `MINIO_*`, `SYNC_CORE_URL`, `SOCIAL_CORE_URL`, `ANALYTICS_URL` |
 | `tint-web` | `build: ./apps/web` (build Vite + nginx) | 5173 → 80 | — | `VITE_IDENTITY_API_URL`, `VITE_FIREBASE_*`, `VITE_SYNC_WS_URL`, `VITE_SOCIAL_WS_URL`, `VITE_SYNC_ENCODING`, `VITE_ANALYTICS_API_URL` |
+| `tint-stream-core` | `build: ./services/stream-core` (C++ + libdatachannel) | 8086 → 8086 · UDP `STREAM_UDP_PORT` | — | `STREAM_CORE_ADDR`, `REDIS_URL`, `JWT_*`, `TURN_*`, `STREAM_UDP_PORT` |
 | Firebase Auth | Servicio externo de Google | HTTPS | — | `FIREBASE_PROJECT_ID` (identity-api, social-core), `VITE_FIREBASE_*` (web) |
+| Let's Encrypt | Servicio externo ACME para certificados públicos de Caddy | HTTPS/ACME | — | `GATEWAY_HOST` y configuración ACME de Caddy |
 
 Los valores por defecto de compose salen del [`.env.example` raíz](../.env.example). `JWT_SECRET`, `JWT_ISSUER` y `JWT_AUDIENCE` deben ser idénticos en identity-api, sync-core, social-core y analytics.
 
