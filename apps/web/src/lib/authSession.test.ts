@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Auth, User } from 'firebase/auth';
 import { onIdTokenChanged } from 'firebase/auth';
-import { startHostSession } from './authSession';
+import { startHostSession, syncAuthCookie } from './authSession';
 import { apiFetch, setHostTokenProvider } from './api';
 
 vi.mock('firebase/auth', () => ({ onIdTokenChanged: vi.fn() }));
@@ -92,5 +92,15 @@ describe('startHostSession', () => {
     mockedFetch.mockResolvedValueOnce({ ok: true, status: 200, json: () => Promise.resolve({}) });
     await apiFetch('/rooms');
     expect(user.getIdToken).not.toHaveBeenCalled();
+  });
+});
+
+describe('syncAuthCookie', () => {
+  it('establece y borra la cookie tint_token para navegación SSR', () => {
+    syncAuthCookie('tok-abc');
+    expect(document.cookie).toContain('tint_token=tok-abc');
+
+    syncAuthCookie(null);
+    expect(document.cookie).not.toContain('tint_token=tok-abc');
   });
 });

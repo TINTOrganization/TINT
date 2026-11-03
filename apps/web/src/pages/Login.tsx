@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { signInWithPopup, GoogleAuthProvider } from 'firebase/auth';
 import { auth } from '../lib/firebase';
+import { syncAuthCookie } from '../lib/authSession';
 import { useNavigate, Link, useSearchParams } from 'react-router-dom';
 import { apiFetch } from '../lib/api';
 import { parseInviteCode } from '../lib/invite';
@@ -44,6 +45,7 @@ export default function Login() {
       const result = await signInWithPopup(auth, provider);
       const token = await result.user.getIdToken();
       localStorage.setItem('tint_token', token);
+      syncAuthCookie(token);
       // La sesión de host manda: borrar restos de invitado para no
       // entrar a las salas con identidad y título viejos (ver WatchRoom).
       localStorage.removeItem('tint_guest_token');
@@ -53,6 +55,7 @@ export default function Login() {
       navigate(safeNext);
     } catch (e) {
       localStorage.removeItem('tint_token');
+      syncAuthCookie(null);
       setError(e instanceof Error ? e.message : 'No se pudo iniciar sesión');
     } finally {
       setLoading(false);

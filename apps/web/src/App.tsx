@@ -3,6 +3,7 @@ import { BrowserRouter, Routes, Route, useLocation } from 'react-router-dom';
 import { StaticRouter } from 'react-router-dom/server';
 import { AnimatePresence } from 'framer-motion';
 import type { RoomDetails } from './lib/serverInvite';
+import type { DashboardData } from './lib/serverDashboard';
 import Login from './pages/Login';
 import Dashboard from './pages/Dashboard';
 import CreateRoom from './pages/CreateRoom';
@@ -19,6 +20,12 @@ export interface InviteContextValue {
 }
 
 export const InviteContext = createContext<InviteContextValue | null>(null);
+
+export interface DashboardContextValue {
+  dashboardData?: DashboardData | null;
+}
+
+export const DashboardContext = createContext<DashboardContextValue | null>(null);
 
 // Carga diferida: la ruta oculta del cuestionario no se enlaza desde la UI.
 const TestMe = lazy(() => import('./pages/TestMe'));
@@ -37,6 +44,7 @@ export interface AppProps {
   url?: string;
   roomDetails?: RoomDetails | null;
   isInvalid?: boolean;
+  dashboardData?: DashboardData | null;
 }
 
 /** Rutas con transición: AnimatePresence necesita la ubicación para animar la salida. */
@@ -70,12 +78,14 @@ export function AnimatedRoutes() {
   );
 }
 
-export default function App({ url, roomDetails, isInvalid }: AppProps = {}) {
+export default function App({ url, roomDetails, isInvalid, dashboardData }: AppProps = {}) {
   const content = (
     <InviteContext.Provider value={{ roomDetails, isInvalid }}>
-      <MotionProvider>
-        <AnimatedRoutes />
-      </MotionProvider>
+      <DashboardContext.Provider value={{ dashboardData }}>
+        <MotionProvider>
+          <AnimatedRoutes />
+        </MotionProvider>
+      </DashboardContext.Provider>
     </InviteContext.Provider>
   );
 

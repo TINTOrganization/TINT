@@ -245,6 +245,131 @@ describe('server - createRequestHandler', () => {
     expect(mockFetchRoom).toHaveBeenCalledWith('VIP777', expect.anything());
   });
 
+  it('devuelve HTML pre-renderizado para /dashboard con salas, próximo evento y estado active/disabled (AC1)', async () => {
+    const mockFetchDashboard = vi.fn().mockResolvedValue({
+      rooms: [
+        {
+          id: 'room-101',
+          title: 'Sala Épica',
+          status: 'active',
+          nextScheduledEvent: '2026-11-04T20:00:00.000Z',
+        },
+        {
+          id: 'room-102',
+          title: 'Directo Terminado',
+          status: 'disabled',
+          kind: 'live',
+          nextScheduledEvent: { title: 'Charla Final' },
+        },
+      ],
+      isHost: true,
+      error: null,
+    });
+
+    const handler = createRequestHandler({
+      templateHtml: mockTemplate,
+      distDir: '',
+      fetchDashboardData: mockFetchDashboard,
+    });
+    const { req, res } = createMockReqRes('/dashboard', 'GET', undefined, {
+      authorization: 'Bearer host-token-123',
+    });
+
+    await handler(req, res);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.getHeader('content-type')).toContain('text/html');
+    const body = res.getBody();
+    expect(body).toContain('Mis salas');
+    expect(body).toContain('Sala Épica');
+    expect(body).toContain('active');
+    expect(body).toContain('Directo Terminado');
+    expect(body).toContain('disabled');
+    expect(body).toContain('Próximo evento:');
+    expect(body).toContain('<link rel="stylesheet" crossorigin href="/assets/index-Bk5t10yA.css">');
+    expect(body).toContain('id="__TINT_DASHBOARD_DATA__"');
+    expect(mockFetchDashboard).toHaveBeenCalledWith('host-token-123', expect.anything());
+  });
+
+  it('omite controles de gestión para un participante que no administra salas en /dashboard (AC2)', async () => {
+    const mockFetchDashboard = vi.fn().mockResolvedValue({
+      rooms: [
+        {
+          id: 'room-view',
+          title: 'Sala de Espectador',
+          status: 'active',
+          nextScheduledEvent: '2026-11-04T20:00:00.000Z',
+        },
+      ],
+      isHost: false,
+      role: 'participant',
+      error: null,
+    });
+
+    const handler = createRequestHandler({
+      templateHtml: mockTemplate,
+      distDir: '',
+      fetchDashboardData: mockFetchDashboard,
+    });
+    const { req, res } = createMockReqRes('/dashboard', 'GET', undefined, {
+      cookie: 'tint_guest_token=guest-cookie-456',
+    });
+
+    await handler(req, res);
+
+    expect(res.statusCode).toBe(200);
+    const body = res.getBody();
+    expect(body).toContain('Mis salas');
+    expect(body).toContain('Sala de Espectador');
+    expect(body).toContain('active');
+    expect(body).toContain('Abrir');
+    expect(body).not.toContain('Crear sala');
+    expect(body).not.toContain('Gestionar');
+    expect(body).not.toContain('Análisis');
+    expect(body).not.toContain('Eliminar');
+  });
+
+  it('responde 200 con mensaje de error user-friendly dentro del layout ante caída o degradación de identity-api (AC3)', async () => {
+    const mockFetchDashboard = vi.fn().mockResolvedValue({
+      rooms: [],
+      isHost: true,
+      error: 'El servicio de identidad no está disponible en este momento.',
+    });
+
+    const handler = createRequestHandler({
+      templateHtml: mockTemplate,
+      distDir: '',
+      fetchDashboardData: mockFetchDashboard,
+    });
+    const { req, res } = createMockReqRes('/dashboard');
+
+    await handler(req, res);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.getHeader('content-type')).toContain('text/html');
+    const body = res.getBody();
+    expect(body).toContain('Mis salas');
+    expect(body).toContain('El servicio de identidad no está disponible en este momento.');
+    expect(body).toContain('<link rel="stylesheet" crossorigin href="/assets/index-Bk5t10yA.css">');
+  });
+
+  it('responde 200 para /dashboard sin credenciales ni cookies sin error de sesión no válida (Fix SSR mismatch)', async () => {
+    const handler = createRequestHandler({
+      templateHtml: mockTemplate,
+      distDir: '',
+    });
+    const { req, res } = createMockReqRes('/dashboard');
+
+    await handler(req, res);
+
+    expect(res.statusCode).toBe(200);
+    const body = res.getBody();
+    expect(body).not.toContain('Sesión no válida o expirada');
+    expect(body).not.toContain('Aún no tienes salas disponibles para ver juntos.');
+    expect(body).toContain('Mis salas');
+    expect(body).toContain('<link rel="stylesheet" crossorigin href="/assets/index-Bk5t10yA.css">');
+  });
+
   it('devuelve la plantilla SPA para rutas de streaming sin romper los flujos cliente', async () => {
     const handler = createRequestHandler({
       templateHtml: mockTemplate,

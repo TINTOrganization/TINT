@@ -1,4 +1,4 @@
-import { useEffect, useState, type PointerEvent } from 'react';
+import { useContext, useEffect, useState, type PointerEvent } from 'react';
 import { m, useReducedMotion } from 'framer-motion';
 import { apiFetch, ApiError, loginRedirectPath } from '../lib/api';
 import { toAbsoluteInviteLink } from '../lib/invite';
@@ -12,6 +12,9 @@ import { StaggerItem, StaggerList } from '../components/motion/Stagger';
 import { scaleIn, spring } from '../lib/motion';
 import { roomKindOf, roomPath } from '../lib/rooms';
 import { EventChatHistory } from '../components/room/EventChatHistory';
+import { DashboardContext } from '../App';
+import { formatNextScheduledEvent, type DashboardRoom } from '../lib/serverDashboard';
+import { syncAuthCookie } from '../lib/authSession';
 
 /** Insignia del tipo de sala sobre la miniatura: transmisión activa o evento terminado. */
 function RoomKindBadge({ room }: { room: Room }) {
@@ -29,13 +32,21 @@ function RoomKindBadge({ room }: { room: Room }) {
   );
 }
 
-type RoomInvitation = { code: string; link: string; expiresAt: string };
-type Room = { id: string; title: string; kind?: string; status?: string; invitation?: RoomInvitation | null };
+export type Room = DashboardRoom;
 
 export default function Dashboard() {
-  const [rooms, setRooms] = useState<Room[]>([]);
-  const [error, setError] = useState('');
-  const [loading, setLoading] = useState(true);
+  const ssrContext = useContext(DashboardContext);
+  const initialData = ssrContext?.dashboardData;
+
+  const [rooms, setRooms] = useState<Room[]>(() => initialData?.rooms ?? []);
+  const [error, setError] = useState<string>(() => initialData?.error ?? '');
+  const [loading, setLoading] = useState<boolean>(() => !initialData);
+  const [isHost, setIsHost] = useState<boolean>(() => {
+    if (initialData?.isHost !== undefined) return initialData.isHost;
+    if (initialData?.role) return initialData.role === 'host';
+    return true;
+  });
+
   const navigate = useNavigate();
   const reduced = useReducedMotion();
   const { confirm, dialog } = useConfirm();
@@ -49,23 +60,70 @@ export default function Dashboard() {
   };
 
   useEffect(() => {
+    // Si SSR falló por degradación del servicio de identidad (AC3), conservamos el mensaje de error de SSR
+    if (initialData?.error && initialData.error !== 'Sesión no válida o expirada.') {
+      return;
+    }
+
+    let cancelled = false;
+
     apiFetch('/rooms')
-      .then((r) => setRooms(r.rooms || []))
+      ?.then((r) => {
+        if (cancelled) return;
+        if (r?.rooms) {
+          setRooms(r.rooms);
+          setIsHost(true);
+          setError('');
+        }
+      })
       .catch((e: unknown) => {
+        if (cancelled) return;
         if (e instanceof ApiError && e.status === 401) {
           localStorage.removeItem('tint_token');
+          syncAuthCookie(null);
           navigate(loginRedirectPath('/dashboard'));
         } else if (e instanceof ApiError && e.status === 403) {
           navigate('/403?reason=not_host', { replace: true });
         } else {
-          setError(e instanceof Error ? e.message : 'Error desconocido');
+          // Solo actualizamos error si no teníamos ya salas renderizadas
+          setRooms((prev) => {
+            if (!prev.length && !initialData?.rooms?.length) {
+              setError(e instanceof Error ? e.message : 'Error desconocido');
+            }
+            return prev;
+          });
         }
       })
-      .finally(() => setLoading(false));
-  }, [navigate]);
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [navigate, initialData]);
+
+  useEffect(() => {
+    const onFocus = () => {
+      if (typeof window !== 'undefined' && localStorage.getItem('tint_token')) {
+        apiFetch('/rooms')
+          ?.then((r) => {
+            if (r?.rooms) {
+              setRooms(r.rooms);
+              setIsHost(true);
+            }
+          })
+          .catch(() => {});
+      }
+    };
+    window.addEventListener('focus', onFocus);
+    return () => window.removeEventListener('focus', onFocus);
+  }, []);
 
   const handleLogout = () => {
     localStorage.removeItem('tint_token');
+    localStorage.removeItem('tint_guest_token');
+    syncAuthCookie(null);
     navigate('/login');
   };
 
@@ -89,7 +147,7 @@ export default function Dashboard() {
     <AppShell
       actions={
         <>
-          <ButtonLink to="/rooms/new">Crear sala</ButtonLink>
+          {isHost && <ButtonLink to="/rooms/new">Crear sala</ButtonLink>}
           <Button type="button" variant="quiet" onClick={handleLogout} className="font-normal">
             Salir
           </Button>
@@ -104,7 +162,9 @@ export default function Dashboard() {
           {loading
             ? 'Cargando tus salas…'
             : rooms.length === 0
-              ? 'Aún no tienes salas activas. Crea la primera y comparte el link.'
+              ? isHost
+                ? 'Aún no tienes salas activas. Crea la primera y comparte el link.'
+                : 'Aún no tienes salas disponibles para ver juntos.'
               : `${rooms.length} ${rooms.length === 1 ? 'sala disponible' : 'salas disponibles'} para continuar viendo juntos.`}
         </p>
 
@@ -125,12 +185,18 @@ export default function Dashboard() {
         {!loading && rooms.length === 0 && !error && (
           <m.div variants={scaleIn} initial="hidden" animate="show" className="mt-8 max-w-2xl">
             <EmptyState
-              title="Sin salas por ahora"
-              body="Crea una sala de watch party, obtén un código de invitación y comparte el link. Tus invitados entran con nick, sin cuenta."
+              title={isHost ? 'Sin salas por ahora' : 'Sin salas disponibles'}
+              body={
+                isHost
+                  ? 'Crea una sala de watch party, obtén un código de invitación y comparte el link. Tus invitados entran con nick, sin cuenta.'
+                  : 'Aún no tienes salas disponibles para ver juntos.'
+              }
               action={
-                <ButtonLink to="/rooms/new" className="mt-2">
-                  Crear sala
-                </ButtonLink>
+                isHost ? (
+                  <ButtonLink to="/rooms/new" className="mt-2">
+                    Crear sala
+                  </ButtonLink>
+                ) : undefined
               }
             />
           </m.div>
@@ -158,68 +224,107 @@ export default function Dashboard() {
                       <div className="absolute inset-0 bg-gradient-to-t from-tint-card via-transparent to-transparent" />
                       <RoomKindBadge room={room} />
                     </div>
-                    <div className="flex items-center justify-between gap-3 p-4">
-                      <p className="truncate text-[15px] font-semibold text-white" title={room.title}>
-                        {room.title}
-                      </p>
-                      <ButtonLink to={roomPath(room)} aria-label={`Abrir ${room.title}`} size="sm" className="shrink-0">
-                        Abrir
-                      </ButtonLink>
-                    </div>
-                    <div className="mt-auto border-t border-white/5 px-4 py-2">
-                      {room.invitation ? (
-                        <div className="flex items-center gap-2">
-                          <span
-                            className="min-w-0 flex-1 truncate text-[12px] text-tint-muted"
-                            title={toAbsoluteInviteLink(room.invitation.link)}
-                          >
-                            {toAbsoluteInviteLink(room.invitation.link)}
-                          </span>
-                          <CopyButton link={room.invitation.link} />
+
+                    <div className="flex flex-col gap-2 p-4">
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="min-w-0 flex-1">
+                          <p className="truncate text-[15px] font-semibold text-white" title={room.title}>
+                            {room.title}
+                          </p>
+                          <div className="mt-1 flex items-center gap-2">
+                            <span
+                              data-testid={`room-status-${room.id}`}
+                              className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11px] font-semibold lowercase tracking-wide ${
+                                room.status === 'disabled'
+                                  ? 'border-white/10 bg-white/5 text-tint-muted'
+                                  : 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300'
+                              }`}
+                            >
+                              <span
+                                aria-hidden="true"
+                                className={`h-1.5 w-1.5 rounded-full ${
+                                  room.status === 'disabled' ? 'bg-tint-muted' : 'bg-emerald-400'
+                                }`}
+                              />
+                              {room.status === 'disabled' ? 'disabled' : 'active'}
+                            </span>
+                          </div>
                         </div>
-                      ) : (
-                        <p className="truncate text-[12px] text-tint-muted/70">
-                          Sin link vigente.{' '}
-                          <Link
-                            to={`/rooms/${room.id}`}
-                            className="underline underline-offset-2 hover:text-white"
-                          >
-                            Generar en Gestionar
-                          </Link>
+                        <ButtonLink to={roomPath(room)} aria-label={`Abrir ${room.title}`} size="sm" className="shrink-0">
+                          Abrir
+                        </ButtonLink>
+                      </div>
+
+                      {(room.nextScheduledEvent || room.scheduledStartTime) && (
+                        <p data-testid={`scheduled-event-${room.id}`} className="text-[12px] text-tint-muted">
+                          Próximo evento:{' '}
+                          <span className="text-white">
+                            {formatNextScheduledEvent(room.nextScheduledEvent, room.scheduledStartTime)}
+                          </span>
                         </p>
                       )}
                     </div>
-                    <div className="flex items-center gap-1 border-t border-white/5 px-4 py-2">
-                      <ButtonLink
-                        to={`/rooms/${room.id}`}
-                        aria-label={`Gestionar ${room.title}`}
-                        variant="quiet"
-                        size="sm"
-                        className="font-normal"
-                      >
-                        Gestionar
-                      </ButtonLink>
-                      <ButtonLink
-                        to={`/rooms/${room.id}/analytics`}
-                        aria-label={`Análisis de ${room.title}`}
-                        variant="quiet"
-                        size="sm"
-                        className="font-normal"
-                      >
-                        Análisis
-                      </ButtonLink>
-                      {roomKindOf(room.kind) === 'live' && room.status === 'disabled' && (
-                        <EventChatHistory roomId={room.id} title={room.title} className="font-normal" />
-                      )}
-                      <button
-                        type="button"
-                        onClick={() => void handleDelete(room)}
-                        aria-label={`Eliminar ${room.title}`}
-                        className="min-h-10 rounded-full px-3 py-1.5 text-[13px] text-tint-muted transition hover:bg-red-500/10 sm:min-h-0 hover:text-red-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-400"
-                      >
-                        Eliminar
-                      </button>
-                    </div>
+
+                    {isHost && (
+                      <div className="mt-auto border-t border-white/5 px-4 py-2">
+                        {room.invitation ? (
+                          <div className="flex items-center gap-2">
+                            <span
+                              className="min-w-0 flex-1 truncate text-[12px] text-tint-muted"
+                              title={toAbsoluteInviteLink(room.invitation.link)}
+                            >
+                              {toAbsoluteInviteLink(room.invitation.link)}
+                            </span>
+                            <CopyButton link={room.invitation.link} />
+                          </div>
+                        ) : (
+                          <p className="truncate text-[12px] text-tint-muted/70">
+                            Sin link vigente.{' '}
+                            <Link
+                              to={`/rooms/${room.id}`}
+                              className="underline underline-offset-2 hover:text-white"
+                            >
+                              Generar en Gestionar
+                            </Link>
+                          </p>
+                        )}
+                      </div>
+                    )}
+
+                    {isHost && (
+                      <div className="flex items-center gap-1 border-t border-white/5 px-4 py-2">
+                        <ButtonLink
+                          to={`/rooms/${room.id}`}
+                          aria-label={`Gestionar ${room.title}`}
+                          variant="quiet"
+                          size="sm"
+                          className="font-normal"
+                        >
+                          Gestionar
+                        </ButtonLink>
+                        <ButtonLink
+                          to={`/rooms/${room.id}/analytics`}
+                          aria-label={`Análisis de ${room.title}`}
+                          variant="quiet"
+                          size="sm"
+                          className="font-normal"
+                        >
+                          Análisis
+                        </ButtonLink>
+                        {roomKindOf(room.kind) === 'live' && room.status === 'disabled' && (
+                          <EventChatHistory roomId={room.id} title={room.title} className="font-normal" />
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => void handleDelete(room)}
+                          aria-label={`Eliminar ${room.title}`}
+                          className="min-h-10 rounded-full px-3 py-1.5 text-[13px] text-tint-muted transition hover:bg-red-500/10 sm:min-h-0 hover:text-red-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-400"
+                        >
+                          Eliminar
+                        </button>
+                      </div>
+                    )}
+
                     <div
                       aria-hidden="true"
                       className="pointer-events-none absolute inset-0 opacity-0 transition-opacity duration-500 group-hover:opacity-100"

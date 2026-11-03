@@ -3,6 +3,7 @@ import { createRoot, hydrateRoot } from 'react-dom/client';
 import App from './App';
 import { auth } from './lib/firebase';
 import { startHostSession } from './lib/authSession';
+import { getInitialDashboardData } from './lib/serverDashboard';
 import './index.css';
 
 // Una sola vez al arrancar: mantiene fresco el ID token del host (caduca a la hora).
@@ -11,9 +12,10 @@ startHostSession(auth);
 const container = document.getElementById('root');
 
 if (container) {
+  const initialDashboardData = getInitialDashboardData();
   const appElement = (
     <StrictMode>
-      <App />
+      <App dashboardData={initialDashboardData} />
     </StrictMode>
   );
 
