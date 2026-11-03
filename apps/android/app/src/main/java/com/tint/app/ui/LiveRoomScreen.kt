@@ -228,6 +228,7 @@ fun LiveRoomScreen(room: JoinedRoom, container: AppContainer, onLeave: () -> Uni
                     )
                 },
                 cards = { horizontal -> SideCards(horizontal, social, socialState, selfUserId, clock, voice) },
+                videoOverlay = { CardsOnVideo(social, socialState, clock) },
             )
         }
     }

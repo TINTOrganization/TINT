@@ -7,6 +7,8 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.ui.Alignment
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
@@ -101,11 +103,10 @@ fun SideCards(
     val ranking: @Composable () -> Unit = { LeaderboardCard(state.leaderboard, state.myRank, state.myTotal, selfUserId) }
 
     if (horizontal) {
+        // La pregunta y la encuesta no caben en esta franja baja: van sobre el video (`CardsOnVideo`).
         Row(modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             Box(Modifier.weight(1f)) { VoicePanel(voice) }
-            Column(Modifier.weight(1f).verticalScroll(rememberScrollState())) {
-                if (state.trivia != null) trivia() else if (state.poll != null) poll() else ranking()
-            }
+            Column(Modifier.weight(1f).verticalScroll(rememberScrollState())) { ranking() }
         }
     } else {
         Column(modifier.fillMaxSize().verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -113,6 +114,27 @@ fun SideCards(
             trivia()
             poll()
             ranking()
+        }
+    }
+}
+
+/**
+ * La trivia o la encuesta en curso, sobre el video de la tableta horizontal (M08): la franja de tarjetas bajo el video
+ * es baja y la pregunta con sus respuestas quedaba cortada, con solo 20 s para contestar. La trivia manda sobre la
+ * encuesta. No tapa el video cuando no hay nada y deja pasar los toques fuera de la tarjeta.
+ */
+@Composable
+fun CardsOnVideo(social: SocialClient, state: SocialUiState, nowMs: () -> Long, modifier: Modifier = Modifier) {
+    val trivia = state.trivia
+    val poll = state.poll
+    if (trivia == null && poll == null) return
+    Box(modifier.fillMaxSize().padding(8.dp), contentAlignment = Alignment.TopCenter) {
+        Column(Modifier.widthIn(max = 440.dp).verticalScroll(rememberScrollState())) {
+            if (trivia != null) {
+                TriviaCard(trivia, nowMs = nowMs, onAnswer = { a -> social.answerTrivia(a) }, onDismiss = social::dismissTrivia)
+            } else if (poll != null) {
+                PollCard(poll, wallNowMs = System::currentTimeMillis, onVote = { v -> social.votePoll(v) }, onDismiss = social::dismissPoll)
+            }
         }
     }
 }

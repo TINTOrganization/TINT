@@ -38,6 +38,8 @@ fun RoomScaffold(
     modifier: Modifier = Modifier,
     /** Halo del Ambilight alrededor del video; solo se ve donde el video no llega al borde de la pantalla. */
     videoHalo: Modifier = Modifier,
+    /** Lo que se dibuja sobre el video en la tableta horizontal (la pregunta o encuesta en curso). */
+    videoOverlay: @Composable () -> Unit = {},
 ) {
     when (layout) {
         RoomLayout.PHONE_PORTRAIT -> Column(modifier.fillMaxSize()) {
@@ -73,7 +75,7 @@ fun RoomScaffold(
             topBar(false)
             Row(Modifier.weight(1f).fillMaxWidth().padding(start = 24.dp, end = 24.dp, top = 8.dp, bottom = 20.dp), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
                 Column(Modifier.weight(1.6f).fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    VideoBox(Modifier.fillMaxWidth(), rounded = true, video = video, halo = videoHalo)
+                    VideoBox(Modifier.fillMaxWidth(), rounded = true, video = video, halo = videoHalo, overlay = videoOverlay)
                     status()
                     reactions()
                     Box(Modifier.weight(1f).fillMaxWidth()) { cards(true) }
