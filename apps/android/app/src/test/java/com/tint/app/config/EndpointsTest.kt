@@ -41,4 +41,30 @@ class EndpointsTest {
         assertEquals("ws://h/ws/sync?room_id=r&token=t", trimmed.syncUrl("r", "t"))
         assertEquals("ws://h/ws/social?room_id=r&token=t", trimmed.socialUrl("r", "t"))
     }
+
+    @Test
+    fun `la API de transmision por defecto cuelga del origen de identity-api`() {
+        val behindGateway = Endpoints("https://tint.jaucor.online/api/v1", "wss://h/ws/sync", "wss://h/ws/social")
+
+        assertEquals("https://tint.jaucor.online", behindGateway.streamApiUrl)
+    }
+
+    @Test
+    fun `la API de transmision se puede apuntar a stream-core directo`() {
+        val direct = Endpoints(
+            "http://192.168.1.7:8081/api/v1",
+            "ws://192.168.1.7:8083/ws/sync",
+            "ws://192.168.1.7:8082/ws/social",
+            streamApiUrl = "http://192.168.1.7:8086/",
+        )
+
+        assertEquals("http://192.168.1.7:8086", direct.streamApiUrl)
+    }
+
+    @Test
+    fun `una API de transmision vacia usa la del origen de identity-api`() {
+        val blank = Endpoints("http://h:8081/api/v1/", "ws://h/ws/sync", "ws://h/ws/social", streamApiUrl = "  ")
+
+        assertEquals("http://h:8081", blank.streamApiUrl)
+    }
 }

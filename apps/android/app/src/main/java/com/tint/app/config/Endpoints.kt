@@ -4,11 +4,18 @@ import java.net.URLEncoder
 
 /**
  * URLs del backend. Son las mismas que usa la web (`apps/web/.env.example`): identity-api
- * por REST y los dos canales WebSocket de sync-core y social-core. Las bases se normalizan
+ * por REST, los dos canales WebSocket de sync-core y social-core y la API de transmisión de stream-core. Las bases se normalizan
  * sin barra final.
  */
-class Endpoints(identityApiUrl: String, syncWsUrl: String, socialWsUrl: String) {
+class Endpoints(identityApiUrl: String, syncWsUrl: String, socialWsUrl: String, streamApiUrl: String? = null) {
     val identityApiUrl: String = identityApiUrl.trimEnd('/')
+
+    /**
+     * Origen de stream-core (las rutas cuelgan de `/api/v1/stream`). Sin valor, el mismo origen que identity-api:
+     * detrás del gateway las dos APIs comparten dominio; en desarrollo se apunta al puerto 8086.
+     */
+    val streamApiUrl: String = streamApiUrl?.trim()?.trimEnd('/')?.takeIf { it.isNotEmpty() }
+        ?: this.identityApiUrl.removeSuffix("/api/v1")
     private val syncBase: String = syncWsUrl.trimEnd('/')
     private val socialBase: String = socialWsUrl.trimEnd('/')
 

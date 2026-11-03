@@ -17,6 +17,7 @@ class AppContainer(context: Context) {
         identityApiUrl = BuildConfig.IDENTITY_API_URL,
         syncWsUrl = BuildConfig.SYNC_WS_URL,
         socialWsUrl = BuildConfig.SOCIAL_WS_URL,
+        streamApiUrl = BuildConfig.STREAM_API_URL,
     )
 
     private val store = PrefsKeyValueStore(context.getSharedPreferences("tint", Context.MODE_PRIVATE))

@@ -8,7 +8,19 @@ import com.tint.app.net.TokenStore
 import kotlinx.serialization.Serializable
 import kotlin.coroutines.cancellation.CancellationException
 
-data class JoinedRoom(val roomId: String, val title: String?, val nick: String)
+/** `watch` = película sincronizada; `live` = transmisión en vivo del host. Lo decide la sala, no el cliente. */
+enum class RoomKind {
+    WATCH,
+    LIVE,
+    ;
+
+    companion object {
+        /** Lo desconocido o ausente es `WATCH`: la app sigue abriendo el reproductor sincronizado, como antes. */
+        fun fromWire(value: String?): RoomKind = if (value == "live") LIVE else WATCH
+    }
+}
+
+data class JoinedRoom(val roomId: String, val title: String?, val nick: String, val kind: RoomKind = RoomKind.WATCH)
 
 sealed interface ClaimResult {
     data class Joined(val room: JoinedRoom) : ClaimResult
@@ -30,6 +42,7 @@ private class ClaimResponse(
     val roomId: String,
     val nick: String? = null,
     val roomTitle: String? = null,
+    val roomKind: String? = null,
 )
 
 /**
@@ -49,7 +62,7 @@ class InviteRepository(
             ApiAuth.NONE,
         )
         tokens.guestToken = res.token
-        ClaimResult.Joined(JoinedRoom(res.roomId, res.roomTitle, res.nick ?: nick))
+        ClaimResult.Joined(JoinedRoom(res.roomId, res.roomTitle, res.nick ?: nick, RoomKind.fromWire(res.roomKind)))
     } catch (e: CancellationException) {
         throw e
     } catch (e: Exception) {

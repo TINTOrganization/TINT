@@ -108,4 +108,25 @@ class InviteRepositoryTest {
 
         assertEquals(ClaimResult.Failure("No se pudo unir a la sala"), repo.claim("abcdef", "Ana"))
     }
+
+    @Test
+    fun `una sala en vivo se reconoce por roomKind`() = runBlocking {
+        server.enqueue(json("""{"token":"t","roomId":"r1","nick":"Ana","roomTitle":"Concierto","roomKind":"live"}"""))
+
+        val result = repo.claim("abcdef", "Ana")
+
+        assertEquals(ClaimResult.Joined(JoinedRoom("r1", "Concierto", "Ana", RoomKind.LIVE)), result)
+    }
+
+    @Test
+    fun `una sala de peli, sin roomKind o con uno desconocido, es watch`() = runBlocking {
+        server.enqueue(json("""{"token":"t","roomId":"r1","nick":"Ana","roomKind":"watch"}"""))
+        server.enqueue(json("""{"token":"t","roomId":"r1","nick":"Ana"}"""))
+        server.enqueue(json("""{"token":"t","roomId":"r1","nick":"Ana","roomKind":"otra-cosa"}"""))
+
+        repeat(3) {
+            val joined = repo.claim("abcdef", "Ana") as ClaimResult.Joined
+            assertEquals(RoomKind.WATCH, joined.room.kind)
+        }
+    }
 }

@@ -74,6 +74,9 @@ object SyncProtocol {
     /** Cierre del servidor: token caducado (hay que volver a unirse). */
     const val CLOSE_EXPIRED = 4003
 
+    /** La sala se cerró (ADR 0019): el evento terminó o el host la deshabilitó. No se reconecta. */
+    const val CLOSE_ROOM_CLOSED = 4010
+
     private const val BACKOFF_BASE_MS = 500L
     private const val BACKOFF_MAX_MS = 10_000L
     private val COMMANDS = setOf("PLAY", "PAUSE", "SEEK", "RATE", "LOAD", "VOLUME", "QUALITY")

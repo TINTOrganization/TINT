@@ -22,6 +22,8 @@ import com.tint.app.join.JoinState
 import com.tint.app.ui.HomeScreen
 import com.tint.app.ui.JoinScreen
 import com.tint.app.ui.LoginScreen
+import com.tint.app.join.RoomKind
+import com.tint.app.ui.LiveRoomScreen
 import com.tint.app.ui.RoomScreen
 import com.tint.app.ui.TintAccent
 import com.tint.app.ui.TintBackground
@@ -50,11 +52,15 @@ class MainActivity : ComponentActivity() {
                 val joinState by join.state.collectAsState()
                 var showJoin by remember { mutableStateOf(false) }
                 when {
-                    joinState is JoinState.Joined -> RoomScreen(
-                        room = (joinState as JoinState.Joined).room,
-                        container = container,
-                        onLeave = join::leave,
-                    )
+                    joinState is JoinState.Joined -> {
+                        val room = (joinState as JoinState.Joined).room
+                        // Una sala `live` abre al espectador de la transmisión; `watch`, el reproductor sincronizado.
+                        if (room.kind == RoomKind.LIVE) {
+                            LiveRoomScreen(room = room, container = container, onLeave = join::leave)
+                        } else {
+                            RoomScreen(room = room, container = container, onLeave = join::leave)
+                        }
+                    }
                     showJoin || pendingCode != null -> JoinScreen(
                         state = joinState,
                         initialCode = pendingCode,

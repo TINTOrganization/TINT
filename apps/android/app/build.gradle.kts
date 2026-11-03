@@ -22,10 +22,15 @@ android {
         versionCode = 1
         versionName = "0.1.0"
 
+        // libwebrtc trae sus bibliotecas nativas por arquitectura (~10 MB cada una): solo las de dispositivos
+        // reales. Sin x86/x86_64 no corre en un emulador de PC; añádelas aquí si hace falta.
+        ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a") }
+
         manifestPlaceholders["inviteHost"] = endpoint("tintInviteHost")
         buildConfigField("String", "IDENTITY_API_URL", "\"${endpoint("tintIdentityApiUrl")}\"")
         buildConfigField("String", "SYNC_WS_URL", "\"${endpoint("tintSyncWsUrl")}\"")
         buildConfigField("String", "SOCIAL_WS_URL", "\"${endpoint("tintSocialWsUrl")}\"")
+        buildConfigField("String", "STREAM_API_URL", "\"${endpoint("tintStreamApiUrl")}\"")
     }
 
     buildFeatures {
@@ -62,6 +67,7 @@ kover {
                     "com.tint.app.auth.FirebaseAuthGateway*",
                     "com.tint.app.sync.OkHttpSyncSocketFactory*",
                     "com.tint.app.sync.ExoPlayerPort*",
+                    "com.tint.app.live.WebRtc*",
                     "com.tint.app.BuildConfig",
                     "*ComposableSingletons*",
                 )
@@ -87,6 +93,7 @@ dependencies {
     implementation(libs.googleid)
     implementation(libs.media3.exoplayer)
     implementation(libs.media3.ui)
+    implementation(libs.webrtc)
 
     implementation(platform(libs.compose.bom))
     implementation(libs.compose.ui)

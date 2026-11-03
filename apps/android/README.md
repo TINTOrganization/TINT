@@ -13,7 +13,7 @@ Cliente móvil nativo (Kotlin + Jetpack Compose) de TINT. Usa los mismos endpoin
 | AND-04 | Chat y reacciones (Canal Social) | ✅ Verificado en una tablet contra el servidor desplegado, con un host real en el navegador (ver «Chat y reacciones») |
 | AND-05 | Trivia (pregunta con cuenta regresiva, respuesta, puntaje y ranking) | ✅ Verificado en una tablet contra el servidor desplegado con un host real (ver «Trivia») |
 | — | Encuestas (ver y votar) y puntero láser del host (ver) | ✅ Verificado en una tablet contra el servidor desplegado con un host real (ver «Encuestas y láser»). Crear encuestas y dibujar el láser son del host y piden el sync-ticket: no están en la app de invitado |
-| AND-06 | Transmisión en vivo | ⏳ Sin backend de transmisión en el repositorio |
+| AND-06 | Transmisión en vivo (espectador por WHEP contra stream-core) | ✅ Verificado en una tablet contra el servidor desplegado con un host real transmitiendo desde el navegador (ver «Transmisión en vivo») |
 | AND-07 | Voz | ⏳ El backend `voice-core` ya existe ([docs/dominio-voz.md](../../docs/dominio-voz.md)); falta el cliente móvil (WebRTC nativo y permiso de micrófono). No he revisado si su contrato sirve tal cual para Android |
 
 ## Requisitos
@@ -40,7 +40,8 @@ Las URLs viven en `gradle.properties` y se pueden sobrescribir al compilar:
 ./gradlew assembleDebug \
   -PtintIdentityApiUrl=https://mi-host/api/v1 \
   -PtintSyncWsUrl=wss://mi-host/ws/sync \
-  -PtintSocialWsUrl=wss://mi-host/ws/social
+  -PtintSocialWsUrl=wss://mi-host/ws/social \
+  -PtintStreamApiUrl=https://mi-host
 ```
 
 **En un dispositivo físico con el backend local**, las URLs por defecto (`localhost:8081/8082/8083`) sirven si esos puertos llegan al PC: redirígelos por adb y `localhost` llegará al PC. Ojo: el `docker-compose.yml` actual de `develop` publica `social-core` (8082) y `sync-core` (8083), pero **no** `identity-api` (8081) ni la web; la entrada es el gateway en 80/443 y espera a `identity-api` en el host (`IDENTITY_API_UPSTREAM`). **No he probado la app contra ese stack local ni contra el gateway**: todas las pruebas documentadas fueron contra un servidor desplegado.
@@ -108,6 +109,20 @@ Con el host lanzando la encuesta y dibujando el láser desde la web (Playwright)
 La cuenta atrás de la encuesta usa la hora de pared del dispositivo contra `closes_at_ms`, **solo para mostrarla**: quien
 cierra y rechaza votos tardíos (`POLL_CLOSED`) es social-core. Los puntos del láser se fechan con el reloj local al
 llegar, nunca con el de quien los mandó.
+
+### Transmisión en vivo (AND-06)
+Con el host creando una sala `live` y transmitiendo desde Chromium (pantalla simulada, WHIP de vídeo y audio por el
+gateway) y la tablet entrando con el link:
+
+- **AC1:** la sala se abre en la pantalla de transmisión (el `claim` devuelve `roomKind: live`) y el vídeo del host
+  aparece («En vivo · 1 espectador»). El chat, las reacciones, la trivia, las encuestas y el láser son los del Canal Social.
+- **AC3:** con el Wi-Fi de la tablet apagado 12 s, la pantalla pasa a «Reconectando…» y muestra el motivo; al volver la
+  red el vídeo **volvió solo en unos 30 s** y siguió corriendo. La espera entre intentos crece de 1 s a 10 s, como en la web.
+- **AC2:** al «Terminar evento» del host, la tablet muestra «El evento terminó.», corta el vídeo y no reconecta.
+
+La app habla WHEP con el guest token (`POST /api/v1/stream/rooms/{id}/whep`, ICE completo antes de ofrecer, DataChannel
+`stream-events` negociado con id 0). Para probar contra un servidor en la LAN, stream-core debe anunciar una IP que la
+tablet alcance (`STREAM_PUBLIC_IP` del `.env`, no `127.0.0.1`) y el puerto UDP 8087 debe estar abierto.
 
 ### Latencia host → tablet (AC1)
 Con Playwright controlando la sala del host (Chromium con `--remote-debugging-port`) y la tablet escribiendo una

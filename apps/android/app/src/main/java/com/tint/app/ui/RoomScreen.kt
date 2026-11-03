@@ -237,7 +237,7 @@ fun RoomScreen(room: JoinedRoom, container: AppContainer, onLeave: () -> Unit) {
 }
 
 @Composable
-private fun Notice(text: String) {
+internal fun Notice(text: String) {
     Text(text, color = MaterialTheme.colorScheme.error, textAlign = TextAlign.Center)
 }
 

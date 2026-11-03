@@ -48,6 +48,8 @@ data class SocialUiState(
     val laser: List<LaserArrival> = emptyList(),
     val revoked: Boolean = false,
     val expired: Boolean = false,
+    /** La sala se cerró (cierre 4010): el evento terminó o el host la deshabilitó. */
+    val roomClosed: Boolean = false,
     val reconnectAttempt: Int = 0,
 )
 
@@ -102,6 +104,7 @@ class SocialClient(
                         connected = false,
                         revoked = it.revoked || code == SyncProtocol.CLOSE_REVOKED,
                         expired = it.expired || code == SyncProtocol.CLOSE_EXPIRED,
+                        roomClosed = it.roomClosed || code == SyncProtocol.CLOSE_ROOM_CLOSED,
                         reconnectAttempt = reconnectAttempt ?: it.reconnectAttempt,
                     )
                 }

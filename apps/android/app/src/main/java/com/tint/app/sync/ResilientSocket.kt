@@ -5,9 +5,9 @@ import kotlinx.coroutines.launch
 
 /**
  * Conexión WebSocket que se reconecta sola (compartida por el Canal Sync y el Canal Social). Pide el
- * token en cada intento, reconecta con backoff exponencial y no reconecta ante `4001` (revocado) ni
- * `4003` (caducado). Ignora los mensajes y cierres de sockets viejos, y es segura entre hilos: los
- * callbacks de OkHttp llegan por su propio hilo.
+ * token en cada intento, reconecta con backoff exponencial y no reconecta ante `4001` (revocado), `4003`
+ * (caducado) ni `4010` (sala cerrada). Ignora los mensajes y cierres de sockets viejos, y es segura entre hilos:
+ * los callbacks de OkHttp llegan por su propio hilo.
  */
 class ResilientSocket(
     private val token: () -> String?,
@@ -110,7 +110,7 @@ class ResilientSocket(
             if (gen != generation) return
             socket = null
             epoch = reconnectEpoch
-            val terminal = code == SyncProtocol.CLOSE_REVOKED || code == SyncProtocol.CLOSE_EXPIRED
+            val terminal = code == SyncProtocol.CLOSE_REVOKED || code == SyncProtocol.CLOSE_EXPIRED || code == SyncProtocol.CLOSE_ROOM_CLOSED
             reconnectIn = if (terminal || !running) null else SyncProtocol.backoffDelay(attempt).also { attempt++ }
             attemptNow = attempt
         }
