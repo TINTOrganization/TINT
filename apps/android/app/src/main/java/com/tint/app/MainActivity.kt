@@ -6,6 +6,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -50,7 +51,15 @@ class MainActivity : ComponentActivity() {
             MaterialTheme(colorScheme = darkColorScheme(primary = TintAccent, onPrimary = TintBackground, background = TintBackground)) {
                 val loginState by login.state.collectAsState()
                 val joinState by join.state.collectAsState()
+                val invitePreview by join.preview.collectAsState()
                 var showJoin by remember { mutableStateOf(false) }
+                var recents by remember { mutableStateOf(container.recentRooms.list()) }
+                (joinState as? JoinState.Joined)?.let { joined ->
+                    LaunchedEffect(joined.room.inviteCode) {
+                        container.recentRooms.remember(joined.room, System.currentTimeMillis())
+                        recents = container.recentRooms.list()
+                    }
+                }
                 when {
                     joinState is JoinState.Joined -> {
                         val room = (joinState as JoinState.Joined).room
@@ -63,6 +72,13 @@ class MainActivity : ComponentActivity() {
                     }
                     showJoin || pendingCode != null -> JoinScreen(
                         state = joinState,
+                        preview = invitePreview,
+                        onLookup = join::lookup,
+                        recents = recents,
+                        onForget = { code ->
+                            container.recentRooms.forget(code)
+                            recents = container.recentRooms.list()
+                        },
                         initialCode = pendingCode,
                         onSubmit = join::submit,
                         onBack = {

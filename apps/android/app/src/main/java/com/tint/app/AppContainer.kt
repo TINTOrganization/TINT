@@ -5,6 +5,7 @@ import com.tint.app.auth.FirebaseAuthGateway
 import com.tint.app.config.Endpoints
 import com.tint.app.identity.DeviceIdProvider
 import com.tint.app.join.InviteRepository
+import com.tint.app.join.RecentRooms
 import com.tint.app.net.ApiClient
 import com.tint.app.net.StoredTokenStore
 import com.tint.app.store.PrefsKeyValueStore
@@ -39,5 +40,6 @@ class AppContainer(context: Context) {
     )
 
     val invites = InviteRepository(api, tokens, deviceId)
+    val recentRooms = RecentRooms(store)
     val playback = PlaybackRepository(api, tokens)
 }

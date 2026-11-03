@@ -253,17 +253,6 @@ private fun LiveVideo(
         FloatingReactionsLayer(socialState.floating, nowMs = clock, onPrune = social::pruneReactions, modifier = Modifier.fillMaxSize())
         StatusOverlay(live, onRetry = { controller.stop(); controller.start() })
 
-        if (live.status == LiveStatus.LIVE) {
-            Row(
-                Modifier.align(Alignment.TopStart).padding(10.dp),
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-            ) {
-                Text("EN VIVO", color = Color.White, fontSize = 11.sp, modifier = Modifier.background(TintDanger, RoundedCornerShape(5.dp)).padding(horizontal = 9.dp, vertical = 3.dp))
-                live.viewerCount?.let {
-                    Text("$it", color = Color.White, fontSize = 11.sp, modifier = Modifier.background(Color(0x99000000), RoundedCornerShape(5.dp)).padding(horizontal = 9.dp, vertical = 3.dp))
-                }
-            }
-        }
         if (!fullscreen()) {
             Row(
                 Modifier.align(Alignment.BottomCenter).fillMaxWidth().height(44.dp).background(Brush.verticalGradient(listOf(Color.Transparent, Color(0xA6000000)))),

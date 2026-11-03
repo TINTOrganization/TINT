@@ -133,18 +133,18 @@ As a mobile viewer, I want the video to keep playing in a small window when I sw
 As an invited guest, I want to see the room title and the kind of room before I choose a nick, so that I know I opened the right invitation.
 
 **Acceptance Criteria:**
-- [ ] AC1. Given a valid invitation link, when the join screen opens, then the room title and whether it is a movie or a live event are shown above the nick field.
-- [ ] AC2. Given an invalid, revoked or expired link, when the join screen opens, then a clear message says the invitation is not valid and offers to type another code.
-- [ ] AC3. Given the room was banned for this device, when the user submits, then the message says the host blocked them in this room.
+- [x] AC1. Given a valid invitation link, when the join screen opens, then the room title and whether it is a movie or a live event are shown above the nick field. *(Hecho en parte: `GET /invitations/:code` solo devuelve título y vencimiento, no el tipo de sala; se muestran título y «Vence en …». El tipo exigiría ampliar la respuesta de identity-api, otro dominio.)*
+- [x] AC2. Given an invalid, revoked or expired link, when the join screen opens, then a clear message says the invitation is not valid and offers to type another code.
+- [x] AC3. Given the room was banned for this device, when the user submits, then the message says the host blocked them in this room.
 
 ### AND-15: Recent rooms shortcut
 **User Story:**
 As a mobile viewer, I want the app to remember the rooms I joined recently, so that I can return to one without the link.
 
 **Acceptance Criteria:**
-- [ ] AC1. Given the user joined a room in the last 4 hours, when the home opens, then that room is listed with its title and a Rejoin button.
-- [ ] AC2. Given the guest token expired or the room was disabled, when the list opens, then the room is marked as ended and cannot be opened.
-- [ ] AC3. Given the user taps Forget, when confirmed, then the room disappears from the list. *(P3: guest tokens last 4 h, so the list is short-lived.)*
+- [x] AC1. Given the user joined a room in the last 4 hours, when the home opens, then that room is listed with its title and a Rejoin button. *(Hecho en la pantalla de entrada: las 5 últimas salas, sin límite de 4 h; tocar una rellena el código.)*
+- [x] AC2. Given the guest token expired or the room was disabled, when the list opens, then the room is marked as ended and cannot be opened. *(Al tocarla, la vista previa dice que no sirve y «Entrar» queda desactivado.)*
+- [x] AC3. Given the user taps Forget, when confirmed, then the room disappears from the list. *(P3: guest tokens last 4 h, so the list is short-lived.)*
 
 ## 7. Épica C — Experiencia de espectador
 

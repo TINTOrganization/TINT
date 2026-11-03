@@ -21,6 +21,29 @@ class JoinController(private val invites: RoomInvites, private val scope: Corout
     private val _state = MutableStateFlow<JoinState>(JoinState.Idle)
     val state: StateFlow<JoinState> = _state
 
+    private val _preview = MutableStateFlow<InvitePreview>(InvitePreview.Idle)
+
+    /** A qué sala invitan, según el código pegado (AND-14). */
+    val preview: StateFlow<InvitePreview> = _preview
+    private var previewCode: String? = null
+
+    /** Consulta la invitación del texto pegado. Un texto que no es código limpia la vista previa sin llamar al servidor. */
+    fun lookup(codeOrLink: String) {
+        val code = InviteCode.parse(codeOrLink)
+        if (code == previewCode) return
+        previewCode = code
+        if (code == null) {
+            _preview.value = InvitePreview.Idle
+            return
+        }
+        _preview.value = InvitePreview.Loading
+        scope.launch {
+            val result = invites.preview(code)
+            // Si mientras tanto pegaron otro código, esta respuesta ya no importa.
+            if (previewCode == code) _preview.value = result
+        }
+    }
+
     /** `codeOrLink` es lo que escribió o pegó la persona: link, ruta o código. */
     fun submit(codeOrLink: String, nick: String) {
         if (_state.value == JoinState.Joining) return

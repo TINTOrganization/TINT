@@ -129,4 +129,28 @@ class InviteRepositoryTest {
             assertEquals(RoomKind.WATCH, joined.room.kind)
         }
     }
+
+    @Test
+    fun `la vista previa lee el titulo y el vencimiento sin canjear ni guardar token`() = runBlocking {
+        server.enqueue(json("""{"code":"abc12345","roomId":"r1","roomTitle":"Peli","expiresAt":"2026-11-10T12:00:00.000Z"}"""))
+
+        val result = repo.preview("abc12345")
+
+        assertEquals(InvitePreview.Ready("Peli", "2026-11-10T12:00:00.000Z"), result)
+        assertNull(tokens.guestToken)
+        val request = server.takeRequest()
+        assertEquals("GET", request.method)
+        assertEquals("/api/v1/invitations/abc12345", request.path)
+    }
+
+    @Test
+    fun `la vista previa distingue expirada, revocada e inexistente`() = runBlocking {
+        server.enqueue(json("""{"error":"Expired"}""", 410))
+        server.enqueue(json("""{"error":"Revoked"}""", 409))
+        server.enqueue(json("""{"error":"Not found"}""", 404))
+
+        assertEquals(InvitePreview.Unavailable("Esta invitación expiró o la sala fue eliminada."), repo.preview("a"))
+        assertEquals(InvitePreview.Unavailable("Esta invitación fue revocada por el host."), repo.preview("b"))
+        assertEquals(InvitePreview.Unavailable("Esta invitación no existe o la sala fue eliminada."), repo.preview("c"))
+    }
 }

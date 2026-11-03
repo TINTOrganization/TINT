@@ -9,6 +9,7 @@ import kotlinx.serialization.Serializable
 import kotlin.coroutines.cancellation.CancellationException
 
 /** `watch` = película sincronizada; `live` = transmisión en vivo del host. Lo decide la sala, no el cliente. */
+@Serializable
 enum class RoomKind {
     WATCH,
     LIVE,
@@ -35,10 +36,28 @@ sealed interface ClaimResult {
     data class Failure(val message: String) : ClaimResult
 }
 
+/** Lo que la persona ve al pegar un código, antes de entrar (AND-14). */
+sealed interface InvitePreview {
+    data object Idle : InvitePreview
+
+    data object Loading : InvitePreview
+
+    /** `expiresAt` viene en ISO-8601 tal cual lo manda el servidor. */
+    data class Ready(val title: String, val expiresAt: String) : InvitePreview
+
+    /** La invitación no sirve (expiró, se revocó o no existe): el motivo ya viene redactado. */
+    data class Unavailable(val message: String) : InvitePreview
+}
+
 /** Lo que el formulario de unirse necesita (se sustituye en las pruebas). */
 interface RoomInvites {
+    suspend fun preview(code: String): InvitePreview
+
     suspend fun claim(code: String, nick: String): ClaimResult
 }
+
+@Serializable
+private class PreviewResponse(val roomTitle: String, val expiresAt: String)
 
 @Serializable
 private class ClaimRequest(val code: String, val nick: String, val deviceId: String)
@@ -62,6 +81,16 @@ class InviteRepository(
     private val tokens: TokenStore,
     private val deviceId: DeviceIdProvider,
 ) : RoomInvites {
+    /** `GET /invitations/:code` es público y no canjea nada: solo dice a qué sala invitan. */
+    override suspend fun preview(code: String): InvitePreview = try {
+        val res = api.get<PreviewResponse>("/invitations/$code", ApiAuth.NONE)
+        InvitePreview.Ready(res.roomTitle, res.expiresAt)
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        InvitePreview.Unavailable(errorMessage(e))
+    }
+
     override suspend fun claim(code: String, nick: String): ClaimResult = try {
         val res = api.post<ClaimRequest, ClaimResponse>(
             "/invitations/claim",
