@@ -162,9 +162,9 @@ As a mobile viewer, I want reactions to float up over the video, so that I feel 
 As a mobile viewer, I want to mute the room only for myself and choose the video quality, so that I can save data or silence the video without affecting others.
 
 **Acceptance Criteria:**
-- [ ] AC1. Given the user taps the speaker, when it is muted, then only their device is silent and the sync is not affected.
-- [ ] AC2. Given the quality menu, when the user picks Auto, 720p or 360p, then the player switches without losing the sync position.
-- [ ] AC3. Given the connection is on mobile data, when the user opens the menu, then the current quality and an estimate of data per hour are shown.
+- [x] AC1. Given the user taps the speaker, when it is muted, then only their device is silent and the sync is not affected.
+- [x] AC2. Given the quality menu, when the user picks Auto, 720p or 360p, then the player switches without losing the sync position. *(Solo en películas: la transmisión en vivo no ofrece elegir capa. El cambio reanuda en la posición actual y la sincronía la corrige. Pendiente de probar en el aparato.)*
+- [x] AC3. Given the connection is on mobile data, when the user opens the menu, then the current quality and an estimate of data per hour are shown. *(La estimación es un tope calculado con el bitrate máximo de media-worker: 360p ≈ 0,5 GB/h, 720p ≈ 1,4 GB/h, original ≈ 3,7 GB/h.)*
 
 ### AND-18: Sync and connection status
 **User Story:**

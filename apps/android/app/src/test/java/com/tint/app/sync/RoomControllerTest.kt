@@ -181,4 +181,76 @@ class RoomControllerTest {
         assertEquals(1, session.starts)
         assertEquals(1, session.stops)
     }
+
+    // ---- Calidad personal (AND-17) ----
+
+    private val qualities = listOf(
+        PlaybackQuality("source", "Original", "https://v/m1-source.mp4"),
+        PlaybackQuality("720p", "720p", "https://v/m1-720.mp4"),
+        PlaybackQuality("360p", "360p", "https://v/m1-360.mp4"),
+    )
+
+    private fun loadedWithQualities(media: String = "m1") =
+        PlaybackResult.Loaded(RoomPlayback(media, "https://v/$media-source.mp4", null, "ready", qualities))
+
+    @Test
+    fun `con calidades elige la de auto segun la red`() {
+        controller.setNetwork(NetworkHints(metered = true, dataSaver = false, widthDp = 411))
+        playback.results += loadedWithQualities()
+
+        session.flow.value = withMedia("m1")
+
+        assertEquals("https://v/m1-360.mp4", controller.ui.value.videoUrl)
+        assertEquals("360p", controller.ui.value.currentQuality?.id)
+        assertEquals(qualities, controller.ui.value.qualities)
+    }
+
+    @Test
+    fun `cambiar la calidad cambia la url sin pedir otra vez la reproduccion`() {
+        playback.results += loadedWithQualities()
+        session.flow.value = withMedia("m1")
+
+        controller.setQuality(QualityPref.SOURCE)
+
+        assertEquals("https://v/m1-source.mp4", controller.ui.value.videoUrl)
+        assertEquals(QualityPref.SOURCE, controller.ui.value.qualityPref)
+        assertEquals(1, playback.requests.size)
+    }
+
+    @Test
+    fun `la calidad elegida se conserva al recuperar la url`() {
+        playback.results += loadedWithQualities()
+        session.flow.value = withMedia("m1")
+        controller.setQuality(QualityPref.Q360)
+        playback.results += loadedWithQualities()
+
+        controller.recover()
+
+        assertEquals("https://v/m1-360.mp4", controller.ui.value.videoUrl)
+    }
+
+    @Test
+    fun `una red que cambia reevalua solo la calidad auto`() {
+        playback.results += loadedWithQualities()
+        session.flow.value = withMedia("m1")
+        assertEquals("https://v/m1-720.mp4", controller.ui.value.videoUrl)
+
+        controller.setNetwork(NetworkHints(metered = true, dataSaver = false, widthDp = 1000))
+        assertEquals("https://v/m1-360.mp4", controller.ui.value.videoUrl)
+
+        controller.setQuality(QualityPref.SOURCE)
+        controller.setNetwork(NetworkHints(metered = false, dataSaver = false, widthDp = 1000))
+        assertEquals("https://v/m1-source.mp4", controller.ui.value.videoUrl)
+    }
+
+    @Test
+    fun `un servidor sin calidades sigue usando la url directa`() {
+        playback.results += loaded("m1")
+
+        session.flow.value = withMedia("m1")
+
+        assertEquals("https://v/m1.mp4", controller.ui.value.videoUrl)
+        assertEquals(emptyList<PlaybackQuality>(), controller.ui.value.qualities)
+        assertNull(controller.ui.value.currentQuality)
+    }
 }

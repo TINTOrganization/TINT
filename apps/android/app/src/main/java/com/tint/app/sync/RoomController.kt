@@ -12,6 +12,12 @@ data class RoomUiState(
     /** Vídeo actual de la sala; null mientras no se conoce. */
     val mediaId: String? = null,
     val videoUrl: String? = null,
+    /** Versiones del vídeo y la que se reproduce (AND-17); vacías con un servidor que no las publica. */
+    val qualities: List<PlaybackQuality> = emptyList(),
+    val currentQuality: PlaybackQuality? = null,
+    val qualityPref: QualityPref = QualityPref.AUTO,
+    /** Datos móviles o ahorro de datos: se avisa en el menú de calidad. */
+    val metered: Boolean = false,
     val loading: Boolean = false,
     /** La sala no tiene vídeo asignado todavía. */
     val noVideo: Boolean = false,
@@ -34,6 +40,7 @@ class RoomController(
     val ui: StateFlow<RoomUiState> = _ui
 
     private var currentMedia: String? = null
+    private var hints = NetworkHints()
 
     init {
         scope.launch { session.state.collect(::onSync) }
@@ -42,6 +49,23 @@ class RoomController(
     fun start() = session.start()
 
     fun stop() = session.stop()
+
+    /** Elige la calidad solo para este aparato: cambia la URL sin volver a pedir la reproducción. */
+    fun setQuality(pref: QualityPref) {
+        _ui.update { applyQuality(it.copy(qualityPref = pref)) }
+    }
+
+    /** La red o la pantalla cambió: solo afecta a `auto`. */
+    fun setNetwork(newHints: NetworkHints) {
+        hints = newHints
+        _ui.update { applyQuality(it.copy(metered = newHints.metered || newHints.dataSaver)) }
+    }
+
+    private fun applyQuality(state: RoomUiState): RoomUiState {
+        if (state.qualities.isEmpty()) return state
+        val chosen = QualityPolicy.resolve(state.qualityPref, state.qualities, hints) ?: return state
+        return state.copy(currentQuality = chosen, videoUrl = chosen.url)
+    }
 
     /** Vuelve a pedir la URL del vídeo actual (reproductor con error, URL caducada, reintento manual). */
     fun recover() {
@@ -73,6 +97,8 @@ class RoomController(
             it.copy(
                 mediaId = media,
                 videoUrl = if (reset) null else it.videoUrl,
+                qualities = if (reset) emptyList() else it.qualities,
+                currentQuality = if (reset) null else it.currentQuality,
                 loading = true,
                 noVideo = false,
                 error = null,
@@ -88,7 +114,7 @@ class RoomController(
                         if (url == null) {
                             it.copy(loading = false, error = "El vídeo se está preparando. Intenta de nuevo en un momento.")
                         } else {
-                            it.copy(loading = false, videoUrl = url)
+                            applyQuality(it.copy(loading = false, videoUrl = url, qualities = result.playback.qualities))
                         }
                     }
                     PlaybackResult.Revoked -> it.copy(loading = false, revoked = true)

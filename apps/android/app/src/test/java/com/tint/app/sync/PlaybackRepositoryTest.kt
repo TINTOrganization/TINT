@@ -46,7 +46,9 @@ class PlaybackRepositoryTest {
         val result = repo.get("r1")
 
         assertEquals(
-            PlaybackResult.Loaded(RoomPlayback("m1", "https://minio/x.mp4", "2026-10-31T13:00:00Z", "ready")),
+            PlaybackResult.Loaded(
+                RoomPlayback("m1", "https://minio/x.mp4", "2026-10-31T13:00:00Z", "ready", listOf(PlaybackQuality("source", "Original", "https://q"))),
+            ),
             result,
         )
         val request = server.takeRequest()
@@ -92,5 +94,20 @@ class PlaybackRepositoryTest {
             PlaybackResult.Failure("No se pudo conectar con el servidor. Revisa tu conexión."),
             repo.get("r1"),
         )
+    }
+
+    @Test
+    fun `lee las calidades y descarta las que no conoce o no traen url`() = runBlocking {
+        server.enqueue(
+            json(
+                """{"mediaId":"m1","url":"https://u","status":"ready","qualities":[
+                {"id":"source","label":"Original","url":"https://u"},{"id":"720p","label":"720p","url":"https://u7"},
+                {"id":"4k","label":"4K","url":"https://u4"},{"id":"360p","label":"360p","url":""}]}""",
+            ),
+        )
+
+        val loaded = repo.get("r1") as PlaybackResult.Loaded
+
+        assertEquals(listOf("source", "720p"), loaded.playback.qualities.map { it.id })
     }
 }

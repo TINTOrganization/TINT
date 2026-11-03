@@ -77,6 +77,7 @@ fun FullscreenOverlay(
     onToggleAudio: () -> Unit,
     onReact: (String) -> Unit,
     onExit: () -> Unit,
+    trailing: @Composable () -> Unit = {},
 ) {
     val controls = remember { ControlsVisibility() }
     var now by remember { mutableLongStateOf(nowMs()) }
@@ -126,6 +127,7 @@ fun FullscreenOverlay(
                 Row(
                     Modifier.clip(RoundedCornerShape(15.dp)).background(Color(0x8C000000)).padding(horizontal = 12.dp, vertical = 5.dp),
                 ) { SyncChip(badge) }
+                trailing()
                 IconButton(onClick = { touch(); onToggleAudio() }, Modifier.size(48.dp)) {
                     Icon(if (audioMuted) TintIcons.VolumeOff else TintIcons.Volume, if (audioMuted) "Activar el sonido" else "Silenciar solo para mí", tint = Color.White)
                 }

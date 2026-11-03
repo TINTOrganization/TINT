@@ -38,6 +38,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -117,6 +118,8 @@ fun RoomScreen(room: JoinedRoom, container: AppContainer, onLeave: () -> Unit) {
     var positionMs by remember { mutableLongStateOf(0L) }
     var durationMs by remember { mutableLongStateOf(0L) }
     FullscreenEffect(fullscreen) { fullscreen = false }
+    val widthDp = LocalConfiguration.current.screenWidthDp
+    NetworkHintsEffect(widthDp) { controller.setNetwork(it) }
     LaunchedEffect(audioMuted, player) { player.volume = if (audioMuted) 0f else 1f }
 
     DisposableEffect(player) {
@@ -167,7 +170,9 @@ fun RoomScreen(room: JoinedRoom, container: AppContainer, onLeave: () -> Unit) {
             player.stop()
             player.clearMediaItems()
         } else {
-            player.setMediaItem(MediaItem.fromUri(url))
+            // Al cambiar de calidad el mismo vídeo sigue por donde iba; la sincronía lo corrige enseguida.
+            val resumeAt = if (player.mediaItemCount > 0) player.currentPosition else 0L
+            player.setMediaItem(MediaItem.fromUri(url), resumeAt)
             player.prepare()
             syncState.snapshot?.let(playback::apply)
         }
@@ -251,6 +256,7 @@ fun RoomScreen(room: JoinedRoom, container: AppContainer, onLeave: () -> Unit) {
                 onToggleAudio = { audioMuted = !audioMuted },
                 onReact = { social.sendReaction(it, tracker.current() ?: 0) },
                 onExit = { fullscreen = false },
+                trailing = { QualityMenu(ui.qualities, ui.currentQuality, ui.qualityPref, ui.metered, controller::setQuality) },
             )
             else -> RoomScaffold(
                 layout = layout,
@@ -329,6 +335,7 @@ private fun WatchVideo(
                 horizontalArrangement = Arrangement.End,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
+                QualityMenu(ui.qualities, ui.currentQuality, ui.qualityPref, ui.metered, controller::setQuality)
                 IconButton(onClick = onToggleAudio) {
                     Icon(if (audioMuted()) TintIcons.VolumeOff else TintIcons.Volume, if (audioMuted()) "Activar el sonido" else "Silenciar solo para mí", tint = Color.White)
                 }
