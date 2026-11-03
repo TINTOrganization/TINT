@@ -16,6 +16,8 @@ data class RoomUiState(
     val qualities: List<PlaybackQuality> = emptyList(),
     val currentQuality: PlaybackQuality? = null,
     val qualityPref: QualityPref = QualityPref.AUTO,
+    /** Paleta del Ambilight del vídeo actual; null si no hay (AND-23). */
+    val ambilightUrl: String? = null,
     /** La que `auto` elegiría ahora (para estimar sus datos aunque haya otra fijada). */
     val autoQuality: PlaybackQuality? = null,
     /** Datos móviles o ahorro de datos: se avisa en el menú de calidad. */
@@ -102,6 +104,7 @@ class RoomController(
                 qualities = if (reset) emptyList() else it.qualities,
                 currentQuality = if (reset) null else it.currentQuality,
                 autoQuality = if (reset) null else it.autoQuality,
+                ambilightUrl = if (reset) null else it.ambilightUrl,
                 loading = true,
                 noVideo = false,
                 error = null,
@@ -117,7 +120,7 @@ class RoomController(
                         if (url == null) {
                             it.copy(loading = false, error = "El vídeo se está preparando. Intenta de nuevo en un momento.")
                         } else {
-                            applyQuality(it.copy(loading = false, videoUrl = url, qualities = result.playback.qualities))
+                            applyQuality(it.copy(loading = false, videoUrl = url, qualities = result.playback.qualities, ambilightUrl = result.playback.ambilightUrl))
                         }
                     }
                     PlaybackResult.Revoked -> it.copy(loading = false, revoked = true)

@@ -31,6 +31,7 @@ import androidx.compose.runtime.movableContentOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -49,6 +50,13 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
+import android.os.PowerManager
+import android.provider.Settings
+import com.tint.app.ambilight.AmbilightFrame
+import androidx.compose.material3.TextButton
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.font.FontWeight
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
 import com.tint.app.AppContainer
@@ -118,6 +126,23 @@ fun RoomScreen(room: JoinedRoom, container: AppContainer, onLeave: () -> Unit) {
     var positionMs by remember { mutableLongStateOf(0L) }
     var durationMs by remember { mutableLongStateOf(0L) }
     FullscreenEffect(fullscreen) { fullscreen = false }
+    // Ambilight (AND-23): la paleta se descarga una vez por vídeo (la clave ignora la firma de la URL).
+    var glowFrames by remember { mutableStateOf(emptyList<AmbilightFrame>()) }
+    val ambilightKey = ui.ambilightUrl?.substringBefore('?')
+    LaunchedEffect(ambilightKey) {
+        glowFrames = ui.ambilightUrl?.let { container.ambilight.load(it) }.orEmpty()
+    }
+    val batterySaver = (context.getSystemService(Context.POWER_SERVICE) as PowerManager).isPowerSaveMode
+    var glowOn by remember { mutableStateOf(container.ambilightPrefs.isOn(batterySaver)) }
+    val animationsOn = remember { Settings.Global.getFloat(context.contentResolver, Settings.Global.ANIMATOR_DURATION_SCALE, 1f) != 0f }
+    // El video vive en un `movableContentOf`: se lee desde un estado para que vea siempre la paleta vigente.
+    val glow by rememberUpdatedState(
+        GlowControl(glowFrames, glowOn, animationsOn) {
+            glowOn = !glowOn
+            container.ambilightPrefs.set(glowOn)
+        },
+    )
+    val haloModifier = Modifier.ambilightHalo(glow) { player.currentPosition }
     val widthDp = LocalConfiguration.current.screenWidthDp
     NetworkHintsEffect(widthDp) { controller.setNetwork(it) }
     LaunchedEffect(audioMuted, player) { player.volume = if (audioMuted) 0f else 1f }
@@ -225,6 +250,8 @@ fun RoomScreen(room: JoinedRoom, container: AppContainer, onLeave: () -> Unit) {
                 audioMuted = { audioMuted },
                 onToggleAudio = { audioMuted = !audioMuted },
                 progress = { if (durationMs > 0) positionMs.toFloat() / durationMs else 0f },
+                positionMs = { player.currentPosition },
+                glow = { glow },
             )
         }
     }
@@ -260,6 +287,7 @@ fun RoomScreen(room: JoinedRoom, container: AppContainer, onLeave: () -> Unit) {
             )
             else -> RoomScaffold(
                 layout = layout,
+                videoHalo = haloModifier,
                 topBar = { overlay -> RoomTopBar(title, "Entraste como ${room.nick}", onLeave, onInvite, overlay) },
                 video = video,
                 status = {
@@ -304,6 +332,8 @@ private fun WatchVideo(
     audioMuted: () -> Boolean,
     onToggleAudio: () -> Unit,
     progress: () -> Float,
+    positionMs: () -> Long,
+    glow: () -> GlowControl,
 ) {
     val ui by controller.ui.collectAsState()
     val socialState by social.state.collectAsState()
@@ -335,6 +365,11 @@ private fun WatchVideo(
                 horizontalArrangement = Arrangement.End,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
+                if (glow().frames.isNotEmpty()) {
+                    TextButton(onClick = glow().onToggle, modifier = Modifier.semantics { contentDescription = if (glow().on) "Apagar el brillo Ambilight" else "Encender el brillo Ambilight" }) {
+                        Text("Brillo", color = if (glow().on) TintAccentSoft else Color.White.copy(alpha = 0.6f), fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                    }
+                }
                 QualityMenu(ui.qualities, ui.currentQuality, ui.autoQuality, ui.qualityPref, ui.metered, controller::setQuality)
                 IconButton(onClick = onToggleAudio) {
                     Icon(if (audioMuted()) TintIcons.VolumeOff else TintIcons.Volume, if (audioMuted()) "Activar el sonido" else "Silenciar solo para mí", tint = Color.White)

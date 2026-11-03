@@ -16,6 +16,8 @@ data class RoomPlayback(
     val status: String?,
     /** Versiones del vídeo; vacío con un servidor viejo (entonces solo sirve `url`). */
     val qualities: List<PlaybackQuality> = emptyList(),
+    /** Paleta del Ambilight (`{id}/ambilight.json` firmada); solo cuando el vídeo está `ready`. */
+    val ambilightUrl: String? = null,
 )
 
 sealed interface PlaybackResult {
@@ -39,6 +41,7 @@ private class PlaybackDto(
     val expiresAt: String? = null,
     val status: String? = null,
     val qualities: List<QualityDto> = emptyList(),
+    val ambilightUrl: String? = null,
 )
 
 @Serializable
@@ -57,7 +60,7 @@ private fun QualityDto.toQuality(): PlaybackQuality? {
 class PlaybackRepository(private val api: ApiClient, private val tokens: TokenStore) : PlaybackSource {
     override suspend fun get(roomId: String): PlaybackResult = try {
         val dto = api.get<PlaybackDto>("/rooms/${URLEncoder.encode(roomId, "UTF-8")}/playback", ApiAuth.GUEST)
-        PlaybackResult.Loaded(RoomPlayback(dto.mediaId, dto.url, dto.expiresAt, dto.status, dto.qualities.mapNotNull { it.toQuality() }))
+        PlaybackResult.Loaded(RoomPlayback(dto.mediaId, dto.url, dto.expiresAt, dto.status, dto.qualities.mapNotNull { it.toQuality() }, dto.ambilightUrl))
     } catch (e: CancellationException) {
         throw e
     } catch (e: ApiError) {

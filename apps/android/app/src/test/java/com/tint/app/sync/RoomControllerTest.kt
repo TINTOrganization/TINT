@@ -264,4 +264,17 @@ class RoomControllerTest {
         assertEquals("360p", controller.ui.value.currentQuality?.id)
         assertEquals("720p", controller.ui.value.autoQuality?.id)
     }
+
+    @Test
+    fun `guarda la url de la paleta del ambilight y la limpia al cambiar de video`() {
+        playback.results += PlaybackResult.Loaded(RoomPlayback("m1", "https://v/m1.mp4", null, "ready", ambilightUrl = "https://a/m1.json"))
+        session.flow.value = withMedia("m1")
+        assertEquals("https://a/m1.json", controller.ui.value.ambilightUrl)
+
+        playback.gate = CompletableDeferred()
+        playback.results += loaded("m2")
+        session.flow.value = withMedia("m2", version = 2)
+
+        assertNull(controller.ui.value.ambilightUrl)
+    }
 }

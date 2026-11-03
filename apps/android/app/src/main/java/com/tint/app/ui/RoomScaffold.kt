@@ -36,6 +36,8 @@ fun RoomScaffold(
     chat: @Composable () -> Unit,
     cards: @Composable (horizontal: Boolean) -> Unit,
     modifier: Modifier = Modifier,
+    /** Halo del Ambilight alrededor del video; solo se ve donde el video no llega al borde de la pantalla. */
+    videoHalo: Modifier = Modifier,
 ) {
     when (layout) {
         RoomLayout.PHONE_PORTRAIT -> Column(modifier.fillMaxSize()) {
@@ -58,7 +60,7 @@ fun RoomScaffold(
 
         RoomLayout.TABLET_PORTRAIT -> Column(modifier.fillMaxSize()) {
             topBar(false)
-            VideoBox(Modifier.fillMaxWidth().padding(horizontal = 20.dp), rounded = true, video = video)
+            VideoBox(Modifier.fillMaxWidth().padding(horizontal = 20.dp), rounded = true, video = video, halo = videoHalo)
             Box(Modifier.padding(horizontal = 24.dp, vertical = 8.dp)) { status() }
             Box(Modifier.padding(horizontal = 24.dp)) { reactions() }
             Row(Modifier.weight(1f).fillMaxWidth().padding(start = 20.dp, end = 20.dp, top = 10.dp, bottom = 20.dp), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
@@ -71,7 +73,7 @@ fun RoomScaffold(
             topBar(false)
             Row(Modifier.weight(1f).fillMaxWidth().padding(start = 24.dp, end = 24.dp, top = 8.dp, bottom = 20.dp), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
                 Column(Modifier.weight(1.6f).fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    VideoBox(Modifier.fillMaxWidth(), rounded = true, video = video)
+                    VideoBox(Modifier.fillMaxWidth(), rounded = true, video = video, halo = videoHalo)
                     status()
                     reactions()
                     Box(Modifier.weight(1f).fillMaxWidth()) { cards(true) }
@@ -87,9 +89,9 @@ private val RAIL_TABS = listOf(RoomTab.CHAT, RoomTab.RANKING, RoomTab.POLL)
 
 /** El recuadro 16:9 del video, con algo encima si hace falta (la cabecera en el móvil horizontal). */
 @Composable
-private fun VideoBox(modifier: Modifier, rounded: Boolean, video: @Composable () -> Unit, overlay: @Composable () -> Unit = {}) {
+private fun VideoBox(modifier: Modifier, rounded: Boolean, video: @Composable () -> Unit, halo: Modifier = Modifier, overlay: @Composable () -> Unit = {}) {
     Box(
-        modifier.aspectRatio(16f / 9f).then(if (rounded) Modifier.clip(RoundedCornerShape(16.dp)) else Modifier).background(Color.Black),
+        modifier.aspectRatio(16f / 9f).then(halo).then(if (rounded) Modifier.clip(RoundedCornerShape(16.dp)) else Modifier).background(Color.Black),
     ) {
         video()
         overlay()

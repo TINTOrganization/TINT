@@ -216,9 +216,9 @@ As a mobile viewer, I want to share the room's invitation from inside the room, 
 As a mobile viewer, I want an optional colored glow around the video, so that the room feels like the web version.
 
 **Acceptance Criteria:**
-- [ ] AC1. Given the glow is on, when the video plays, then the edges take the palette precomputed by the media worker.
-- [ ] AC2. Given battery saver is on, when the room opens, then the glow starts off.
-- [ ] AC3. Given the user toggles it, when the screen is reopened, then the choice is remembered. *(P3: the web has an open bug about Ambilight, issue #1.)*
+- [x] AC1. Given the glow is on, when the video plays, then the edges take the palette precomputed by the media worker. *(Halo alrededor del recuadro con `ambilightUrl`; solo se ve donde el video no llega al borde de la pantalla, así que no hay halo en el teléfono horizontal ni en pantalla completa.)*
+- [x] AC2. Given battery saver is on, when the room opens, then the glow starts off. *(Cubierto con pruebas unitarias; no se probó en el aparato.)*
+- [x] AC3. Given the user toggles it, when the screen is reopened, then the choice is remembered. *(P3: the web has an open bug about Ambilight, issue #1.)*
 
 ## 8. Épica D — Transmisión en vivo
 

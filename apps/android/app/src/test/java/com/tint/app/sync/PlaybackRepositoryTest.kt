@@ -47,7 +47,7 @@ class PlaybackRepositoryTest {
 
         assertEquals(
             PlaybackResult.Loaded(
-                RoomPlayback("m1", "https://minio/x.mp4", "2026-10-31T13:00:00Z", "ready", listOf(PlaybackQuality("source", "Original", "https://q"))),
+                RoomPlayback("m1", "https://minio/x.mp4", "2026-10-31T13:00:00Z", "ready", listOf(PlaybackQuality("source", "Original", "https://q")), "https://a"),
             ),
             result,
         )
