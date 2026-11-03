@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "rtp/packet.hpp"
+#include "sfu/host_remb.hpp"
 #include "sfu/layers.hpp"
 #include "sfu/rtp_rewriter.hpp"
 
@@ -82,6 +83,7 @@ struct RoomConfig {
   int max_viewers = 50;
   std::size_t nack_capacity = 512;
   std::uint32_t server_ssrc = 1;  // SSRC del SFU como emisor de RTCP
+  HostRembConfig host_remb{};     // REMB hacia el host (§7.1)
 };
 
 // Reenvío de una sala (HU-LIVE-02, 04): el host sube una vez y cada viewer recibe su capa.
@@ -114,7 +116,8 @@ class Room {
   void on_viewer_rtcp(const std::string& viewer_id, rtp::ByteView packet, std::int64_t now_ms);
   // Su DataChannel abrió (terminó su DTLS): el próximo tick pide su keyframe sin esperar al primer RTCP.
   void on_viewer_ready(const std::string& viewer_id);
-  void tick(std::int64_t now_ms);  // evalúa capas de todos los viewers
+  // Evalúa capas de todos los viewers y envía el REMB al host (≈1 s y al cambiar sus SSRC).
+  void tick(std::int64_t now_ms);
 
   void broadcast_event(const std::string& json);
   // Avisa (p. ej. stream_state ended) y cierra a todos; la sala deja de aceptar viewers.
@@ -136,6 +139,7 @@ class Room {
   std::shared_ptr<const ViewerList> viewers() const { return viewers_.load(std::memory_order_acquire); }
   void request_keyframe(int layer, std::int64_t now_ms);
   void apply_layer(Viewer& v, int layer, std::int64_t now_ms);
+  void send_host_remb(std::int64_t now_ms);
 
   std::string id_;
   RoomConfig config_;
@@ -164,6 +168,11 @@ class Room {
   std::mutex stats_mu_;
   std::array<std::uint64_t, kLayers> stats_bytes_{};
   std::optional<std::int64_t> stats_ms_;
+
+  // REMB al host: plano de control (tick), fuera del camino caliente.
+  std::mutex remb_mu_;
+  HostRembPacer remb_pacer_;
+  std::uint64_t remb_generation_ = 0;
 };
 
 }  // namespace stream::sfu

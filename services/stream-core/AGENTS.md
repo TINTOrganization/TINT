@@ -51,10 +51,11 @@ La tabla completa de rutas y respuestas está en [dominio-transmision §3](../..
 | :--- | :--- | :--- |
 | `src/http/request_decision` | Tabla de decisión de WHIP/WHEP. | ✅ |
 | `src/http/handler` | Respuestas: `201` + `Location` + `Link rel="ice-server"`, CORS y rutas internas. | ✅ (con fakes) |
-| `src/sdp/offer_inspect`, `src/sdp/munge` | Lectura de la oferta y correcciones de la respuesta (rid `recv`, IP pública, Opus estéreo, start-bitrate). | ✅ |
+| `src/sdp/offer_inspect`, `src/sdp/munge` | Lectura de la oferta y correcciones de la respuesta (rid `recv`, IP pública, Opus estéreo, start-bitrate, `goog-remb`). | ✅ |
 | `src/rtp/{packet,vp8,rtcp}` | Cabeceras RTP y extensiones, descriptor VP8 y RTCP (RR/SR/NACK/PLI/FIR/REMB). | ✅ |
 | `src/sfu/stream_state` | Ciclo de vida con reloj inyectado. | ✅ |
 | `src/sfu/layers` | Demux por rid, selector de capas con histéresis, `PliThrottle` y `NackBuffer`. | ✅ |
+| `src/sfu/host_remb` | Objetivo y ritmo del REMB hacia el host. | ✅ |
 | `src/sfu/rtp_rewriter` | Continuidad hacia el viewer y épocas para NACK. | ✅ |
 | `src/sfu/room` | Reenvío de una sala: lista de viewers copy-on-write y cupo. | ✅ |
 | `src/service/stream_service` | Orquestación: sesiones, efectos del ciclo de vida, `ROOM_CLOSED`/`REVOKED`. | ✅ (puertos inyectados) |
@@ -126,5 +127,5 @@ make e2e-stream
 - **S1 (simulcast) pasó en Chrome** con `make e2e-stream`. Siguen pendientes en navegador real: S1 en Firefox, S3 Docker/LAN y S5 audio del PC. Ver [dominio-transmision §9](../../docs/dominio-transmision.md#9-fase-0-spikes). Hasta que pasen, ADR 0018 sigue como *Propuesta*.
 - **Carga de 50 viewers (S2): pasó** (TTFF p50 ~0.17 s, p95 ~1.2 s, 0 fallos, 409 al 51, hilo más cargado 4.7 %; [§7.1](../../docs/dominio-transmision.md#71-medido-2026-11-01)). Un viewer nuevo queda listo cuando **abre su DataChannel o llega su primer RTCP**, lo que ocurra antes. Su keyframe lo pide el siguiente `tick`, que agrupa las entradas simultáneas. No se pide al entrar ni al abrir su pista: ese keyframe llega antes de sus claves SRTP y se pierde. Con Chrome, el primer RTCP tarda ~2.5 s. `Room::tick` repite el pedido (limitado) mientras un viewer listo no reciba su capa. El p95 sigue acotado por la ventana de 1 s de `PliThrottle` cuando entran muchos viewers a la vez.
 - **E2E en navegador** (`make e2e-stream`, Chromium real, 2026-11-02). Ruta libre: TTFF p95 0.99 s y glass-to-glass p95 142 ms. En `relay`: TTFF p95 0.86 s y glass-to-glass p95 146 ms. La gracia termina en `grace_expired` ([§7.1](../../docs/dominio-transmision.md#71-medido-2026-11-01)).
-- **Capas:** el REMB de Chrome no pasa de ~1.5 veces lo que recibe, así que **no sirve para subir**. El selector sube tras 5 s sin pérdida ni caída del REMB y baja por pérdida o cuando el REMB cae. Al host no le llega ninguna señal de ancho de banda (sin transport-cc ni REMB): Chrome envía ~1 Mbps de padding en `l`.
+- **Capas:** el REMB de Chrome no pasa de ~1.5 veces lo que recibe, así que **no sirve para subir**. El selector sube tras 5 s sin pérdida ni caída del REMB y baja por pérdida o cuando el REMB cae. Al host, el SFU le envía un **REMB fijo de 4.26 Mbps** ((2.5 + 0.8 + 0.25 Mbps) × 1.2) con los SSRC de sus capas. Se envía cada 1 s y al cambiar los SSRC, desde `Room::tick`, y la respuesta WHIP anuncia `goog-remb`. No depende de los viewers (HU-LIVE-02 AC2). Subió el `targetBitrate` de Chrome de 2500 a 3550 kbps, **pero no eliminó el padding** (~1.1–1.4 Mbps en `l` con contenido sintético, [§7.1](../../docs/dominio-transmision.md#71-medido-2026-11-01)).
 - **Imagen de runtime: ~148 MB** (Debian slim + libssl/hiredis/libsrtp2 + libdatachannel sin símbolos). La etapa `dev` conserva los símbolos para depurar.

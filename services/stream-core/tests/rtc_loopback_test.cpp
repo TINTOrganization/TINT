@@ -55,6 +55,7 @@ struct Shared {
   std::atomic<int> scene_messages{0};
   std::atomic<int> closed{0};
   std::atomic<int> plis{0};
+  std::atomic<std::uint64_t> remb_bps{0};
 };
 
 template <class Pred>
@@ -210,15 +211,21 @@ TEST_F(RtcLoopback, HostVideoReachesSfuCallback) {
   dc->send(std::string(R"({"type":"scene","name":"brb"})"));
   EXPECT_TRUE(eventually([&] { return scene_messages.load() == 1; }));
 
-  // PLI del SFU hacia el host.
+  // PLI y REMB del SFU hacia el host (§7.1: el REMB va negociado con goog-remb en la respuesta).
+  EXPECT_NE((*peer)->answer_sdp().find(" goog-remb"), std::string::npos);
+  auto& remb_bps = st->remb_bps;
   track->onMessage([st](rtc::message_variant m) {
     if (auto* b = std::get_if<rtc::binary>(&m)) {
       auto info = rtp::parse_rtcp(rtp::ByteView(reinterpret_cast<const std::uint8_t*>(b->data()), b->size()));
       if (info && !info->keyframe_requests.empty()) ++st->plis;
+      if (info && info->remb) st->remb_bps.store(info->remb->bitrate_bps);
     }
   });
   (*peer)->send_video_rtcp(rtp::build_pli(1, 0x10));
   EXPECT_TRUE(eventually([&] { return plis.load() > 0; }));
+  const std::vector<std::uint32_t> host_ssrcs{0x10};
+  (*peer)->send_video_rtcp(rtp::build_remb(1, 4'260'000, host_ssrcs));
+  EXPECT_TRUE(eventually([&] { return remb_bps.load() == 4'260'000u; }));
 
   client.close();
   EXPECT_TRUE(eventually([&] { return closed.load() == 1; }, 15s))

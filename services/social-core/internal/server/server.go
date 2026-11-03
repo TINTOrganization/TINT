@@ -61,6 +61,10 @@ func Run(getenv func(string) string) error {
 	if deps.analytics != nil {
 		go deps.analytics.Run(context.Background())
 	}
+	if deps.chatMeta != nil {
+		go deps.chatMeta.recorder.Run(context.Background())
+		go deps.chatMeta.writer.Run(context.Background())
+	}
 	slog.Info("social-core escuchando", "addr", addr)
 	return http.ListenAndServe(addr, NewRouterWithDeps(deps))
 }
@@ -114,6 +118,8 @@ func DefaultDeps(getenv func(string) string) *Deps {
 			_ = rc.RecordPoll(ctx, roomID)
 		}
 		d.useAnalytics(analytics.New(st.Client(), analyticsBuffer))
+		// Los metadatos del chat necesitan la cola en Redis (ADR 0025).
+		d.useChatMeta(getenv, st.Client())
 	}
 	return d
 }

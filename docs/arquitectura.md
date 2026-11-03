@@ -311,7 +311,7 @@ Son los únicos puntos en los que un PR puede necesitar coordinar dos dominios (
 | `room:{id}:stream` `STREAM_STARTED`/`STREAM_ENDED` + `room:{id}:stream:started_at` | stream-core → social-core | Trivia por minuto del stream ([formatos](dominio-transmision.md#61-formatos-estándar)) |
 | `room:{id}:kind` (`live`, TTL 24 h) | identity-api → voice-core, social-core | Escenario de voz (`4009`) y trivia por minuto del stream |
 | `TURN_SECRET` | voice-core ↔ coturn | Credenciales TURN efímeras (REST API de TURN), `.env.example` raíz |
-| `MONGO_URI` + colección `chat_messages` (índice `{room_id, occurred_at}`) | social-core ↔ mongodb | Historial de chat durable (SOC-02/SOC-07/DAT-02); `.env.example` raíz |
+| `MONGO_URI` + colección `social.chat_message_meta` (índice `{room_id, received_at}` y TTL) | social-core ↔ mongodb | Metadatos del chat sin texto, con escritura diferida por la cola `chat:meta:outbox` (SOC-07/DAT-02, [ADR 0025](adr/0025-metadatos-del-chat-en-mongodb.md)); `.env.example` raíz |
 | Puertos locales | infra ↔ web | social-core 8082, sync-core 8083, analytics 8084, voice-core 8085, stream-core 8086 (+ UDP `STREAM_UDP_PORT`), coturn 3478, Firebase Auth Emulator 9099 (solo `127.0.0.1`, desarrollo) (`docker-compose.yml`, `apps/web/.env.example`) |
 | Observabilidad y salud (`/healthz` con `status`/`service`; logs JSON a stdout con `LOG_LEVEL` configurable) | Todos los servicios | [ADR 0021](adr/0021-observabilidad-salud-y-logs.md) · [§8.2](#82-observabilidad-salud-y-logs) |
 
@@ -326,7 +326,8 @@ Son los únicos puntos en los que un PR puede necesitar coordinar dos dominios (
 | Redis | social-core | `room:{id}:chat:history`, `room:{id}:chat:settings`/`:muted`/`:last:{sub}` (moderación), `room:{id}:poll*` (encuestas), `room:{id}:recap:*` (métricas del recap y ancla de reproducción), `room:{id}:trivia:*` (trivias y rankings), Pub/Sub `room:{id}:social` (chat, reacciones, láser, `poll_state`, `chat_settings`, `trivia_question` y `trivia_result` entre réplicas) |
 | Redis Stream | identity-api → media-worker | `media:uploads` (grupo `media-workers`) |
 | Redis Stream | identity-api, social-core, sync-core, media-worker → analytics | `analytics:events` (grupo `analytics-workers`) |
-| MongoDB | social-core | `chat_messages`: historial de chat durable de las salas (SOC-02, SOC-07, DAT-02) |
+| MongoDB | social-core | `social.chat_message_meta`: metadatos de cada intento de envío del chat, sin texto (SOC-07, DAT-02, [ADR 0025](adr/0025-metadatos-del-chat-en-mongodb.md)). El texto sigue solo en Redis (`room:{id}:chat:history`, 12 h) |
+| Redis Stream | social-core | `chat:meta:outbox` (grupo `chat-meta-writer`): metadatos del chat pendientes de escribir en MongoDB |
 | MinIO | web (PUT/GET firmados) · media-worker | Bucket `tint-media`: `incoming/{videoId}/original.*` (staging del navegador, caduca a los 2 días), `{videoId}/source.mp4`, `{videoId}/720p.mp4`, `{videoId}/360p.mp4` y `{videoId}/ambilight.json` (publicados por el worker) |
 
 <a id="vista-de-despliegue"></a>
@@ -406,9 +407,10 @@ flowchart TB
 | `tint-minio-init` | Imagen `pgsty/mc` fijada por digest SHA-256, se ejecuta una vez | — | — | `MINIO_ROOT_USER`, `MINIO_ROOT_PASSWORD`, `MINIO_BUCKET` |
 | `tint-media-worker` | `build: ./services/media-worker` (`python:3.11-slim` + `ffmpeg`, usuario `worker`, `python -m media_worker`) | — | — | `DATABASE_URL`, `REDIS_URL`, `S3_ENDPOINT_URL`, `S3_ACCESS_KEY`, `S3_SECRET_KEY`, `MINIO_BUCKET`, `MEDIA_WORKER_CONSUMER` |
 | `tint-analytics` | `build: ./services/analytics` (`python:3.11-slim`, usuario `worker`, `python -m analytics`) | `ANALYTICS_PORT` (8084) → 8084 | — | `DATABASE_URL`, `REDIS_URL`, `JWT_SECRET`, `JWT_ISSUER`, `JWT_AUDIENCE`, `ANALYTICS_PORT`, `ANALYTICS_ALLOWED_ORIGINS`, `ANALYTICS_CONSUMER` |
-| `tint-social-core` | `build: ./services/social-core` (multi-stage `golang:1.22-alpine` → `distroless/static-debian12:nonroot`) | 8082 → 8082 | — | `SOCIAL_CORE_ADDR`, `REDIS_URL`, `JWT_*`, `FIREBASE_PROJECT_ID`, `ALLOWED_ORIGINS` (de `SOCIAL_ALLOWED_ORIGINS`), `SOCIAL_REACTION_LIMIT`, `SOCIAL_REACTION_IP_LIMIT`, `SOCIAL_REACTION_WINDOW_MS` |
+| `tint-social-core` | `build: ./services/social-core` (multi-stage `golang:1.22-alpine` → `distroless/static-debian12:nonroot`) | 8082 → 8082 | — | `SOCIAL_CORE_ADDR`, `REDIS_URL`, `JWT_*`, `FIREBASE_PROJECT_ID`, `ALLOWED_ORIGINS` (de `SOCIAL_ALLOWED_ORIGINS`), `SOCIAL_REACTION_LIMIT`, `SOCIAL_REACTION_IP_LIMIT`, `SOCIAL_REACTION_WINDOW_MS`, `MONGO_URI` (usuario de aplicación), `CHAT_META_PEPPER`, `CHAT_META_RETENTION_DAYS`. No depende de `mongodb` para arrancar |
 | `tint-voice-core` | `build: ./services/voice-core` (multi-stage `debian:trixie-slim` dev → build → runtime, usuario `voicecore`) | 8085 → 8085 | — | `VOICE_CORE_ADDR`, `REDIS_URL`, `JWT_*`, `ALLOWED_ORIGINS` (de `VOICE_ALLOWED_ORIGINS`), `VOICE_MAX_MEMBERS`, `STUN_URLS`, `TURN_URLS`, `TURN_SECRET`, `TURN_TTL_SECONDS` |
 | `tint-mongodb` | Imagen `mongo:8.0` (`restart: unless-stopped`) | 27017 → 27017 | `mongo-data:/data/db` | `MONGO_INITDB_ROOT_USERNAME`, `MONGO_INITDB_ROOT_PASSWORD`, `MONGO_INITDB_DATABASE` |
+| `tint-mongo-init` | Imagen `mongo:8.0`, se ejecuta una vez tras `mongodb` sano | — | — | `MONGO_ROOT_USER`, `MONGO_ROOT_PASSWORD`, `MONGO_APP_USER`, `MONGO_APP_PASSWORD`. Crea o actualiza (idempotente) el usuario de aplicación de social-core: `readWrite` y el rol `chat_meta_schema` (solo `collMod`) sobre la base `social` ([ADR 0025](adr/0025-metadatos-del-chat-en-mongodb.md)) |
 | `tint-coturn` | Imagen `coturn/coturn:4.6.3`, `network_mode: host` (en Linux el relay debe anunciar direcciones alcanzables; en Docker Desktop no alcanza clientes externos fuera de localhost; limitación de portabilidad documentada) | 3478 (UDP/TCP) · relay 49160–49200 | — | `TURN_SECRET` (`--static-auth-secret`) |
 | `tint-firebase-auth-emulator` | `build: ./firebase-auth-emulator` (`node:22-alpine` + `firebase-tools@15.34.0`, usuario `node`). **Solo desarrollo** ([ADR 0024](adr/0024-login-local-con-firebase-auth-emulator.md)): el override de producción no lo arranca | `127.0.0.1:9099` → 9099 | — | `FIREBASE_PROJECT_ID` (`demo-*`) |
 | `tint-sync-core` | `build: ./services/sync-core` (multi-stage `golang:1.22-alpine` → `distroless/static-debian12:nonroot`) | 8083 → 8080 | — | `SYNC_CORE_ADDR`, `REDIS_URL`, `JWT_*`, `ALLOWED_ORIGINS` (de `SYNC_ALLOWED_ORIGINS`) |
@@ -462,8 +464,8 @@ flowchart LR
 ### 7.4 Gestión de secretos y variables de entorno (OPS-05, ADR 0022)
 
 Ningún secreto del sistema se versiona en Git ni se hornea en capas de las imágenes Docker:
-- **Almacenamiento y paso**: los secretos (`POSTGRES_PASSWORD`, `MINIO_ROOT_PASSWORD`, `MONGO_ROOT_PASSWORD`, `MONGO_URI`, `JWT_SECRET`, `TURN_SECRET`, `INTERNAL_API_SECRET`) se configuran en `.env` (ignorado en `.gitignore` y excluido en `.dockerignore`). Compose los inyecta al crear o arrancar cada contenedor.
-- **Fail-closed en arranque**: el servicio `tint-env-check` comprueba que ninguna variable secreta obligatoria esté vacía. Si falta alguna, el stack no arranca.
+- **Almacenamiento y paso**: los secretos (`POSTGRES_PASSWORD`, `MINIO_ROOT_PASSWORD`, `MONGO_ROOT_PASSWORD`, `MONGO_URI`, `JWT_SECRET`, `TURN_SECRET`, `INTERNAL_API_SECRET`, y desde ADR 0025 `MONGO_APP_PASSWORD` y `CHAT_META_PEPPER`) se configuran en `.env` (ignorado en `.gitignore` y excluido en `.dockerignore`). Compose los inyecta al crear o arrancar cada contenedor.
+- **Fail-closed en arranque**: el servicio `tint-env-check` comprueba que ninguna variable secreta obligatoria esté vacía. Si falta alguna, el stack no arranca. El mensaje indica ejecutar `make env-sync` (`scripts/env_sync.py`), que crea `.env` o le añade solo las variables que falten de `.env.example`, sin tocar las existentes; `make up` lo ejecuta antes de `docker compose up -d --build`. Es para desarrollo: en producción los secretos se definen a mano.
 - **Sin fallbacks inseguros**: `docker-compose.yml` interpola secretos como `${VAR}` sin alternativas `:-dev-...`.
 - **Actualización de secretos**: Docker Compose no relee el archivo `.env` del host tras una edición al hacer `docker restart`. La regla operativa para aplicar un secreto actualizado sin reconstruir imágenes es:
   ```bash
@@ -492,7 +494,7 @@ El requerimiento R10 y la historia OPS-06 (#91) establecen que el despliegue del
 | PostgreSQL | 5432 | |
 | Redis | 6379 | |
 | MinIO | 9000 (API) · 9001 (consola) | |
-| MongoDB | 27017 | `docker compose` (historial de chat durable; social-core) |
+| MongoDB | 27017 | `docker compose` (metadatos del chat; social-core) |
 
 El servicio `gateway` publica `80/443` como entrada única. Redirige HTTP a
 HTTPS, termina TLS con Caddy y mantiene el contrato público de rutas:

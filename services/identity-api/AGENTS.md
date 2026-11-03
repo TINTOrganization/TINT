@@ -8,7 +8,7 @@ Documentación de referencia: [README del servicio (cómo funciona por dentro)](
 ## Stack Técnico
 - Node.js 22 + TypeScript 5 (ESM) + Express 5. Validación con `zod`.
 - PostgreSQL con Drizzle ORM (`drizzle-kit` para migraciones).
-- Auth del Host: ID tokens de Firebase (RS256) verificados con `jwks-rsa` + `jsonwebtoken`.
+- Auth del Host: ID tokens de Firebase (RS256) verificados con `jwks-rsa` + `jsonwebtoken` (`src/modules/auth/firebaseToken.ts`). Solo en desarrollo, con `FIREBASE_AUTH_EMULATOR_HOST`, también los tokens sin firma (`alg: none`) del Firebase Auth Emulator ([ADR 0024](../../docs/adr/0024-login-local-con-firebase-auth-emulator.md)). Sin dependencias nuevas.
 - Tokens propios: `jsonwebtoken` HS256 con `JWT_SECRET`.
 - Redis (`ioredis`): revocación de tokens y aviso a sync-core.
 - MinIO/S3 (`@aws-sdk/client-s3` + `@aws-sdk/s3-request-presigner`): URLs GET y PUT pre-firmadas, calculadas en local, `HEAD` para confirmar subidas (y su tamaño real) y `DeleteObject` para descartar las que superan el límite.
@@ -109,11 +109,12 @@ Middlewares: `requireAuthHost`, `requireRoomOwner` (no filtra por estado de la s
 ## Reglas de Dominio
 1. **Contratos compartidos:** los claims de los tokens, la clave `token:revoked:{jti}` y el payload `REVOKED` son contratos con sync-core. Cualquier cambio se coordina y se documenta.
 2. **Falla cerrado:** si no se puede comprobar una revocación (BD o Redis caídos), responde 503; nunca aceptes el token por defecto.
-3. **Secretos:** `JWT_SECRET` debe coincidir con el de sync-core. Nunca lo subas al repo; usa `.env` local.
-4. **Migraciones:** todo cambio de `src/db/schema.ts` va acompañado de su migración generada con `npx drizzle-kit generate`, commiteada junto con `migrations/meta`.
-5. **Dependencias inyectables:** Redis (`setRedisClient`), el firmado (`setMediaSigner`), el bucket (`setMediaStore`: `stat`/`remove`) y los repos se reemplazan por dobles en las pruebas. Las pruebas no dependen de Postgres, Redis ni MinIO reales.
-6. **TDD:** prueba primero (supertest para rutas y mocks de repos). Cobertura mínima **85 %** (`vitest.config.ts`).
-7. **Privacidad:** `GET /guests` y `GET /bans` nunca devuelven `sub` (ni `device_id`); no registres tokens ni emails en los logs.
+3. **Tokens sin firma:** `alg: none` solo se acepta en modo Firebase Auth Emulator (`isAuthEmulatorEnabled`), y ese modo impide el arranque con `NODE_ENV=production` o un proyecto no `demo-*`. No añadas otro camino que acepte tokens sin verificar la firma.
+4. **Secretos:** `JWT_SECRET` debe coincidir con el de sync-core. Nunca lo subas al repo; usa `.env` local.
+5. **Migraciones:** todo cambio de `src/db/schema.ts` va acompañado de su migración generada con `npx drizzle-kit generate`, commiteada junto con `migrations/meta`.
+6. **Dependencias inyectables:** Redis (`setRedisClient`), el firmado (`setMediaSigner`), el bucket (`setMediaStore`: `stat`/`remove`) y los repos se reemplazan por dobles en las pruebas. Las pruebas no dependen de Postgres, Redis ni MinIO reales.
+7. **TDD:** prueba primero (supertest para rutas y mocks de repos). Cobertura mínima **85 %** (`vitest.config.ts`).
+8. **Privacidad:** `GET /guests` y `GET /bans` nunca devuelven `sub` (ni `device_id`); no registres tokens ni emails en los logs.
 
 ## Variables de Entorno
 | Variable | Por defecto | Descripción |
@@ -122,6 +123,8 @@ Middlewares: `requireAuthHost`, `requireRoomOwner` (no filtra por estado de la s
 | `DATABASE_URL` | `postgres://tint:tint@localhost:5432/tint` | PostgreSQL |
 | `REDIS_URL` | `redis://localhost:6379` | Revocación, `media:uploads` y `analytics:events` |
 | `FIREBASE_PROJECT_ID` | — (**obligatoria**) | `iss`/`aud` de los ID tokens |
+| `FIREBASE_AUTH_EMULATOR_HOST` | — (compose dev: `firebase-auth-emulator:9099`) | **Solo desarrollo.** Activa el modo emulador: acepta ID tokens `alg: none` (firma vacía) con `iss`/`aud`/`exp`/`sub` válidos. Falla cerrado: el proceso no arranca con `NODE_ENV=production` ni con un `FIREBASE_PROJECT_ID` sin prefijo `demo-` ([ADR 0024](../../docs/adr/0024-login-local-con-firebase-auth-emulator.md)) |
+| `NODE_ENV` | `development` (imagen: `production`; compose dev: `development`) | `production` prohíbe el modo emulador |
 | `JWT_SECRET` / `JWT_ISSUER` / `JWT_AUDIENCE` | `dev-secret-change-in-prod` / `tint-identity` / `tint:room` | Iguales que en sync-core |
 | `GUEST_TOKEN_TTL_HOURS` | `4` | Vida del guest token |
 | `INVITATION_DEFAULT_TTL_HOURS` | `24` | Vida de una invitación |

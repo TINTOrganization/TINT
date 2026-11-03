@@ -19,6 +19,9 @@ std::string rewrite_host_candidates(std::string_view sdp, std::string_view publi
 // x-google-start-bitrate en el fmtp de VP8: Chrome arranca alto y sube las capas antes (spike S1).
 std::string add_start_bitrate(std::string_view answer, int kbps);
 
+// a=rtcp-fb:<pt> goog-remb en VP8: el host acepta el REMB del SFU como límite de su estimación (§7.1).
+std::string add_goog_remb(std::string_view answer);
+
 // Opus estéreo a 128 kbps para el audio del PC (HU-LIVE-01b AC3).
 std::string opus_stereo(std::string_view sdp, int max_average_bitrate = 128000);
 

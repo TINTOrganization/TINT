@@ -224,11 +224,18 @@ func TestHeartbeatAndStaleDisconnect(t *testing.T) {
 	}
 }
 
+// El intervalo respeta el límite propio de SYNC_CHECK (5/s, ventana fija de
+// 1 s): con latidos más rápidos el hub descarta en silencio las respuestas
+// que lo exceden, no renuevan el último SYNC_CHECK y la conexión se cierra
+// por ErrStale aunque el cliente conteste a todo. Con 1 s/(5-1) = 250 ms
+// caben 4 respuestas por ventana, y el margen de 3 latidos (750 ms) no
+// depende del scheduler ni de -race.
 func TestHeartbeatAnsweredKeepsAlive(t *testing.T) {
-	s := newServer(t, 30*time.Millisecond)
+	interval := time.Second / (hub.MaxSyncChecksPerSecond - 1)
+	s := newServer(t, interval)
 	c := dial(t, s, "participant")
 	read(t, c)
-	for i := 0; i < 8; i++ { // 8 latidos > 3 de margen
+	for i := 0; i < 2*hub.MaxMissedChecks; i++ { // el doble del margen de latidos sin respuesta
 		hb := readType(t, c, syncevent.Heartbeat)
 		sendJSON(t, c, map[string]any{
 			"event_id": fmt.Sprintf("c%d", i), "type": "SYNC_CHECK", "room_id": room, "position_ms": 0,

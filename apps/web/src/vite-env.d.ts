@@ -14,6 +14,8 @@ interface ImportMetaEnv {
   readonly VITE_ANALYTICS_API_URL?: string;
   /** Origen de stream-core o del gateway (WHIP/WHEP en /api/v1/stream; p. ej. http://localhost:8086). */
   readonly VITE_STREAM_API_URL?: string;
+  /** Solo desarrollo (ADR 0024): origen del Firebase Auth Emulator, p. ej. http://localhost:9099. */
+  readonly VITE_FIREBASE_AUTH_EMULATOR_URL?: string;
 }
 
 interface ImportMeta {

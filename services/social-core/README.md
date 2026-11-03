@@ -182,6 +182,28 @@ sequenceDiagram
 - `occurred_at` del cliente nunca sirve para rechazar: si viene del futuro se recorta a `received_at` (`ClampOccurred`).
 - `chat_slow_mode` (0, 5, 10, 30 o 60 s) y `chat_mute` son solo para moderadores: escriben en Redis y emiten `chat_settings` a la sala y a las demás réplicas.
 
+### 3.2.1 Metadatos del chat en MongoDB (ADR 0025)
+
+Cada intento de envío aceptado, o rechazado por `MUTED` o `SLOW_MODE`, deja un documento de metadatos en MongoDB (`social.chat_message_meta`). **Nunca** se guardan el texto, el apodo, el `sub` en claro ni el `User-Agent` completo; el texto sigue solo en `room:{id}:chat:history`.
+
+1. Tras difundir el mensaje (o responder el rechazo), `recordChat` entrega un `chatmeta.Input` al `Recorder`, que solo encola en memoria (4096; si se llena, descarta y cuenta).
+2. La goroutine del `Recorder` lee el contexto de la sala en ese instante (`room:{id}:kind`, posición del vídeo con `recap.Store.Position`, minuto del directo con `room:{id}:stream:started_at` y el modo lento), calcula el documento (`chatmeta.Build`) y hace `XADD chat:meta:outbox MAXLEN ~ 100000`.
+3. El `Writer` de cada réplica (grupo `chat-meta-writer`) lee la cola en lotes de 100, hace `insertMany` desordenado y solo entonces `XACK` + `XDEL`. Un `_id` repetido cuenta como escrito. Si MongoDB falla, el lote queda pendiente y se reintenta con espera de 1 s a 30 s; los pendientes de una réplica caída se reclaman con `XAUTOCLAIM` pasado 1 min.
+4. Al arrancar, el `Writer` crea la colección, el validador (`$jsonSchema`, admite campos extra) y los índices `room_id_received_at` y `received_at_ttl` (retención `CHAT_META_RETENTION_DAYS`). Si MongoDB no responde, reintenta: el chat no espera.
+
+**El chat no depende de MongoDB:** con MongoDB caído los mensajes se entregan igual, los metadatos esperan en la cola y `/healthz` informa `chat_meta.status: degraded` con el tamaño de la cola. No se registran `RATE_LIMITED`, `INVALID_PAYLOAD` ni `TEXT_TOO_LONG` (ocurren antes del límite de 5/s).
+
+| Campo | Contenido |
+| :--- | :--- |
+| `_id`, `room_id` | `event_id` del mensaje (o uno nuevo si se rechazó) y sala |
+| `author` | `HMAC-SHA256(CHAT_META_PEPPER, room_id + ":" + sub)`: seudónimo distinto en cada sala |
+| `role`, `is_guest` | `host`, `cohost` o `participant`; si es un invitado |
+| `status`, `reject_reason` | `accepted` o `rejected` (`MUTED`, `SLOW_MODE`) |
+| `length`, `words`, `emojis`, `has_link`, `spoiler` | Calculados del texto, que se descarta |
+| `sent_at`, `received_at`, `latency_ms` | Hora del navegador (acotada), del servidor (referencia) y diferencia |
+| `room_kind`, `position_ms`, `stream_offset_ms`, `slow_mode_s` | Contexto de la sala |
+| `client` | `{platform, browser, os}` en familias amplias, del `User-Agent` del handshake |
+
 ### 3.3 Reacciones y heatmap
 
 ```mermaid
@@ -410,6 +432,7 @@ Todas las claves con TTL usan el periodo de gracia de la sala (`chat.HistoryTTL`
 | Clave | Tipo | TTL | Quién escribe | Contenido |
 | :--- | :--- | :--- | :--- | :--- |
 | `room:{id}:chat:history` | List | 12 h | `chat.RedisStore.Push` | Últimos 50 `chat_message` (más nuevo primero) |
+| `chat:meta:outbox` | Stream (`MAXLEN ~ 100000`, grupo `chat-meta-writer`) | — (se borra al escribir) | `chatmeta.Recorder` | Metadatos del chat pendientes de escribir en MongoDB (§3.2.1) |
 | `room:{id}:chat:settings` | Hash | 12 h | `moderation.SetSlowMode` | `slow_mode_s` |
 | `room:{id}:chat:muted` | Set | 12 h | `moderation.SetMuted` | `user_id` silenciados |
 | `room:{id}:chat:last:{sub}` | String | PX = modo lento | script `admit` | Último mensaje aceptado de ese `sub` |
@@ -460,7 +483,10 @@ Fuente: [`internal/server/server.go`](internal/server/server.go), [`docker-compo
 | `JWT_AUDIENCE` | `tint:room` | `aud` esperado en HS256. |
 | `FIREBASE_PROJECT_ID` | vacía | Proyecto de los ID tokens de Firebase; vacía = se rechazan. En docker compose, `tint-login` por defecto. |
 | `ALLOWED_ORIGINS` | `localhost:5173,127.0.0.1:5173` | Orígenes permitidos en el handshake. En docker compose se toma de `SOCIAL_ALLOWED_ORIGINS`. |
-| `REDIS_URL` | vacía (modo memoria, una réplica) | Historial, Pub/Sub, revocación, moderación, encuestas, recap, trivias y analítica. |
+| `REDIS_URL` | vacía (modo memoria, una réplica) | Historial, Pub/Sub, revocación, moderación, encuestas, recap, trivias, analítica y la cola de metadatos del chat. |
+| `MONGO_URI` | vacía (sin metadatos) | MongoDB de los metadatos del chat (§3.2.1). En docker compose, el usuario de aplicación `MONGO_APP_USER` sobre la base `social`. Requiere también `REDIS_URL` y `CHAT_META_PEPPER`. |
+| `CHAT_META_PEPPER` | vacía | Secreto de los seudónimos de `author`. Sin él no se guardan metadatos (nunca se seudonimiza con una clave vacía). |
+| `CHAT_META_RETENTION_DAYS` | `90` | Días que MongoDB conserva cada documento (índice TTL). |
 
 **Puerto:** `8082` (también en docker compose, `8082:8082`). Rutas: `/ws/social` y `/healthz`.
 
@@ -492,6 +518,7 @@ Las pruebas usan `miniredis` para los stores y timers inyectados para encuestas 
 
 ## 8. Observabilidad
 
+- **Salud:** `/healthz` responde siempre `200`. Con metadatos del chat activos añade `chat_meta: {status: ok|degraded, backlog}`; `degraded` si el último intento de escribir en MongoDB falló, y `backlog: -1` si no se pudo leer la cola.
 - **Métricas:** social-core no expone `/metrics`. El emisor de analítica cuenta los eventos descartados (`Dropped`) y los `XADD` fallidos (`Failed`), pero hoy esos contadores no se publican por HTTP.
 - **Logs:** el arranque (`social-core escuchando en …`) y cada `XADD` fallido (`analytics: XADD falló`).
 - **Eventos de analítica** (`analytics:events`, `source=social-core`, con `user_id` = `sub` y nunca `text` ni `nick`). Contrato en [`docs/contrato-eventos-analitica.md`](../../docs/contrato-eventos-analitica.md).

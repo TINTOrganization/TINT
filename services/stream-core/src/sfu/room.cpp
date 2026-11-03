@@ -33,7 +33,8 @@ Room::Room(std::string id, RoomConfig config)
     : id_(std::move(id)),
       config_(config),
       viewers_(std::make_shared<const ViewerList>()),
-      host_video_(std::shared_ptr<const HostVideo>()) {
+      host_video_(std::shared_ptr<const HostVideo>()),
+      remb_pacer_(config_.host_remb.interval_ms) {
   for (auto& n : nack_) n = std::make_unique<NackBuffer>(config_.nack_capacity);
 }
 
@@ -236,7 +237,25 @@ void Room::on_viewer_rtcp(const std::string& viewer_id, rtp::ByteView packet, st
   apply_layer(v, layer, now_ms);
 }
 
+void Room::send_host_remb(std::int64_t now_ms) {
+  auto host = host_video_.load();
+  if (!host || !host->sink) return;
+  const auto generation = video_generation_.load();
+  std::vector<std::uint32_t> ssrcs;
+  for (int l = 0; l < kLayers; ++l)
+    if (layer_seen_[l].load()) ssrcs.push_back(host_ssrc_[l].load());
+  const auto target = host_remb_target(config_.host_remb);
+  std::lock_guard lock(remb_mu_);
+  if (generation != remb_generation_) {  // host nuevo (reconexión): se le informa en cuanto se vean sus SSRC
+    remb_generation_ = generation;
+    remb_pacer_.reset();
+  }
+  if (remb_pacer_.due(now_ms, target, ssrcs))
+    host->sink->send_video_rtcp(rtp::build_remb(config_.server_ssrc, target, ssrcs));
+}
+
 void Room::tick(std::int64_t now_ms) {
+  send_host_remb(now_ms);
   const auto active = active_layers(now_ms);
   if (std::ranges::none_of(active, [](bool a) { return a; })) return;
   // La instantánea vive en una variable: el temporal de *viewers() moriría antes del bucle.

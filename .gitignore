@@ -22,3 +22,6 @@ skills-lock.json
 
 # Python (pruebas del gateway y scripts)
 __pycache__/
+
+# Respaldos de los almacenes (DAT-06): contienen datos personales
+backups/

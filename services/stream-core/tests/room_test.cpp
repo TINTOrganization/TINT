@@ -263,6 +263,50 @@ TEST_F(RoomTest, HostStatsReportBitrateActivityViewersAndFeedback) {
   EXPECT_EQ(next.plis, 1u) << "NACK y PLI son acumulados";
 }
 
+TEST_F(RoomTest, SendsRembToHostWithItsLayersOncePerSecondEvenWithoutViewers) {
+  // §7.1: sin transport-cc ni REMB, Chrome se quedaba en 300 kbps de estimación y rellenaba ~1 Mbps de
+  // padding en l. El SFU le informa un objetivo constante (HU-LIVE-02 AC2: no depende de la audiencia).
+  room.tick(0);
+  EXPECT_TRUE(host->rembs().empty()) << "sin SSRC aprendidos no se informa";
+  prime(0);
+  room.tick(0);
+  auto rembs = host->rembs();
+  ASSERT_EQ(rembs.size(), 1u);
+  EXPECT_EQ(rembs[0].bitrate_bps, 4'260'000u);
+  EXPECT_EQ(rembs[0].ssrcs, (std::vector<std::uint32_t>{kSsrcL, kSsrcM, kSsrcH}));
+  for (int l = 0; l < kLayers; ++l) room.on_host_video(host_video(l, 2, false), 900);
+  room.tick(250);
+  room.tick(500);
+  EXPECT_EQ(host->rembs().size(), 1u);
+  room.tick(1'000);
+  EXPECT_EQ(host->rembs().size(), 2u) << "≈1 s";
+  EXPECT_TRUE(host->plis().empty()) << "el REMB no es un pedido de keyframe";
+}
+
+TEST_F(RoomTest, RembFollowsTheHostWhenItReconnects) {
+  prime(0);
+  room.tick(0);
+  auto new_host = std::make_shared<FakeHostSink>();
+  room.set_host_video(new_host, kRidExt, kRids);
+  room.tick(250);
+  EXPECT_TRUE(new_host->rembs().empty()) << "todavía no se conocen sus SSRC";
+  RtpSpec s{.pt = 96,
+            .seq = 1,
+            .ts = 1,
+            .ssrc = 0x99,
+            .extensions = {{kRidExt, "l"}},
+            .payload = build_vp8_payload({.keyframe = true})};
+  room.on_host_video(build_rtp(s), 300);
+  room.tick(500);
+  auto rembs = new_host->rembs();
+  ASSERT_EQ(rembs.size(), 1u) << "enseguida, sin esperar el segundo";
+  EXPECT_EQ(rembs[0].ssrcs, (std::vector<std::uint32_t>{0x99}));
+  EXPECT_EQ(host->rembs().size(), 1u) << "el host anterior ya no recibe nada";
+  room.clear_host_video();
+  room.tick(2'000);
+  EXPECT_EQ(new_host->rembs().size(), 1u) << "sin host no se envía";
+}
+
 TEST_F(RoomTest, HostReplaceKeepsViewersAndContinuity) {
   auto v = make_viewer("v");
   room.add_viewer(v.viewer, 0);

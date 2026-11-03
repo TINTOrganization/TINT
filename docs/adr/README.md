@@ -32,6 +32,7 @@ Cada ADR de esta carpeta se escribió a partir de evidencia del repositorio (có
 | [0022](0022-secretos-por-variables-de-entorno.md) | Secretos exclusivamente por variables de entorno | Aceptada | 2026-11-02 | Infraestructura, CI/CD, todos |
 | [0023](0023-instrucciones-de-ejecucion-del-prototipo.md) | Instrucciones de ejecución del prototipo y guía de revisión (OPS-06) | Aceptada | 2026-11-02 | Infraestructura, CI/CD, README |
 | [0024](0024-login-local-con-firebase-auth-emulator.md) | Login local del host con el Firebase Auth Emulator | Aceptada | 2026-11-02 | Infraestructura, identity-api, web |
+| [0025](0025-metadatos-del-chat-en-mongodb.md) | Metadatos del chat en MongoDB, sin el texto (SOC-07, DAT-02) | Propuesta | 2026-11-02 | social-core, Infraestructura |
 
 ```mermaid
 flowchart LR
@@ -61,6 +62,7 @@ flowchart LR
     A17 --> A23["0023 instrucciones de ejecución del prototipo"]
     A23 --> A24["0024 login local con Firebase Auth Emulator"]
     A22 --> A24
+    A17 --> A25["0025 metadatos del chat en MongoDB"]
 ```
 
 ## Formato

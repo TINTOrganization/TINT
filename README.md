@@ -351,6 +351,8 @@ cp .env.example .env    # En Windows CMD: copy .env.example .env
 docker compose up -d --build
 ```
 
+**Atajo recomendado:** `make up` hace los pasos 2 y 3: crea o completa `.env` con lo que falte de `.env.example` (sin tocar lo que ya tienes) y reconstruye. Úsalo también después de cada `git pull`. Sin `make` (Windows CMD): `python scripts/env_sync.py` y el paso 3.
+
 ### 3. Verificación del sistema (AC1)
 Una vez finalizado el arranque (típicamente 2–4 minutos):
 
@@ -387,7 +389,7 @@ docker compose down -v && docker compose up -d
 ### 5. Solución de problemas comunes (AC3)
 | Error o síntoma | Causa probable | Solución inmediata |
 | :--- | :--- | :--- |
-| `Missing required variables in .env` | No se creó `.env` o una variable requerida quedó vacía. | Ejecutar `cp .env.example .env`. `env-check` valida los secretos antes de levantar el stack. |
+| `Missing required variables in .env` | No se creó `.env`, una variable requerida quedó vacía o un `git pull` trajo variables nuevas. | Ejecutar `make env-sync` (añade solo las que faltan) o `cp .env.example .env` si no hay `.env`. `env-check` valida los secretos antes de levantar el stack. |
 | `bind: address already in use` (`80`, `443`, `5432`, `6379`, `27017`) | Conflicto con un servicio local (Apache, Nginx, PostgreSQL, Redis o MongoDB nativos). | Detener el servicio en conflicto o cambiar puertos en `.env` (ej. `GATEWAY_HTTP_PORT=8080`, `GATEWAY_HTTPS_PORT=8443`). |
 | Advertencia de certificado SSL no seguro en `https://localhost` | Caddy genera certificados TLS autofirmados locales para desarrollo. | En el navegador, pulsar **Avanzado** → **Continuar a localhost (no seguro)**, o acceder directamente vía `http://localhost:5173`. |
 | Docker daemon no responde o falla por memoria | Docker Desktop está detenido o tiene asignado < 4 GB de RAM. | Iniciar Docker Desktop y en *Settings* → *Resources* asignar al menos 4 GB de memoria y 2 CPUs. |
@@ -395,6 +397,29 @@ docker compose down -v && docker compose up -d
 | Advertencia sobre `coturn` en Windows o macOS | `coturn` utiliza `network_mode: host` diseñado para Linux. | En Docker Desktop opera sobre la VM local (`localhost:3478`). La señalización WebSocket y la interfaz web funcionan sin cambios. |
 
 ---
+
+## 💾 Respaldo y restauración (DAT-06)
+
+Los datos viven en volúmenes con nombre (`postgres-data`, `mongo-data`, `redis-data` con AOF, `minio-data`) y sobreviven a `docker compose down`, a recrear los contenedores y a reconstruir las imágenes. Solo `docker compose down -v` los borra: el siguiente arranque empieza limpio.
+
+```bash
+make backup                                   # crea backups/<fecha-hora>
+make restore BACKUP=backups/20261102-180000   # restaura ese respaldo
+```
+
+Sin `make` (Windows CMD): `python scripts/data_backup.py backup` y `python scripts/data_backup.py restore <carpeta>`.
+
+| Almacén | Qué se guarda | Cómo se restaura |
+| :--- | :--- | :--- |
+| PostgreSQL | `pg_dump` de la base (identity-api y analytics) | `pg_restore --clean` |
+| MongoDB | `mongodump` (metadatos del chat) | `mongorestore --drop`; los usuarios los recrea `mongo-init` |
+| Redis | Instantánea RDB (estado de 12 h y colas pendientes) | Se carga y se reescribe el AOF |
+| MinIO | Copia del bucket (`mc mirror`) | `mc mirror --remove` hacia el bucket |
+
+- **Restaurar reemplaza los datos actuales.** Detiene los servicios que usan los almacenes y los reanuda al terminar.
+- Los respaldos contienen datos personales: `backups/` está en `.gitignore`. Guárdalos fuera de la máquina y cifrados.
+- Al restaurar en MinIO se pierde `Cache-Control` de los objetos; `Content-Type` se deduce de la extensión.
+- `make smoke-persistence` lo comprueba todo en un proyecto aislado, sin tocar tu stack: recrea los contenedores, respalda y restaura, y borra los volúmenes.
 
 ## 🌐 Entrada Única y Puertos Locales
 
