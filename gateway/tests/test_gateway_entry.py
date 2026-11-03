@@ -62,5 +62,18 @@ class RunInstructionsTest(unittest.TestCase):
         self.assertIn("https://localhost", line)
 
 
+class SystemE2ETest(unittest.TestCase):
+    def test_make_target_runs_the_browser_e2e_through_the_gateway(self):
+        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        self.assertRegex(makefile, r"(?m)^e2e-system:\n\tscripts/e2e/run\.sh$")
+        runner = ROOT / "scripts" / "e2e" / "run.sh"
+        self.assertTrue(runner.stat().st_mode & 0o111, "run.sh debe ser ejecutable")
+        script = (ROOT / "scripts" / "e2e" / "system-e2e.cjs").read_text(encoding="utf-8")
+        self.assertIn("https://localhost", script)
+        for mode in ("watch", "live"):
+            self.assertIn(mode, runner.read_text(encoding="utf-8"))
+            self.assertIn(f"node system-e2e.cjs {mode}", script)
+
+
 if __name__ == "__main__":
     unittest.main()
