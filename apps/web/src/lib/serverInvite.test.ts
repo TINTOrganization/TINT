@@ -6,7 +6,7 @@ describe('serverInvite - fetchRoomDetails', () => {
     vi.restoreAllMocks();
   });
 
-  it('retorna los detalles de la sala cuando la respuesta es 200', async () => {
+  it('retorna los detalles de la sala cuando la respuesta es 200 (AC1)', async () => {
     const inviteCode = 'invite-1';
     const mockFetch = vi.fn().mockResolvedValue({
       ok: true,
@@ -17,6 +17,8 @@ describe('serverInvite - fetchRoomDetails', () => {
           roomId: 'room-1',
           roomTitle: 'Película de Viernes',
           roomKind: 'watch',
+          hostName: 'Carlos Host',
+          scheduledStartTime: '2026-11-03T20:00:00.000Z',
         }),
     });
 
@@ -30,6 +32,8 @@ describe('serverInvite - fetchRoomDetails', () => {
       roomId: 'room-1',
       roomTitle: 'Película de Viernes',
       roomKind: 'watch',
+      hostName: 'Carlos Host',
+      scheduledStartTime: '2026-11-03T20:00:00.000Z',
     });
     expect(mockFetch).toHaveBeenCalledWith(
       expect.stringContaining(`/invitations/${inviteCode}`),
@@ -63,6 +67,8 @@ describe('serverInvite - fetchRoomDetails', () => {
       roomId: 'room-1',
       roomTitle: null,
       roomKind: 'watch',
+      hostName: null,
+      scheduledStartTime: null,
     });
   });
 

@@ -3,6 +3,8 @@ export interface RoomDetails {
   roomId: string;
   roomTitle: string | null;
   roomKind?: string;
+  hostName?: string | null;
+  scheduledStartTime?: string | null;
 }
 
 export interface FetchRoomDetailsOptions {
@@ -62,6 +64,8 @@ export async function fetchRoomDetails(
       roomId?: string;
       roomTitle?: string | null;
       roomKind?: string;
+      hostName?: string | null;
+      scheduledStartTime?: string | null;
     };
 
     return {
@@ -69,6 +73,8 @@ export async function fetchRoomDetails(
       roomId: data.roomId || '',
       roomTitle: data.roomTitle ?? null,
       roomKind: data.roomKind,
+      hostName: data.hostName ?? null,
+      scheduledStartTime: data.scheduledStartTime ?? null,
     };
   } catch {
     return null;

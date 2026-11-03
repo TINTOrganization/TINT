@@ -31,7 +31,12 @@ beforeEach(() => {
 
 describe('InviteLanding — salas live', () => {
   it('con roomKind live lleva a /live/:id', async () => {
-    mockedApi.mockResolvedValueOnce({ token: 'g', roomId: 'r1', nick: 'Ana', roomTitle: 'Directo', roomKind: 'live' });
+    mockedApi.mockImplementation((path: string) => {
+      if (path === '/invitations/claim') {
+        return Promise.resolve({ token: 'g', roomId: 'r1', nick: 'Ana', roomTitle: 'Directo', roomKind: 'live' });
+      }
+      return Promise.resolve({ code: 'ABC123', roomId: 'r1', roomTitle: 'Directo', roomKind: 'live' });
+    });
     renderInvite();
     await userEvent.type(screen.getByPlaceholderText('Nick'), 'Ana');
     await userEvent.click(screen.getByText('Unirse'));
@@ -39,7 +44,12 @@ describe('InviteLanding — salas live', () => {
   });
 
   it('sin roomKind sigue yendo a /watch/:id', async () => {
-    mockedApi.mockResolvedValueOnce({ token: 'g', roomId: 'r1', nick: 'Ana', roomTitle: 'Cine' });
+    mockedApi.mockImplementation((path: string) => {
+      if (path === '/invitations/claim') {
+        return Promise.resolve({ token: 'g', roomId: 'r1', nick: 'Ana', roomTitle: 'Cine' });
+      }
+      return Promise.resolve({ code: 'ABC123', roomId: 'r1', roomTitle: 'Cine' });
+    });
     renderInvite();
     await userEvent.type(screen.getByPlaceholderText('Nick'), 'Ana');
     await userEvent.click(screen.getByText('Unirse'));
@@ -48,7 +58,12 @@ describe('InviteLanding — salas live', () => {
 
   it('el host con una sala live entra como host a /live/:id', async () => {
     localStorage.setItem('tint_token', 'host');
-    mockedApi.mockResolvedValueOnce({ rooms: [{ id: 'r9', kind: 'live', invitation: { code: 'ABC123' } }] });
+    mockedApi.mockImplementation((path: string) => {
+      if (path === '/rooms') {
+        return Promise.resolve({ rooms: [{ id: 'r9', kind: 'live', invitation: { code: 'ABC123' } }] });
+      }
+      return Promise.resolve({ code: 'ABC123', roomId: 'r9', roomKind: 'live' });
+    });
     renderInvite();
     expect(await screen.findByRole('link', { name: 'Entrar como host' })).toHaveAttribute('href', '/live/r9');
   });

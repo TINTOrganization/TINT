@@ -1,7 +1,8 @@
-import { lazy, Suspense, type ReactNode } from 'react';
+import { createContext, lazy, Suspense, type ReactNode } from 'react';
 import { BrowserRouter, Routes, Route, useLocation } from 'react-router-dom';
 import { StaticRouter } from 'react-router-dom/server';
 import { AnimatePresence } from 'framer-motion';
+import type { RoomDetails } from './lib/serverInvite';
 import Login from './pages/Login';
 import Dashboard from './pages/Dashboard';
 import CreateRoom from './pages/CreateRoom';
@@ -11,6 +12,14 @@ import ProtectedRoute from './routes/ProtectedRoute';
 import Forbidden from './pages/Forbidden';
 import { MotionProvider } from './components/motion/MotionProvider';
 import { PageTransition } from './components/motion/PageTransition';
+
+export interface InviteContextValue {
+  roomDetails?: RoomDetails | null;
+  isInvalid?: boolean;
+}
+
+export const InviteContext = createContext<InviteContextValue | null>(null);
+
 // Carga diferida: la ruta oculta del cuestionario no se enlaza desde la UI.
 const TestMe = lazy(() => import('./pages/TestMe'));
 // Carga diferida: mapa interactivo de la arquitectura, también oculto y hermano del cuestionario.
@@ -26,6 +35,8 @@ const page = (node: ReactNode) => <PageTransition>{node}</PageTransition>;
 
 export interface AppProps {
   url?: string;
+  roomDetails?: RoomDetails | null;
+  isInvalid?: boolean;
 }
 
 /** Rutas con transición: AnimatePresence necesita la ubicación para animar la salida. */
@@ -59,11 +70,13 @@ export function AnimatedRoutes() {
   );
 }
 
-export default function App({ url }: AppProps = {}) {
+export default function App({ url, roomDetails, isInvalid }: AppProps = {}) {
   const content = (
-    <MotionProvider>
-      <AnimatedRoutes />
-    </MotionProvider>
+    <InviteContext.Provider value={{ roomDetails, isInvalid }}>
+      <MotionProvider>
+        <AnimatedRoutes />
+      </MotionProvider>
+    </InviteContext.Provider>
   );
 
   if (url !== undefined) {

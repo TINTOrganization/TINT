@@ -78,7 +78,7 @@ describe('entry-server', () => {
       expect(result.appHtml).toContain('INVITE123');
     });
 
-    it('utiliza metadatos de invitación por defecto si la sala no tiene título o falla la consulta', async () => {
+    it('renderiza página de error de invitación no válida si la consulta falla o es null (AC2)', async () => {
       const mockFetchDetails = vi.fn().mockResolvedValue(null);
 
       const result = await renderPage('/invite/UNKNOWN', {
@@ -88,7 +88,24 @@ describe('entry-server', () => {
       expect(result.isSsrRoute).toBe(true);
       expect(result.title).toBe('Invitación a sala — TINT');
       expect(result.metaTags).toContain('content="Invitación a sala — TINT"');
-      expect(result.appHtml).toContain('UNKNOWN');
+      expect(result.appHtml).toContain('Invitación no válida');
+    });
+
+    it('utiliza metadatos por defecto si la sala no tiene título propio', async () => {
+      const mockFetchDetails = vi.fn().mockResolvedValue({
+        code: 'DEF123',
+        roomId: 'room-1',
+        roomTitle: null,
+        roomKind: 'watch',
+      });
+
+      const result = await renderPage('/invite/DEF123', {
+        fetchRoomDetails: mockFetchDetails,
+      });
+
+      expect(result.isSsrRoute).toBe(true);
+      expect(result.title).toBe('Invitación a sala — TINT');
+      expect(result.appHtml).toContain('DEF123');
     });
 
     it('para rutas de streaming concurrentes (watch/live), retorna appHtml vacío para hidratación en cliente', async () => {
@@ -134,6 +151,15 @@ describe('entry-server', () => {
 
       expect(html).toContain('Mira junto, siente al mismo tiempo');
       expect(html).toContain('<title>TINT — Watch Party</title>');
+    });
+
+    it('devuelve statusCode 404 y vista de error para una invitación inválida o revocada (AC2)', async () => {
+      const { html, statusCode } = await renderHtmlPage(templateHtml, '/invite/BADCODE', {
+        fetchRoomDetails: vi.fn().mockResolvedValue(null),
+      });
+
+      expect(statusCode).toBe(404);
+      expect(html).toContain('Invitación no válida');
     });
   });
 });
