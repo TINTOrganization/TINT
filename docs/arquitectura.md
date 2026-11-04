@@ -107,13 +107,15 @@ Muestra los componentes **en tiempo de ejecución** y los conectores por los que
 
 ```mermaid
 flowchart LR
-    subgraph nav["Navegador"]
+    subgraph presentation["Presentación"]
         WEB["web SPA<br/>useSyncSocket · useSocialSocket<br/>apiFetch · useAmbilight"]
     end
 
-    FB["Firebase Auth<br/>externo"]
+    subgraph gateway["Gateway"]
+        GW["Caddy gateway<br/>HTTP/HTTPS :80/:443"]
+    end
 
-    subgraph srv["Servicios"]
+    subgraph logic["Lógica de aplicación"]
         ID["identity-api"]
         SYNC["sync-core<br/>réplicas 1..N"]
         SOCIAL["social-core<br/>réplicas 1..N"]
@@ -122,12 +124,16 @@ flowchart LR
         VC["voice-core<br/>1 réplica"]
     end
 
-    TURN["coturn<br/>STUN/TURN"]
+    subgraph external["Dependencias externas"]
+        FB["Firebase Auth<br/>externo"]
+        TURN["coturn<br/>STUN/TURN"]
+    end
 
-    subgraph store["Almacenes"]
+    subgraph data["Datos"]
         PG[("PostgreSQL")]
         RD[("Redis")]
         MI[("MinIO<br/>bucket tint-media")]
+        MDB[("MongoDB<br/>social.chat_message_meta")]
     end
 
     WEB -- "C1 · Firebase JS SDK · ID token RS256" --> FB
@@ -144,6 +150,7 @@ flowchart LR
     AN -- "C9 · SQL" --> PG
     ID -- "C10 · S3 API · HEAD y DELETE" --> MI
     MW -- "C10 · S3 API · GET y PUT" --> MI
+    SOCIAL -- "C20 · MongoDB · metadatos de chat" --> MDB
     ID -. "C11 · clave token:revoked:jti + PUBLISH REVOKED" .-> RD
     SYNC <-. "C12 · Pub/Sub room:id:sync · claves sync_state y presencia" .-> RD
     SOCIAL <-. "C13 · Pub/Sub room:id:social · lee room:id:sync · claves room:id:chat, poll, recap, trivia" .-> RD
@@ -172,7 +179,20 @@ flowchart LR
 | `( )` cilindro | Almacén de datos |
 | `Cn` | Identificador del conector en la tabla de abajo |
 
-### 4.1 Tabla de conectores
+### 4.1 Estilos y patrones arquitectónicos
+
+| Estilo o patrón | Aplicación en TINT | Justificación |
+| :--- | :--- | :--- |
+| Arquitectura orientada a servicios por dominio | `identity-api`, `sync-core`, `social-core`, `media-worker`, `analytics` y `voice-core` separan identidad, reproducción, interacción social, procesamiento multimedia, analítica y voz | Cada dominio conserva sus reglas y almacenes; los contratos compartidos se documentan explícitamente y coordinan cambios entre dominios ([§5](#5-contratos-compartidos-entre-dominios)). |
+| Entrada única mediante gateway | Caddy recibe el tráfico público HTTP/HTTPS, ejecuta `forward_auth` y enruta REST y WebSocket hacia los servicios | Centraliza autenticación, CORS, orígenes y terminación de entrada sin exponer los servicios internos directamente ([ADR 0020](adr/0020-entrada-unica-https-y-topologia-produccion.md)). |
+| Comunicación síncrona solicitud/respuesta | REST/HTTP entre la web, el gateway y las APIs; SQL y S3 para operaciones que requieren respuesta inmediata | Es adecuada para login, tickets, playback, moderación y URLs firmadas, donde el consumidor necesita el resultado antes de continuar. |
+| Mensajería asíncrona y fan-out | Redis Pub/Sub distribuye estado en tiempo real; Redis Streams desacopla `media:uploads` y `analytics:events` con grupos y acuses | Pub/Sub reduce la latencia de réplicas y Streams aporta persistencia temporal, reintentos y `XACK` para trabajos que no deben bloquear los caminos interactivos ([ADR 0003](adr/0003-redis-pubsub-para-fanout-entre-replicas.md), [ADR 0009](adr/0009-procesamiento-asincrono-con-redis-streams.md)). |
+| Separación de almacenes por responsabilidad | PostgreSQL conserva datos relacionales, Redis estado efímero y coordinación, MinIO objetos multimedia y MongoDB metadatos de chat | Cada almacén se usa según sus propiedades y el ownership queda delimitado por servicio; los contenidos y responsabilidades están enumerados en [§6](#6-almacenes-de-datos). |
+| WebSocket persistente para tiempo real | Canales Sync, Social y Voz mantienen conexiones bidireccionales, mientras WebRTC transporta el audio entre navegadores | Evita sondeos para eventos interactivos y permite cierres terminales con códigos de dominio (`4001`, `4003`, `4008`, `4010`) cuando el estado debe llegar al cliente ([ADR 0014](adr/0014-upgrade-y-cierre-4xxx-para-estados-terminales.md)). |
+
+Estos estilos se combinan: el gateway y REST resuelven la entrada y las operaciones síncronas; los WebSocket y Redis cubren coordinación en tiempo real; y los Streams aíslan procesamiento que puede ser eventual. La vista distingue el **tipo de conector** de la **capa del componente**, para que un enlace HTTP no se confunda con un bus asíncrono o un almacén.
+
+### 4.2 Tabla de conectores
 
 | Id | Tipo | Origen → destino | Protocolo | Sincronía | Contrato o fuente de verdad |
 | :--- | :--- | :--- | :--- | :--- | :--- |
@@ -186,7 +206,7 @@ flowchart LR
 | C7 | Verificación de token | identity-api → Google | HTTPS JWKS `securetoken@system.gserviceaccount.com` (`jwks-rsa`, en caché) | Síncrono (con caché) | [usuarios-e-identidad §4](usuarios-e-identidad.md#4-esquemas-de-tokens) |
 | C8 | Verificación de token | social-core → Google | HTTPS certificados x509 públicos por `kid` (caché por `Cache-Control`) | Síncrono (con caché) | [social-core/AGENTS.md § Autenticación](../services/social-core/AGENTS.md#autenticación-de-wssocial) |
 | C9 | SQL | identity-api, media-worker, analytics → PostgreSQL | Drizzle ORM (identity-api), `psycopg` 3 (Python) | Síncrono | [usuarios-e-identidad §3](usuarios-e-identidad.md#3-esquema-de-datos-postgresql) · [analytics/AGENTS.md](../services/analytics/AGENTS.md#modelo-de-datos-involucrado) |
-| C10 | S3 API | identity-api, media-worker → MinIO | `@aws-sdk/client-s3` (HEAD, DELETE) · `boto3` (GET, PUT) | Síncrono | [media-worker/AGENTS.md](../services/media-worker/AGENTS.md#modelo-de-datos-involucrado) |
+| C10 | S3 API | identity-api, media-worker → MinIO | HTTP/S3 con `@aws-sdk/client-s3` (HEAD, DELETE) · `boto3` (GET, PUT) | Síncrono | [media-worker/AGENTS.md](../services/media-worker/AGENTS.md#modelo-de-datos-involucrado) |
 | C11 | Clave Redis + Pub/Sub | identity-api → sync-core, social-core, analytics, voice-core | `SET token:revoked:{jti} 1 EXAT exp` + `PUBLISH room:{id}:sync REVOKED{jti}`; los consumidores hacen `EXISTS` en el handshake o en cada petición | Asíncrono (aviso) + consulta síncrona | [dominio-reproduccion §6.6](dominio-reproduccion.md#66-retirar-a-un-invitado-f5) · [ADR 0007](adr/0007-revocacion-por-clave-redis-y-cierre-4001.md) |
 | C12 | Redis Pub/Sub + claves | sync-core ↔ sync-core (réplicas) | `room:{id}:sync` (JSON), CAS Lua sobre `room:{id}:sync_state`, ZSET de presencia | Asíncrono (fan-out) | [dominio-reproduccion §7](dominio-reproduccion.md#7-modelo-de-datos-en-redis) · [ADR 0003](adr/0003-redis-pubsub-para-fanout-entre-replicas.md) |
 | C13 | Redis Pub/Sub + claves | social-core ↔ social-core; sync-core → social-core (solo lectura) | `room:{id}:social` (dedup por `event_id`); suscripción de solo lectura a `room:{id}:sync` (comandos para recap y trivias, `REVOKED`) | Asíncrono | [social-core/AGENTS.md § Modelo de datos](../services/social-core/AGENTS.md#modelo-de-datos-involucrado) |
@@ -196,6 +216,7 @@ flowchart LR
 | C17 | WebRTC P2P + STUN/TURN | web ↔ web (mesh) · web → coturn | Audio Opus por DTLS-SRTP entre navegadores; ICE con STUN y relay TURN (`coturn` `:3478`) | Asíncrono (medios en tiempo real) | [ADR 0015](adr/0015-voice-core-en-cpp-con-webrtc-p2p.md) |
 | C19 | Orquestación de arranque | identity-api → sync-core, social-core, analytics | `POST`/`DELETE /internal/events/start/{room_id}`; identidad llama en orden y compensa en orden inverso; deadline de 5 s por dependencia; no se publica por Caddy | Síncrono | Issue #75; `services/identity-api/src/modules/eventStart` |
 | C15 | Redis Stream | identity-api, sync-core, social-core, media-worker → analytics | `XADD analytics:events MAXLEN ~ 100000` → `XREADGROUP` grupo `analytics-workers` + `XACK` tras el commit | Asíncrono, best-effort | [contrato-eventos-analitica](contrato-eventos-analitica.md) · [ADR 0010](adr/0010-eventos-de-analitica-sin-pii.md) |
+| C20 | Almacén documental | social-core → MongoDB | Driver MongoDB; inserta metadatos sin texto en `social.chat_message_meta`, con índice `{room_id, received_at}` y TTL | Síncrono con escritura diferida | [ADR 0025](adr/0025-metadatos-del-chat-en-mongodb.md) |
 
 #### Handshake WebSocket por el gateway (C0)
 
