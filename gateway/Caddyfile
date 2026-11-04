@@ -93,5 +93,5 @@ https://{$GATEWAY_HOST:localhost} {
     }
 
     @frontend not path /api/* /ws/*
-    reverse_proxy @frontend web:80
+    reverse_proxy @frontend web:5173
 }

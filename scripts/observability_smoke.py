@@ -37,7 +37,7 @@ HEALTHZ_PROBES: dict[str, dict[str, str | list[str]]] = {
     },
     "web": {
         "container": "tint-web",
-        "cmd": ["wget", "-qO-", "http://127.0.0.1/healthz"],
+        "cmd": ["wget", "-qO-", "http://127.0.0.1:5173/healthz"],
         "service": "web",
     },
     "identity-api": {
