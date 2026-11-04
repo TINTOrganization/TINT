@@ -388,78 +388,89 @@ Son los únicos puntos en los que un PR puede necesitar coordinar dos dominios (
 
 ```mermaid
 flowchart TB
-    subgraph browser["Navegador del usuario"]
-        SPA["SPA apps/web<br/>Vite dev :5173<br/>o build estático dist/"]
+    subgraph ClientDevice ["«device» User Client Machine"]
+        Browser["«execution environment» Web Browser<br/>Client SPA (apps/web)"]
     end
 
-    subgraph ext["Servicios externos"]
-        FBA["Firebase Auth<br/>Google"]
-        LE["Let's Encrypt<br/>ACME"]
-        GK["Claves públicas de Google<br/>JWKS y certificados x509"]
+    subgraph ExtCloud ["«environment» External Cloud Services"]
+        FirebaseAuth["Firebase Auth / Google Identity"]
+        LetsEncrypt["Let's Encrypt ACME CA"]
+        GoogleJWKS["Google Public Keys (JWKS)"]
     end
 
-    subgraph docker["Host Docker - docker compose up -d · red Compose interna"]
-        ENV["tint-env-check<br/>alpine:3.20<br/>job de validación"]
-        GW["tint-gateway<br/>Caddy 2.9<br/>80:80 · 443:443"]
-        subgraph c_infra["Infraestructura"]
-            PG["tint-postgres<br/>postgres:16-alpine<br/>5432:5432"]
-            RD["tint-redis<br/>redis:7-alpine · AOF<br/>6379:6379"]
-            MI["tint-minio<br/>pgsty/minio<br/>digest fijado · 9000:9000 · 9001:9001"]
-            MINIT["tint-minio-init<br/>pgsty/mc<br/>digest fijado · job bucket/ILM"]
-            MDB["tint-mongodb<br/>mongo:8.0<br/>27017:27017"]
-            MONGO_INIT["tint-mongo-init<br/>mongo:8.0<br/>job idempotente"]
+    subgraph ServerNode ["«node» Docker Host"]
+        subgraph DockerRuntime ["«execution environment» Docker Engine & Compose"]
+            
+            subgraph SecurityDMZ ["Public Edge Services"]
+                Gateway["«artifact» tint-gateway<br/>(Caddy 2.9 Reverse Proxy)<br/>Ports: 80/443"]
+                Coturn["«artifact» tint-coturn<br/>(STUN/TURN Relay)<br/>Port: 3478 UDP/TCP"]
+            end
+
+            subgraph AppSubnet ["Application Services"]
+                IdentityAPI["«artifact» tint-identity-api (Node 22)"]
+                SocialCore["«artifact» tint-social-core (Go)"]
+                SyncCore["«artifact» tint-sync-core (Go)"]
+                VoiceCore["«artifact» tint-voice-core (C++)"]
+                StreamCore["«artifact» tint-stream-core (C++)"]
+                Analytics["«artifact» tint-analytics (Python)"]
+                MediaWorker["«artifact» tint-media-worker (Python/FFmpeg)"]
+                WebSPA["«artifact» tint-web (Nginx / Static Dist)"]
+            end
+
+            subgraph StorageSubnet ["Private Persistence Subnet"]
+                PostgreSQL[("«artifact» tint-postgres<br/>PostgreSQL 16")]
+                Redis[("«artifact» tint-redis<br/>Redis 7 (AOF)")]
+                MinIO[("«artifact» tint-minio<br/>MinIO S3 Storage")]
+                MongoDB[("«artifact» tint-mongodb<br/>MongoDB 8.0")]
+            end
+
+            subgraph TransientJobs ["Initialization & Utility Jobs"]
+                EnvCheck["«artifact» tint-env-check<br/>(Validation Job)"]
+                MinioInit["«artifact» tint-minio-init<br/>(Bucket Setup)"]
+                MongoInit["«artifact» tint-mongo-init<br/>(Role Setup)"]
+                AuthEmulator["«artifact» tint-firebase-auth-emulator<br/>(Dev Only)"]
+            end
+
+            subgraph Volumes ["Host Storage Volumes"]
+                VolPG[("postgres-data")]
+                VolRD[("redis-data")]
+                VolMI[("minio-data")]
+                VolMDB[("mongo-data")]
+                VolGW1[("gateway-data")]
+                VolGW2[("gateway-config")]
+            end
         end
-        subgraph c_apps["Servicios construidos con build"]
-            WEB["tint-web<br/>nginx<br/>5173:80"]
-            IDP["tint-identity-api<br/>Node 22<br/>8081:8081"]
-            MW["tint-media-worker<br/>python:3.11-slim + ffmpeg<br/>sin puertos"]
-            AN["tint-analytics<br/>python:3.11-slim<br/>8084:8084"]
-            SOC["tint-social-core<br/>distroless/static nonroot<br/>8082:8082"]
-            SYN["tint-sync-core<br/>distroless/static nonroot<br/>8083:8080"]
-            VOI["tint-voice-core<br/>debian:trixie-slim · C++<br/>8085:8085"]
-            STR["tint-stream-core<br/>C++ + libdatachannel<br/>8086:8086 · UDP"]
-            FBE["tint-firebase-auth-emulator<br/>node:22-alpine<br/>127.0.0.1:9099<br/>solo desarrollo"]
-        end
-        TRN["tint-coturn<br/>coturn/coturn:4.6.3<br/>red del host · 3478 · relay 49160-49200"]
-        V1[("volumen postgres-data")]
-        V2[("volumen redis-data")]
-        V3[("volumen minio-data")]
-        V4[("volumen mongo-data")]
-        VG1[("volumen gateway-data")]
-        VG2[("volumen gateway-config")]
     end
 
-    ENV -. "valida .env antes de arrancar" .-> GW
-    ENV -. "condición de arranque" .-> PG & WEB & TRN
-    GW -- "HTTPS público<br/>forward_auth + proxy" --> WEB
-    GW -- "HTTP/WS interno" --> IDP & SYN & SOC & AN & VOI & STR
-    GW -- "certificados ACME" --> LE
-    WEB -- "sirve la SPA" --> SPA
-    SPA -- "login" --> FBA
-    SPA -. "login local" .-> FBE
-    SPA -- "HTTPS /api y /ws" --> GW
-    SPA -- "STUN/TURN :3478" --> TRN
-    SPA -- "HTTP :9000 firmado" --> MI
-    IDP -- "postgres:5432" --> PG
-    IDP -- "redis:6379" --> RD
-    IDP -- "localhost:9000" --> MI
-    IDP -- "HTTPS" --> GK
-    SOC -- "HTTPS" --> GK
-    IDP -. "emulador local (desarrollo)" .-> FBE
-    PG --- V1
-    RD --- V2
-    MI --- V3
-    MDB --- V4
-    GW --- VG1 & VG2
-    MINIT -- "mc mb + mc ilm import" --> MI
-    MONGO_INIT -- "crea usuario/rol social" --> MDB
-    MW -- "postgres:5432 · redis:6379 · minio:9000" --> PG & RD & MI
-    AN -- "postgres:5432 · redis:6379" --> PG & RD
-    SOC -- "redis:6379 · mongodb:27017" --> RD & MDB
-    SYN -- "redis:6379" --> RD
-    VOI -- "redis:6379" --> RD
-    STR -- "redis:6379" --> RD
+    %% Communication Paths (Node-to-Node Associations)
+    Browser ==>|"Communication Path: WAN / TLS (Ports 80, 443)"| Gateway
+    Browser ==>|"Communication Path: WebRTC / STUN-TURN (Port 3478)"| Coturn
+    Gateway ==>|"Communication Path: ACME Cert Exchange"| LetsEncrypt
+    Browser -.->|"Authentication Redirect"| FirebaseAuth
+
+    %% Allocated-to Storage Volume Bindings
+    PostgreSQL --- VolPG
+    Redis --- VolRD
+    MinIO --- VolMI
+    MongoDB --- VolMDB
+    Gateway --- VolGW1
+    Gateway --- VolGW2
+
+    %% Docker Internal Connections
+    Gateway ==>|"Internal Bridge: Traffic Routing"| IdentityAPI
+    Gateway ==>|"Internal Bridge: Traffic Routing"| WebSPA
+    IdentityAPI -.->|"Outbound HTTPS"| GoogleJWKS
+    SocialCore -.->|"Outbound HTTPS"| GoogleJWKS
 ```
+
+**Leyenda**
+
+| Trazo | Significado |
+| :--- | :--- |
+| `───` línea continua | Asignación o vinculación a almacenamiento persistente |
+| `══▶` línea gruesa | Vía de comunicación principal o flujo de solicitudes enrutadas, como **WAN**, **TLS**, **HTTP**, **WebSocket** o **WebRTC** |
+| `- -▶` línea punteada con flecha | Interacción secundaria o **indirecta**; por ejemplo, autenticación, recuperación de certificados o integración destinada exclusivamente al desarrollo. |
+| `- -` línea punteada | Relación de inicialización o configuración |
 
 - **Contenedores de aplicación:** `web` construye la SPA y la sirve con nginx en `5173`; `identity-api` compila Node 22, aplica las migraciones y escucha en `8081`; `stream-core` expone WHIP/WHEP en `8086` y su puerto UDP. El gateway usa los nombres internos de todos los upstreams.
 - **Servicios externos:** Firebase Auth es el proveedor de identidad en producción; el contenedor `firebase-auth-emulator` solo habilita el login local de desarrollo. Caddy solicita certificados públicos a Let's Encrypt mediante ACME; en local puede usar el certificado autofirmado de Caddy.
