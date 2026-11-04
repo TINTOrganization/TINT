@@ -478,7 +478,7 @@ export function createRequestHandler(options: RequestHandlerOptions = {}) {
  * Inicia el servidor HTTP de producción / desarrollo con soporte para SSR y proxy de WebSockets.
  */
 export function startServer(
-  port = Number(process.env.PORT || 80),
+  port = Number(process.env.PORT || 5173),
   distDir?: string,
   proxyTargets?: ProxyTargets,
 ): http.Server {

@@ -375,7 +375,7 @@ describe('server - createRequestHandler', () => {
       templateHtml: mockTemplate,
       distDir: '',
     });
-    const { req, res } = createMockReqRes('/watch/room-99');
+    const { req, res } = createMockReqRes('/live/room-99');
 
     await handler(req, res);
 

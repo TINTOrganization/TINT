@@ -484,7 +484,15 @@ export function useSyncSocket({
         socket.onclose = null;
         socket.onmessage = null;
         socket.onopen = null;
+        socket.onerror = null;
         socket.close();
+      }
+      if (wsRef.current && wsRef.current !== socket) {
+        wsRef.current.onclose = null;
+        wsRef.current.onmessage = null;
+        wsRef.current.onopen = null;
+        wsRef.current.onerror = null;
+        wsRef.current.close();
       }
       wsRef.current = null;
     };

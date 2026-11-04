@@ -1,4 +1,4 @@
-import { useState, type CSSProperties, type ReactNode, type RefObject } from 'react';
+import { useEffect, useState, type CSSProperties, type ReactNode, type RefObject } from 'react';
 import { useAmbilight } from '../../hooks/useAmbilight';
 import { readStored, writeStored } from '../../lib/safeStorage';
 
@@ -35,8 +35,14 @@ const SIDES = [
  * "Ambilight" con la preferencia en `localStorage`.
  */
 export function AmbilightGlow({ url, videoRef, children }: AmbilightGlowProps) {
-  const [on, setOn] = useState(() => readStored(AMBILIGHT_PREF_KEY) !== 'off');
-  const [reducedMotion] = useState(prefersReducedMotion);
+  const [on, setOn] = useState(true);
+  const [reducedMotion, setReducedMotion] = useState(false);
+
+  useEffect(() => {
+    if (prefersReducedMotion()) setReducedMotion(true);
+    const stored = readStored(AMBILIGHT_PREF_KEY);
+    if (stored === 'off') setOn(false);
+  }, []);
   const colors = useAmbilight(url, videoRef, { enabled: on && !!url, interpolate: !reducedMotion });
   const visible = !!colors;
 

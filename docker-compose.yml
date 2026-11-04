@@ -108,11 +108,20 @@ services:
     container_name: tint-web
     <<: *env-check
     environment:
+      NODE_ENV: production
+      PORT: 80
+      IDENTITY_API_URL: ${SSR_IDENTITY_API_URL:-http://identity-api:8081/api/v1}
+      API_PROXY_TARGET: ${API_PROXY_TARGET:-http://identity-api:8081}
+      SYNC_PROXY_TARGET: ${SYNC_PROXY_TARGET:-ws://sync-core:8080}
+      SOCIAL_CORE_UPSTREAM: ${SOCIAL_CORE_UPSTREAM:-ws://social-core:8082}
+      ANALYTICS_PROXY_TARGET: ${ANALYTICS_PROXY_TARGET:-http://analytics:8084}
+      VOICE_PROXY_TARGET: ${VOICE_PROXY_TARGET:-ws://voice-core:8085}
+      STREAM_PROXY_TARGET: ${STREAM_PROXY_TARGET:-http://stream-core:8086}
       NGINX_ERROR_LOG_LEVEL: ${NGINX_ERROR_LOG_LEVEL:-warn}
     ports:
       - "${WEB_PORT:-5173}:80"
     healthcheck:
-      test: ["CMD", "wget", "--spider", "--quiet", "http://127.0.0.1/healthz"]
+      test: ["CMD", "wget", "--spider", "--quiet", "http://127.0.0.1:80/healthz"]
       interval: 10s
       timeout: 5s
       retries: 5
