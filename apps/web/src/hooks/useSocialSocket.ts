@@ -353,7 +353,13 @@ export function useSocialSocket(roomId: string | undefined, opts: UseSocialSocke
       disposed = true;
       closedRef.current = true;
       if (timerRef.current !== null) window.clearTimeout(timerRef.current);
-      wsRef.current?.close();
+      if (wsRef.current) {
+        wsRef.current.onclose = null;
+        wsRef.current.onmessage = null;
+        wsRef.current.onopen = null;
+        wsRef.current.onerror = null;
+        wsRef.current.close();
+      }
       wsRef.current = null;
     };
   }, [roomId, role, pushMessage, pushReaction, pushLaser, applyPoll, remember]);

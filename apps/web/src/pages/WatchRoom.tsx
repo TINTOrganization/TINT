@@ -1,10 +1,9 @@
-
 import { useParams, Link, useNavigate } from 'react-router-dom';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { m, useReducedMotion } from 'framer-motion';
 
 import { RoomNotice } from '../components/room/RoomNotice';
-import { ReactionBar } from '../components/ReactionBar';
+import { ReactionBar, REACTIONS } from '../components/ReactionBar';
 import { ReactionOverlay } from '../components/ReactionOverlay';
 import { LaserOverlay } from '../components/LaserOverlay';
 import { PollPanel } from '../components/PollPanel';
@@ -29,6 +28,8 @@ import { ease } from '../lib/motion';
 import { apiFetch } from '../lib/api';
 import { toAbsoluteInviteLink, pickLatestActiveInvitation, parseInviteCode } from '../lib/invite';
 import { getLocalIdentity, guestTokenGrantsRoom } from '../lib/identity';
+import { readStored } from '../lib/safeStorage';
+import { initPreHydrationCapture, markHydratedAndReplay, clearPreHydrationQueue } from '../lib/preHydration';
 import { useRevocationProbe } from '../hooks/useRevocationProbe';
 import { hostFailureMessage } from '../lib/mediaFailure';
 import { useRoomPlayback, type MediaStatus } from '../hooks/useRoomPlayback';
@@ -83,12 +84,14 @@ function PlayerHalo({ playing }: { playing: boolean }) {
 export default function WatchRoom() {
   const { roomId } = useParams();
   const navigate = useNavigate();
-  const hostToken = localStorage.getItem('tint_token');
+  const [hydrated, setHydrated] = useState(false);
+  const hostToken = hydrated ? readStored('tint_token') : null;
   // El guest token solo cuenta si es de esta sala y no caducó: sync-core rechazaría
   // cualquier otro antes del upgrade (cierre 1006 + reconexión infinita).
-  const guestToken = guestTokenGrantsRoom(localStorage.getItem('tint_guest_token'), roomId)
-    ? localStorage.getItem('tint_guest_token')
-    : null;
+  const guestToken =
+    hydrated && guestTokenGrantsRoom(readStored('tint_guest_token'), roomId)
+      ? readStored('tint_guest_token')
+      : null;
   // Sin ningún token válido no hay cómo autenticar el socket: se muestra la puerta.
   const hasAccess = !!hostToken || !!guestToken;
   // El evento terminó (ADR 0019: cierre 4010 o 410 Disabled). Se fija una vez y apaga los canales.
@@ -125,13 +128,13 @@ export default function WatchRoom() {
     deleteTrivia,
     answerTrivia,
     dismissTrivia,
-  } = useSocialSocket(hasAccess && !ended ? roomId : undefined, { role: hostToken ? 'host' : 'guest' });
+  } = useSocialSocket(hydrated && hasAccess && !ended ? roomId : undefined, { role: hostToken ? 'host' : 'guest' });
   // Si hay sesión de host, manda el host aunque queden restos de invitado
   // (p. ej. guest token de una visita anterior al login). Coherente con
   // apiFetch, que prefiere el header de host.
   const isGuest = !hostToken && !!guestToken;
   // Identidad para display (chip + mensajes propios). Solo UI.
-  const identity = getLocalIdentity();
+  const identity = hydrated ? getLocalIdentity() : null;
   const role = isGuest ? 'guest' : 'host';
   const homePath = isGuest ? '/' : '/dashboard';
   // Respaldo solo si la sala no tiene vídeo asignado en identity-api.
@@ -157,11 +160,11 @@ export default function WatchRoom() {
     roomId: roomId ?? '',
     role,
     getPositionMs: getHeartbeatPositionMs,
-    enabled: hasAccess && !ended,
+    enabled: hydrated && hasAccess && !ended,
   });
   const playback = useRoomPlayback(roomId ?? '', sync.state ? sync.state.media_id : undefined, {
     role,
-    enabled: hasAccess && !sync.revoked && !socialRevoked && !ended,
+    enabled: hydrated && hasAccess && !sync.revoked && !socialRevoked && !ended,
   });
   useEffect(() => {
     if (socialDisabled || sync.disabled || playback.disabled) setEnded(true);
@@ -170,7 +173,7 @@ export default function WatchRoom() {
   const probe = useRevocationProbe({
     roomId,
     role,
-    active: hasAccess && (sync.reconnect !== null || status === 'reconnecting'),
+    active: hydrated && hasAccess && (sync.reconnect !== null || status === 'reconnecting'),
   });
   useEffect(() => {
     roomMediaRef.current = sync.state?.media_id ?? '';
@@ -180,6 +183,26 @@ export default function WatchRoom() {
   // Las URLs firmadas refrescadas se adoptan solo cuando el `src` cambia igualmente (otra
   // calidad) o el vídeo falla (URL caducada): así el refresco no recarga el reproductor.
   const { adoptFresh, recover: recoverPlayback } = playback;
+
+  // Ciclo de vida de hidratación y limpieza estricta al desmontar (AC1 & AC3)
+  useEffect(() => {
+    setHydrated(true);
+    initPreHydrationCapture();
+    const video = videoRef.current;
+    return () => {
+      clearPreHydrationQueue();
+      if (video) {
+        try {
+          video.pause();
+          video.removeAttribute('src');
+          video.load();
+        } catch {
+          // Limpieza defensiva en entornos con soporte parcial
+        }
+      }
+    };
+  }, []);
+
   const appliedQualityRef = useRef(sync.quality);
   useEffect(() => {
     if (appliedQualityRef.current === sync.quality) return;
@@ -189,6 +212,27 @@ export default function WatchRoom() {
   // Los controles los habilita el servidor (STATE.can_control / CONTROL), no el rol local.
   const canControl = sync.canControl;
   const delegated = isGuest && canControl;
+  const { sendCommand } = sync;
+  const syncStatus = sync.state?.status;
+
+  // Procesamiento y repetición resiliente de eventos capturados antes de la hidratación (AC2)
+  useEffect(() => {
+    if (!hydrated || !hasAccess) return;
+    markHydratedAndReplay({
+      'toggle-play': () => {
+        if (canControl) {
+          sendCommand(syncStatus === 'playing' ? 'PAUSE' : 'PLAY', getPositionMs() ?? 0);
+        }
+      },
+      ...REACTIONS.reduce((acc, emoji) => {
+        acc[`react-${emoji}`] = () => {
+          sendReaction(emoji, getPositionMs() ?? 0);
+        };
+        return acc;
+      }, {} as Record<string, () => void>),
+    });
+  }, [hydrated, hasAccess, canControl, sendCommand, getPositionMs, syncStatus, sendReaction]);
+
   // El host ve por qué falló el vídeo; los invitados siguen viendo el texto genérico.
   const hostReason = isGuest ? null : playback.failureReason;
   const videoSrc = playback.url ?? (!playback.loading && !playback.error && !playback.mediaId ? demoVideoUrl : undefined);
@@ -206,7 +250,6 @@ export default function WatchRoom() {
       ? { ...MEDIA_STATUS_UI.failed, text: hostFailureMessage(hostReason) }
       : MEDIA_STATUS_UI[playback.status]
     : null;
-  const { sendCommand } = sync;
   const loadMedia = useCallback(
     (mediaId: string) => sendCommand('LOAD', 0, { media_id: mediaId }) !== null,
     [sendCommand],
@@ -284,15 +327,13 @@ export default function WatchRoom() {
   const [roomTitle, setRoomTitle] = useState<string | null>(null);
   const [inviteLink, setInviteLink] = useState<string | null>(null);
 
-
-
   // Título y link de invitación: el host los pide al backend; el invitado
   // usa los guardados al canjear (su token no tiene auth de host).
   useEffect(() => {
     if (!roomId || !hasAccess) return;
     if (isGuest) {
-      setRoomTitle(localStorage.getItem('tint_room_title'));
-      setInviteLink(localStorage.getItem('tint_invite_link'));
+      setRoomTitle(readStored('tint_room_title'));
+      setInviteLink(readStored('tint_invite_link'));
       return;
     }
     let cancelled = false;
@@ -328,7 +369,6 @@ export default function WatchRoom() {
   const chatStatus =
     status === 'open' ? 'Chat conectado' : status === 'closed' ? 'Chat desconectado' : 'Chat reconectando…';
 
-
   const handleGateJoin = (e: React.FormEvent) => {
     e.preventDefault();
     const code = parseInviteCode(invite);
@@ -340,117 +380,119 @@ export default function WatchRoom() {
     navigate(`/invite/${code}`);
   };
 
-  // Evento terminado (HU-LIVE-08): distinto de "retirado" (4001); el botón lleva a casa.
-  if (ended || socialDisabled || sync.disabled || playback.disabled) {
-    return (
-      <RoomNotice
-        title={ROOM_ENDED_TITLE}
-        body={roomEndedBody(!isGuest)}
-        to={homePath}
-        linkLabel={isGuest ? 'Volver al inicio' : 'Ir al dashboard'}
-      />
-    );
-  }
-  // Antes que la puerta: al revocar se borra el guest token y hasAccess cae a false.
-  // El chat (social-core) cierra con 4001 igual que sync: cualquiera de los dos expulsa.
-  if (sync.revoked || socialRevoked || probe.revoked) {
-    if (videoFinished) {
+  if (hydrated) {
+    // Evento terminado (HU-LIVE-08): distinto de "retirado" (4001); el botón lleva a casa.
+    if (ended || socialDisabled || sync.disabled || playback.disabled) {
       return (
         <RoomNotice
-          title="El host terminó la sala"
-          body="Gracias por ver juntos. Si quieres otra función, pide al host un nuevo enlace."
+          title={ROOM_ENDED_TITLE}
+          body={roomEndedBody(!isGuest)}
+          to={homePath}
+          linkLabel={isGuest ? 'Volver al inicio' : 'Ir al dashboard'}
         />
       );
     }
-    return (
-      <RoomNotice
-        title="Fuiste retirado de la sala por el host"
-        body="Tu invitación ya no es válida. Si crees que es un error, pide al host un nuevo enlace."
-      />
-    );
-  }
-  // Cierre 4003: el token caducó (el host ya reintentó una vez con un ticket nuevo).
-  if (sync.expired || socialExpired) {
-    // Al invitado ya se le borró el guest token: sin sesión de host, es un invitado.
-    return !hostToken ? (
-      <RoomNotice
-        title="Tu invitación expiró"
-        body="El enlace con el que entraste ya caducó. Pide al host un nuevo enlace para volver a entrar."
-      />
-    ) : (
-      <RoomNotice
-        title="Tu sesión de sincronía caducó"
-        body="No pudimos renovar tu acceso a la sincronía. Vuelve a entrar a la sala desde el dashboard."
-        to="/dashboard"
-        linkLabel="Ir al dashboard"
-      />
-    );
-  }
-  // GET /playback en 401/403: retirado o caducado mientras la pestaña estaba cerrada.
-  if (playback.revoked) {
-    return (
-      <RoomNotice
-        title="Tu invitación ya no es válida"
-        body="El host te retiró de la sala o el enlace caducó. Pide al host un nuevo enlace para volver a entrar."
-      />
-    );
-  }
-  if (sync.fatalError) {
-    return (
-      <RoomNotice
-        title={sync.fatalError === 'NOT_HOST' ? 'No eres el host de esta sala' : 'La sala ya no existe'}
-        body={
-          sync.fatalError === 'NOT_HOST'
-            ? 'Tu cuenta no es la dueña de esta sala. Si te invitaron, entra con el link de invitación.'
-            : 'El host la eliminó o el enlace es incorrecto.'
-        }
-        to="/dashboard"
-        linkLabel="Ir al dashboard"
-      />
-    );
-  }
+    // Antes que la puerta: al revocar se borra el guest token y hasAccess cae a false.
+    // El chat (social-core) cierra con 4001 igual que sync: cualquiera de los dos expulsa.
+    if (sync.revoked || socialRevoked || probe.revoked) {
+      if (videoFinished) {
+        return (
+          <RoomNotice
+            title="El host terminó la sala"
+            body="Gracias por ver juntos. Si quieres otra función, pide al host un nuevo enlace."
+          />
+        );
+      }
+      return (
+        <RoomNotice
+          title="Fuiste retirado de la sala por el host"
+          body="Tu invitación ya no es válida. Si crees que es un error, pide al host un nuevo enlace."
+        />
+      );
+    }
+    // Cierre 4003: el token caducó (el host ya reintentó una vez con un ticket nuevo).
+    if (sync.expired || socialExpired) {
+      // Al invitado ya se le borró el guest token: sin sesión de host, es un invitado.
+      return !hostToken ? (
+        <RoomNotice
+          title="Tu invitación expiró"
+          body="El enlace con el que entraste ya caducó. Pide al host un nuevo enlace para volver a entrar."
+        />
+      ) : (
+        <RoomNotice
+          title="Tu sesión de sincronía caducó"
+          body="No pudimos renovar tu acceso a la sincronía. Vuelve a entrar a la sala desde el dashboard."
+          to="/dashboard"
+          linkLabel="Ir al dashboard"
+        />
+      );
+    }
+    // GET /playback en 401/403: retirado o caducado mientras la pestaña estaba cerrada.
+    if (playback.revoked) {
+      return (
+        <RoomNotice
+          title="Tu invitación ya no es válida"
+          body="El host te retiró de la sala o el enlace caducó. Pide al host un nuevo enlace para volver a entrar."
+        />
+      );
+    }
+    if (sync.fatalError) {
+      return (
+        <RoomNotice
+          title={sync.fatalError === 'NOT_HOST' ? 'No eres el host de esta sala' : 'La sala ya no existe'}
+          body={
+            sync.fatalError === 'NOT_HOST'
+              ? 'Tu cuenta no es la dueña de esta sala. Si te invitaron, entra con el link de invitación.'
+              : 'El host la eliminó o el enlace es incorrecto.'
+          }
+          to="/dashboard"
+          linkLabel="Ir al dashboard"
+        />
+      );
+    }
 
-  if (!hasAccess) {
-    return (
-      <div className="relative isolate grid min-h-[100dvh] place-items-center bg-tint-bg px-4 text-tint-muted">
-        <AmbientBackground />
-        <Card className="w-full max-w-md p-8">
-          <p className="tint-eyebrow">Sala privada</p>
-          <h1 className="mt-2 text-2xl font-bold tracking-tight text-white">Únete a esta sala</h1>
-          <p className="mt-2 text-sm leading-relaxed">
-            Necesitas un link de invitación o ser el host para ver el contenido y chatear.
-          </p>
-          <form onSubmit={handleGateJoin} className="mt-6 space-y-4">
-            <Field label="Link de invitación" htmlFor="gate-invite" error={undefined}>
-              <Input
-                id="gate-invite"
-                value={invite}
-                onChange={(e) => setInvite(e.target.value)}
-                placeholder="Pega el link o el código"
-                autoComplete="off"
-              />
-            </Field>
-            {inviteHint && <p className="text-[13px] text-red-300">{inviteHint}</p>}
-            <Button type="submit" disabled={invite.trim().length === 0} className="w-full">
-              Continuar
-            </Button>
-          </form>
-          <p className="mt-6 border-t border-white/10 pt-4 text-[13px]">
-            ¿Eres el host?{' '}
-            <Link
-              to={`/login?next=${encodeURIComponent(`/watch/${roomId ?? ''}`)}`}
-              className="text-tint-accent underline-offset-4 hover:underline"
-            >
-              Inicia sesión
-            </Link>
-          </p>
-        </Card>
-      </div>
-    );
+    if (!hasAccess) {
+      return (
+        <div className="relative isolate grid min-h-[100dvh] place-items-center bg-tint-bg px-4 text-tint-muted">
+          <AmbientBackground />
+          <Card className="w-full max-w-md p-8">
+            <p className="tint-eyebrow">Sala privada</p>
+            <h1 className="mt-2 text-2xl font-bold tracking-tight text-white">Únete a esta sala</h1>
+            <p className="mt-2 text-sm leading-relaxed">
+              Necesitas un link de invitación o ser el host para ver el contenido y chatear.
+            </p>
+            <form onSubmit={handleGateJoin} className="mt-6 space-y-4">
+              <Field label="Link de invitación" htmlFor="gate-invite" error={undefined}>
+                <Input
+                  id="gate-invite"
+                  value={invite}
+                  onChange={(e) => setInvite(e.target.value)}
+                  placeholder="Pega el link o el código"
+                  autoComplete="off"
+                />
+              </Field>
+              {inviteHint && <p className="text-[13px] text-red-300">{inviteHint}</p>}
+              <Button type="submit" disabled={invite.trim().length === 0} className="w-full">
+                Continuar
+              </Button>
+            </form>
+            <p className="mt-6 border-t border-white/10 pt-4 text-[13px]">
+              ¿Eres el host?{' '}
+              <Link
+                to={`/login?next=${encodeURIComponent(`/watch/${roomId ?? ''}`)}`}
+                className="text-tint-accent underline-offset-4 hover:underline"
+              >
+                Inicia sesión
+              </Link>
+            </p>
+          </Card>
+        </div>
+      );
+    }
   }
 
   return (
-    <div className="relative isolate min-h-[100dvh] overflow-x-clip bg-tint-bg text-tint-muted">
+    <div data-room-shell="watch" className="relative isolate min-h-[100dvh] overflow-x-clip bg-tint-bg text-tint-muted">
       <AmbientBackground />
       <header className="sticky top-0 z-30 border-b border-white/10 bg-tint-bg/80 backdrop-blur-xl">
         {/* < sm: fila 1 = marca + volver + título (+ Invitar); fila 2 = estados. ≥ sm: una fila. */}
@@ -501,12 +543,19 @@ export default function WatchRoom() {
             )}
           </div>
           <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-[12px] sm:shrink-0 sm:flex-nowrap">
-            {sync.connected && <SyncQualityIndicator rttMs={sync.rttMs} driftMs={sync.driftMs} />}
+            {hydrated && sync.connected && <SyncQualityIndicator rttMs={sync.rttMs} driftMs={sync.driftMs} />}
             <div role="status" aria-label="Estado de sincronía" aria-live="polite">
-              <ReconnectStatus connected={sync.connected} reconnect={sync.reconnect} />
+              {hydrated ? (
+                <ReconnectStatus connected={sync.connected} reconnect={sync.reconnect} />
+              ) : (
+                <span className="inline-flex items-center gap-1.5 text-tint-muted">
+                  <span className="h-2 w-2 rounded-full bg-amber-400/80 animate-pulse" />
+                  Conectando…
+                </span>
+              )}
             </div>
             <p className="text-[12px]" role="status" aria-live="polite">
-              {chatStatus}
+              {hydrated ? chatStatus : 'Chat conectando…'}
             </p>
           </div>
         </div>
@@ -517,32 +566,63 @@ export default function WatchRoom() {
           <AmbilightGlow url={playback.ambilightUrl} videoRef={videoRef}>
             <div className="relative isolate">
               {/* Respaldo cálido: con paleta Ambilight el brillo lo pone AmbilightGlow. */}
-              {!playback.ambilightUrl && <PlayerHalo playing={playing} />}
+              {!playback.ambilightUrl && hydrated && <PlayerHalo playing={playing} />}
               <Card className="overflow-hidden">
                 <div className="relative">
-                  <SyncedPlayer
-                    src={videoSrc}
-                    qualities={playback.qualities}
-                    canControl={canControl}
-                    delegated={delegated}
-                    sync={sync}
-                    videoRef={videoRef}
-                    emptyMessage={emptyMessage}
-                    laserOn={laserOn}
-                    onToggleLaser={isGuest ? undefined : toggleLaser}
-                    onOpenPoll={isGuest ? undefined : openPollCreator}
-                    onEnded={handleVideoEnded}
-                    onMediaError={recoverPlayback}
-                    overlay={laserOverlay}
-                  />
-                  <ReactionOverlay reactions={reactions} />
-                  <TriviaPopup
-                    trivia={trivia}
-                    isHost={!isGuest}
-                    onAnswer={answerTrivia}
-                    onDismiss={dismissTrivia}
-                    error={socialError?.code ?? null}
-                  />
+                  {hydrated ? (
+                    <>
+                      <SyncedPlayer
+                        src={videoSrc}
+                        qualities={playback.qualities}
+                        canControl={canControl}
+                        delegated={delegated}
+                        sync={sync}
+                        videoRef={videoRef}
+                        emptyMessage={emptyMessage}
+                        laserOn={laserOn}
+                        onToggleLaser={isGuest ? undefined : toggleLaser}
+                        onOpenPoll={isGuest ? undefined : openPollCreator}
+                        onEnded={handleVideoEnded}
+                        onMediaError={recoverPlayback}
+                        overlay={laserOverlay}
+                      />
+                      <ReactionOverlay reactions={reactions} />
+                      <TriviaPopup
+                        trivia={trivia}
+                        isHost={!isGuest}
+                        onAnswer={answerTrivia}
+                        onDismiss={dismissTrivia}
+                        error={socialError?.code ?? null}
+                      />
+                    </>
+                  ) : (
+                    <div className="relative aspect-video bg-black flex flex-col items-center justify-center">
+                      <div className="flex h-16 w-16 items-center justify-center rounded-full bg-white/10 text-white shadow-glow">
+                        <svg aria-hidden="true" viewBox="0 0 24 24" className="ml-1 h-8 w-8 fill-current">
+                          <path d="M8 5v14l11-7z" />
+                        </svg>
+                      </div>
+                      <p className="mt-4 text-sm font-medium text-white/80">Cargando reproductor…</p>
+                      <div className="absolute inset-x-0 bottom-0 flex items-center justify-between bg-gradient-to-t from-black/80 to-transparent p-4">
+                        <div className="flex items-center gap-3">
+                          <button
+                            type="button"
+                            data-action="toggle-play"
+                            aria-label="Reproducir"
+                            className="rounded-full bg-tint-accent/20 p-2 text-white hover:bg-tint-accent/30"
+                          >
+                            <svg aria-hidden="true" viewBox="0 0 24 24" className="h-5 w-5 fill-current">
+                              <path d="M8 5v14l11-7z" />
+                            </svg>
+                          </button>
+                          <div className="h-1.5 w-32 rounded-full bg-white/20 sm:w-64">
+                            <div className="h-full w-0 rounded-full bg-tint-accent" />
+                          </div>
+                        </div>
+                        <span className="text-xs tabular-nums text-white/60">00:00 / 00:00</span>
+                      </div>
+                    </div>
+                  )}
                 </div>
                 <div className="flex flex-wrap items-center justify-between gap-4 p-4">
                   <div>
@@ -566,7 +646,6 @@ export default function WatchRoom() {
                   </div>
                   <ReactionBar
                     onReact={(r) => {
-                      // La reacción se ancla al instante del vídeo (REQ-21).
                       sendReaction(r, Math.round((videoRef.current?.currentTime ?? 0) * 1000));
                     }}
                   />
@@ -575,10 +654,10 @@ export default function WatchRoom() {
             </div>
           </AmbilightGlow>
 
-          {/* Canal de voz (voice-core): no conecta nada hasta pulsar "Unirse a la voz". */}
-          <VoiceSection roomId={roomId ?? ''} role={isGuest ? 'guest' : 'host'} onRoomDisabled={markEnded} />
+          {/* Canal de voz (voice-core): solo se inicializa tras completarse la hidratación */}
+          {hydrated && <VoiceSection roomId={roomId ?? ''} role={isGuest ? 'guest' : 'host'} onRoomDisabled={markEnded} />}
 
-          {!isGuest && (
+          {hydrated && !isGuest && (
             <div className="mt-4 grid gap-4 md:grid-cols-2">
               <Card className="p-5">
                 <h2 className="text-[15px] font-semibold text-white">Vídeo de la sala</h2>
@@ -593,32 +672,35 @@ export default function WatchRoom() {
             </div>
           )}
 
-          <Card className="mt-4 p-5">
-            <PollPanel
-              poll={poll}
-              isHost={!isGuest}
-              creatorOpen={pollCreatorOpen}
-              onCreatorOpenChange={setPollCreatorOpen}
-              onCreate={createPoll}
-              onVote={votePoll}
-              onClose={closePoll}
-              error={socialError?.code ?? null}
-            />
-          </Card>
+          {hydrated && (
+            <Card className="mt-4 p-5">
+              <PollPanel
+                poll={poll}
+                isHost={!isGuest}
+                creatorOpen={pollCreatorOpen}
+                onCreatorOpenChange={setPollCreatorOpen}
+                onCreate={createPoll}
+                onVote={votePoll}
+                onClose={closePoll}
+                error={socialError?.code ?? null}
+              />
+            </Card>
+          )}
 
-          <Card className="mt-4 p-5">
-            <TriviaPanel
-              isHost={!isGuest}
-              schedule={triviaSchedule}
-              leaderboard={triviaLeaderboard}
-              getCurrentMs={getPositionMs}
-              onSchedule={scheduleTrivia}
-              onUpdate={updateTrivia}
-              onDelete={deleteTrivia}
-              error={socialError?.code ?? null}
-            />
-          </Card>
-
+          {hydrated && (
+            <Card className="mt-4 p-5">
+              <TriviaPanel
+                isHost={!isGuest}
+                schedule={triviaSchedule}
+                leaderboard={triviaLeaderboard}
+                getCurrentMs={getPositionMs}
+                onSchedule={scheduleTrivia}
+                onUpdate={updateTrivia}
+                onDelete={deleteTrivia}
+                error={socialError?.code ?? null}
+              />
+            </Card>
+          )}
         </section>
 
         <aside aria-label="Social" className="flex min-h-0 flex-col gap-4">
@@ -638,7 +720,7 @@ export default function WatchRoom() {
       </main>
 
       <ToastStack toasts={toasts} className="fixed right-4 top-28 z-40 sm:top-20" />
-      {recapGate.open && (
+      {hydrated && recapGate.open && (
         <RecapScreen
           recap={recapGate.recap}
           onDismiss={recapGate.dismiss}
