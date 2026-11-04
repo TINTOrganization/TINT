@@ -50,9 +50,11 @@ class GatewayOriginTest(unittest.TestCase):
 
 class WebImageTest(unittest.TestCase):
     def test_web_image_runs_without_compose_variables(self):
-        # Sin NGINX_ERROR_LOG_LEVEL la plantilla deja `error_log stderr ;` y nginx no arranca.
-        runtime = WEB_DOCKERFILE.split("FROM nginx", 1)[1]
-        self.assertRegex(runtime, r"(?m)^ENV (?:[^\n]*\\\n)*[^\n]*NGINX_ERROR_LOG_LEVEL=warn")
+        # La etapa runtime de Node SSR debe definir variables por defecto (PORT, NODE_ENV)
+        # para poder arrancar de forma autonoma sin depender de variables de Compose.
+        runtime = WEB_DOCKERFILE.rsplit("FROM ", 1)[-1]
+        self.assertRegex(runtime, r"(?m)^ENV (?:[^\n]*\\\n)*[^\n]*PORT=5173")
+        self.assertRegex(runtime, r"(?m)^ENV (?:[^\n]*\\\n)*[^\n]*NODE_ENV=production")
 
 
 class RunInstructionsTest(unittest.TestCase):

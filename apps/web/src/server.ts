@@ -450,7 +450,7 @@ export function createRequestHandler(options: RequestHandlerOptions = {}) {
           fetchDashboardData: options.fetchDashboardData,
           authToken: extractAuthFromRequest(req).token,
           userRole: extractAuthFromRequest(req).role,
-          apiBaseUrl: options.apiBaseUrl,
+          apiBaseUrl: options.apiBaseUrl ?? (process.env.IDENTITY_API_URL || `${proxyTargets.api}/api/v1`),
         };
         const { html, statusCode } = await renderHtmlPage(templateHtml, rawUrl, renderOpts);
         res.statusCode = statusCode;
@@ -458,7 +458,8 @@ export function createRequestHandler(options: RequestHandlerOptions = {}) {
         res.setHeader('Cache-Control', 'no-cache');
         res.end(method === 'HEAD' ? undefined : html);
         return;
-      } catch {
+      } catch (err) {
+        console.error('[tint-web] Fallo inesperado en renderizado SSR para %s:', rawUrl, err);
         // Ante cualquier fallo inesperado de SSR, fallback al index.html del cliente
         res.statusCode = 200;
         res.setHeader('Content-Type', 'text/html; charset=utf-8');

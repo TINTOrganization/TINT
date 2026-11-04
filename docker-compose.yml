@@ -109,10 +109,14 @@ services:
     <<: *env-check
     environment:
       NGINX_ERROR_LOG_LEVEL: ${NGINX_ERROR_LOG_LEVEL:-warn}
+      PORT: 5173
+      NODE_ENV: production
+      IDENTITY_API_URL: ${IDENTITY_API_URL:-http://identity-api:8081/api/v1}
+      API_PROXY_TARGET: ${API_PROXY_TARGET:-http://identity-api:8081}
     ports:
-      - "${WEB_PORT:-5173}:80"
+      - "${WEB_PORT:-5173}:5173"
     healthcheck:
-      test: ["CMD", "wget", "--spider", "--quiet", "http://127.0.0.1/healthz"]
+      test: ["CMD", "wget", "--spider", "--quiet", "http://127.0.0.1:5173/healthz"]
       interval: 10s
       timeout: 5s
       retries: 5

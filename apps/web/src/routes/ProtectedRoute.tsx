@@ -1,15 +1,16 @@
 import { useContext } from 'react';
 import { Navigate, useLocation } from 'react-router-dom';
 import { loginRedirectPath } from '../lib/api';
-import { DashboardContext } from '../App';
+import { DashboardContext, SsrContext } from '../App';
 
 export default function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const location = useLocation();
   const dashboardContext = useContext(DashboardContext);
+  const isSsr = useContext(SsrContext) || typeof window === 'undefined';
 
-  // Durante SSR o cuando hay datos pre-renderizados en el contexto,
-  // permitimos el renderizado del dashboard para que el cliente hidrate y verifique localStorage.
-  if (location.pathname === '/dashboard' && (typeof window === 'undefined' || dashboardContext?.dashboardData)) {
+  // Durante SSR o cuando hay datos pre-renderizados del dashboard en el contexto,
+  // permitimos el renderizado para que el cliente hidrate sin discrepancias y verifique la sesión.
+  if (isSsr || (location.pathname === '/dashboard' && dashboardContext?.dashboardData)) {
     return <>{children}</>;
   }
 

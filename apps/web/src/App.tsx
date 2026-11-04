@@ -9,6 +9,7 @@ import Dashboard from './pages/Dashboard';
 import CreateRoom from './pages/CreateRoom';
 import InviteLanding from './pages/InviteLanding';
 import WatchRoom from './pages/WatchRoom';
+import LiveRoom from './pages/LiveRoom';
 import ProtectedRoute from './routes/ProtectedRoute';
 import Forbidden from './pages/Forbidden';
 import { MotionProvider } from './components/motion/MotionProvider';
@@ -27,6 +28,8 @@ export interface DashboardContextValue {
 
 export const DashboardContext = createContext<DashboardContextValue | null>(null);
 
+export const SsrContext = createContext<boolean>(false);
+
 // Carga diferida: la ruta oculta del cuestionario no se enlaza desde la UI.
 const TestMe = lazy(() => import('./pages/TestMe'));
 // Carga diferida: mapa interactivo de la arquitectura, también oculto y hermano del cuestionario.
@@ -35,8 +38,6 @@ const Arquitectura = lazy(() => import('./pages/Arquitectura'));
 const RoomAnalytics = lazy(() => import('./pages/RoomAnalytics'));
 // Carga diferida: panel de negocio de analítica, oculto y protegido con contraseña.
 const BusinessAnalytics = lazy(() => import('./pages/BusinessAnalytics'));
-// Carga diferida: la sala live (WHIP/WHEP, mezclador y compositor) solo la abre quien la usa.
-const LiveRoom = lazy(() => import('./pages/LiveRoom'));
 
 const page = (node: ReactNode) => <PageTransition>{node}</PageTransition>;
 
@@ -64,7 +65,7 @@ export function AnimatedRoutes() {
         />
         <Route path="/watch/:roomId" element={page(<WatchRoom />)} />
         {/* Sala live (ADR 0019): transmisión por stream-core, sin Canal Sync. */}
-        <Route path="/live/:roomId" element={page(<Suspense fallback={null}><LiveRoom /></Suspense>)} />
+        <Route path="/live/:roomId" element={page(<LiveRoom />)} />
         <Route path="/403" element={page(<Forbidden />)} />
         {/* Ruta oculta: cuestionario del monorepo, sin enlaces desde la UI. */}
         <Route path="/test-me" element={<Suspense fallback={null}><TestMe /></Suspense>} />
@@ -79,14 +80,17 @@ export function AnimatedRoutes() {
 }
 
 export default function App({ url, roomDetails, isInvalid, dashboardData }: AppProps = {}) {
+  const isSsr = url !== undefined || typeof window === 'undefined';
   const content = (
-    <InviteContext.Provider value={{ roomDetails, isInvalid }}>
-      <DashboardContext.Provider value={{ dashboardData }}>
-        <MotionProvider>
-          <AnimatedRoutes />
-        </MotionProvider>
-      </DashboardContext.Provider>
-    </InviteContext.Provider>
+    <SsrContext.Provider value={isSsr}>
+      <InviteContext.Provider value={{ roomDetails, isInvalid }}>
+        <DashboardContext.Provider value={{ dashboardData }}>
+          <MotionProvider>
+            <AnimatedRoutes />
+          </MotionProvider>
+        </DashboardContext.Provider>
+      </InviteContext.Provider>
+    </SsrContext.Provider>
   );
 
   if (url !== undefined) {

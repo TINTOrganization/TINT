@@ -41,9 +41,11 @@ const DEFAULT_TIMEOUT_MS = 2500;
 
 function resolveDefaultApiBase(): string {
   if (typeof process !== 'undefined' && process.env) {
-    if (process.env.IDENTITY_API_URL) return process.env.IDENTITY_API_URL;
-    if (process.env.VITE_IDENTITY_API_URL && /^https?:\/\//i.test(process.env.VITE_IDENTITY_API_URL)) {
-      return process.env.VITE_IDENTITY_API_URL;
+    const raw = process.env.IDENTITY_API_URL || (process.env.VITE_IDENTITY_API_URL && /^https?:\/\//i.test(process.env.VITE_IDENTITY_API_URL) ? process.env.VITE_IDENTITY_API_URL : '');
+    if (raw) {
+      let base = raw.trim().replace(/\/+$/, '');
+      if (!base.endsWith('/api/v1')) base += '/api/v1';
+      return base;
     }
   }
   return 'http://localhost:8081/api/v1';

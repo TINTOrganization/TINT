@@ -60,11 +60,6 @@ export default function Dashboard() {
   };
 
   useEffect(() => {
-    // Si SSR falló por degradación del servicio de identidad (AC3), conservamos el mensaje de error de SSR
-    if (initialData?.error && initialData.error !== 'Sesión no válida o expirada.') {
-      return;
-    }
-
     let cancelled = false;
 
     apiFetch('/rooms')
@@ -111,6 +106,7 @@ export default function Dashboard() {
             if (r?.rooms) {
               setRooms(r.rooms);
               setIsHost(true);
+              setError('');
             }
           })
           .catch(() => {});

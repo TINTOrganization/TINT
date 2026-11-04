@@ -46,6 +46,9 @@ export function guestTokenGrantsRoom(
  * nunca para decidir autorización (eso lo hace el backend).
  */
 export function getLocalIdentity(): LocalIdentity | null {
+  if (typeof window === 'undefined' || typeof localStorage === 'undefined') {
+    return null;
+  }
   const hostToken = localStorage.getItem('tint_token');
   if (hostToken) {
     const p = decodePayload(hostToken);
