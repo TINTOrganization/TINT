@@ -46,6 +46,7 @@ export interface HtmlPageResult {
 }
 
 const INVITE_ROUTE_REGEX = /^\/invite\/([^/?#]+)/i;
+const WATCH_ROUTE_REGEX = /^\/watch\/([^/?#]+)/i;
 
 /**
  * Determina si una ruta debe procesarse con SSR o delegarse a renderizado en cliente (CSR).
@@ -58,6 +59,7 @@ export function isSsrRoute(url: string): boolean {
   const pathname = url.split('?')[0].split('#')[0];
   if (pathname === '/' || pathname === '/login' || pathname === '/dashboard') return true;
   if (INVITE_ROUTE_REGEX.test(pathname)) return true;
+  if (WATCH_ROUTE_REGEX.test(pathname)) return true;
   return false;
 }
 
@@ -173,6 +175,29 @@ export async function renderPage(url: string, options?: RenderOptions): Promise<
     };
   }
 
+  // Sala de visualización: /watch/:roomId (AC1)
+  const watchMatch = pathname.match(WATCH_ROUTE_REGEX);
+  if (watchMatch) {
+    const roomId = decodeURIComponent(watchMatch[1]);
+    const title = options?.roomTitle ? `${options.roomTitle} — TINT` : `Sala ${roomId} — TINT`;
+    const metaOptions: MetaTagOptions = {
+      title,
+      description: 'Disfruta de streaming sincronizado, chat en vivo y reacciones en tiempo real en TINT.',
+    };
+    const metaTags = generateMetaTags(metaOptions);
+    const appHtml = renderApp(url);
+
+    return {
+      appHtml,
+      metaTags,
+      title,
+      headHtml: metaTags,
+      roomDetails: null,
+      dashboardData: null,
+      isSsrRoute: true,
+    };
+  }
+
   // Landing page: / o /login
   const landingMeta = getLandingMetaTags();
   const metaTags = generateMetaTags(landingMeta);
@@ -215,6 +240,16 @@ export async function renderHtmlPage(
       html = html.replace('</body>', `${scriptTag}</body>`);
     } else {
       html += scriptTag;
+    }
+  }
+
+  // Inyectar script de captura temprana para resiliencia pre-hidratación (AC2)
+  if (WATCH_ROUTE_REGEX.test(url.split('?')[0].split('#')[0])) {
+    const preHydrationScript = `<script id="__TINT_PRE_HYDRATION__">window.__TINT_PRE_HYDRATION_QUEUE__=window.__TINT_PRE_HYDRATION_QUEUE__||[];document.addEventListener('click',function(e){if(!window.__TINT_HYDRATED__){var t=e.target&&e.target.closest('button,[data-action],input[type="submit"],[role="button"]');if(t){e.preventDefault();e.stopPropagation();window.__TINT_PRE_HYDRATION_QUEUE__.push({type:e.type,action:t.getAttribute('data-action')||t.getAttribute('aria-label')||t.id||'',target:t,timeStamp:Date.now()});}}},true);</script>`;
+    if (html.includes('</head>')) {
+      html = html.replace('</head>', `${preHydrationScript}</head>`);
+    } else {
+      html = `${preHydrationScript}${html}`;
     }
   }
 
