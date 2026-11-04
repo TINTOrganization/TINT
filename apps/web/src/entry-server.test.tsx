@@ -25,10 +25,9 @@ describe('entry-server', () => {
       expect(isSsrRoute('/watch/cine-123?ref=invite')).toBe(true);
     });
 
-    it('no aplica SSR a salas live de streaming WebRTC ni a rutas privadas', () => {
-      expect(isSsrRoute('/live/room-1')).toBe(false);
-      expect(isSsrRoute('/rooms/new')).toBe(false);
-      expect(isSsrRoute('/test-me')).toBe(false);
+    it('reconoce /live/:roomId y /rooms/new como rutas SSR para la aplicación (AC1)', () => {
+      expect(isSsrRoute('/live/room-1')).toBe(true);
+      expect(isSsrRoute('/rooms/new')).toBe(true);
     });
   });
 
@@ -202,11 +201,11 @@ describe('entry-server', () => {
       expect(result.appHtml).toContain('Invitación no válida');
     });
 
-    it('para rutas de streaming en vivo (/live), retorna appHtml vacío para hidratación en cliente', async () => {
+    it('para rutas de streaming en vivo (/live), pre-renderiza el cascarón de transmisión en vivo (data-room-shell="live") (AC1)', async () => {
       const result = await renderPage('/live/room-streaming-1');
-      expect(result.isSsrRoute).toBe(false);
-      expect(result.appHtml).toBe('');
-      expect(result.title).toBe('TINT — Watch Party');
+      expect(result.isSsrRoute).toBe(true);
+      expect(result.title).toBe('Transmisión en vivo room-streaming-1 — TINT');
+      expect(result.appHtml).toContain('data-room-shell="live"');
     });
 
     it('para la sala de visualización (/watch/:roomId), pre-renderiza la estructura HTML de la sala (AC1)', async () => {

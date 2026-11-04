@@ -111,6 +111,8 @@ services:
       NGINX_ERROR_LOG_LEVEL: ${NGINX_ERROR_LOG_LEVEL:-warn}
       PORT: 5173
       NODE_ENV: production
+      IDENTITY_API_URL: ${IDENTITY_API_URL:-http://identity-api:8081/api/v1}
+      API_PROXY_TARGET: ${API_PROXY_TARGET:-http://identity-api:8081}
     ports:
       - "${WEB_PORT:-5173}:5173"
     healthcheck:

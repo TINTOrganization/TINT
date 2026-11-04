@@ -1,20 +1,20 @@
 import { useContext } from 'react';
 import { Navigate, useLocation } from 'react-router-dom';
 import { loginRedirectPath } from '../lib/api';
-import { DashboardContext } from '../App';
+import { SsrContext } from '../App';
 
 export default function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const location = useLocation();
-  const dashboardContext = useContext(DashboardContext);
+  const isSsr = useContext(SsrContext) || typeof window === 'undefined';
 
-  // Durante SSR o cuando hay datos pre-renderizados en el contexto,
-  // permitimos el renderizado del dashboard para que el cliente hidrate y verifique localStorage.
-  if (location.pathname === '/dashboard' && (typeof window === 'undefined' || dashboardContext?.dashboardData)) {
+  // Durante SSR, permitimos el renderizado del cascarón de la ruta protegida
+  // para que el cliente hidrate y verifique la autenticación en localStorage.
+  if (isSsr) {
     return <>{children}</>;
   }
 
-  const token = typeof window !== 'undefined' ? localStorage.getItem('tint_token') : null;
-  const guestToken = typeof window !== 'undefined' ? localStorage.getItem('tint_guest_token') : null;
+  const token = localStorage.getItem('tint_token');
+  const guestToken = localStorage.getItem('tint_guest_token');
 
   if (!token) {
     if (guestToken) {

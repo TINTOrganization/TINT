@@ -450,7 +450,7 @@ export function createRequestHandler(options: RequestHandlerOptions = {}) {
           fetchDashboardData: options.fetchDashboardData,
           authToken: extractAuthFromRequest(req).token,
           userRole: extractAuthFromRequest(req).role,
-          apiBaseUrl: options.apiBaseUrl,
+          apiBaseUrl: options.apiBaseUrl ?? (process.env.IDENTITY_API_URL || `${proxyTargets.api}/api/v1`),
         };
         const { html, statusCode } = await renderHtmlPage(templateHtml, rawUrl, renderOpts);
         res.statusCode = statusCode;

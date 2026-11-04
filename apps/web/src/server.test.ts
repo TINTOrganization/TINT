@@ -370,7 +370,7 @@ describe('server - createRequestHandler', () => {
     expect(body).toContain('<link rel="stylesheet" crossorigin href="/assets/index-Bk5t10yA.css">');
   });
 
-  it('devuelve la plantilla SPA para rutas de transmisión en vivo (/live) sin romper los flujos cliente', async () => {
+  it('devuelve HTML pre-renderizado para rutas de transmisión en vivo (/live) con el cascarón de sala (data-room-shell="live")', async () => {
     const handler = createRequestHandler({
       templateHtml: mockTemplate,
       distDir: '',
@@ -382,7 +382,9 @@ describe('server - createRequestHandler', () => {
     expect(res.statusCode).toBe(200);
     expect(res.getHeader('content-type')).toContain('text/html');
     const body = res.getBody();
-    expect(body).toContain('<div id="root"></div>');
+    expect(body).toContain('data-room-shell="live"');
+    expect(body).not.toContain('<div id="root"></div>');
+    expect(body).not.toContain('<!--ssr-outlet-->');
     expect(body).toContain('/assets/index-IjWPezpJ.js');
     expect(body).toContain('/assets/index-Bk5t10yA.css');
   });

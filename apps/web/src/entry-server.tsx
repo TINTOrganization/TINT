@@ -2,8 +2,8 @@ import { renderToString } from 'react-dom/server';
 import App from './App';
 import {
   generateMetaTags,
-  getLandingMetaTags,
   getInviteMetaTags,
+  getLandingMetaTags,
   injectHeadMeta,
   type MetaTagOptions,
 } from './lib/metaTags';
@@ -15,17 +15,17 @@ import {
 } from './lib/serverDashboard';
 
 export interface RenderOptions {
-  roomTitle?: string | null;
+  roomTitle?: string;
   fetchRoomDetails?: (code: string) => Promise<RoomDetails | null>;
-  apiBaseUrl?: string;
-  authToken?: string | null;
-  userRole?: 'host' | 'participant';
-  dashboardData?: DashboardData | null;
   fetchDashboardData?: (
     token?: string,
     options?: FetchDashboardOptions,
   ) => Promise<DashboardData>;
+  authToken?: string;
+  userRole?: 'host' | 'participant';
+  apiBaseUrl?: string;
   timeoutMs?: number;
+  dashboardData?: DashboardData | null;
 }
 
 export interface PageRenderResult {
@@ -34,7 +34,7 @@ export interface PageRenderResult {
   title: string;
   headHtml: string;
   roomDetails: RoomDetails | null;
-  dashboardData: DashboardData | null;
+  dashboardData?: DashboardData | null;
   isSsrRoute: boolean;
 }
 
@@ -47,20 +47,24 @@ export interface HtmlPageResult {
 
 const INVITE_ROUTE_REGEX = /^\/invite\/([^/?#]+)/i;
 const WATCH_ROUTE_REGEX = /^\/watch\/([^/?#]+)/i;
+const LIVE_ROUTE_REGEX = /^\/live\/([^/?#]+)/i;
+const ROOMS_ROUTE_REGEX = /^\/rooms\/([^/?#]+)/i;
 
 /**
- * Determina si una ruta debe procesarse con SSR o delegarse a renderizado en cliente (CSR).
- * Se habilita SSR para la landing page ('/' y '/login'), páginas de invitación ('/invite/:code')
- * y el panel principal del host ('/dashboard').
- * Las páginas de streaming interactivo ('/watch/*', '/live/*') y secundarias se reservan para el cliente
- * para no interferir con WebSockets ni flujos de WebRTC concurrentes.
+ * Determina si una ruta debe procesarse con SSR.
+ * Se habilita SSR para todas las rutas de la aplicación: landing, login, dashboard,
+ * invitaciones, salas de visualización, salas en vivo y gestión/creación de salas.
  */
 export function isSsrRoute(url: string): boolean {
   const pathname = url.split('?')[0].split('#')[0];
-  if (pathname === '/' || pathname === '/login' || pathname === '/dashboard') return true;
+  if (pathname === '/' || pathname === '/login' || pathname === '/dashboard' || pathname === '/rooms/new' || pathname === '/403') {
+    return true;
+  }
   if (INVITE_ROUTE_REGEX.test(pathname)) return true;
   if (WATCH_ROUTE_REGEX.test(pathname)) return true;
-  return false;
+  if (LIVE_ROUTE_REGEX.test(pathname)) return true;
+  if (ROOMS_ROUTE_REGEX.test(pathname)) return true;
+  return true;
 }
 
 /**
@@ -198,6 +202,50 @@ export async function renderPage(url: string, options?: RenderOptions): Promise<
     };
   }
 
+  // Sala de transmisión en vivo: /live/:roomId
+  const liveMatch = pathname.match(LIVE_ROUTE_REGEX);
+  if (liveMatch) {
+    const roomId = decodeURIComponent(liveMatch[1]);
+    const title = options?.roomTitle ? `${options.roomTitle} — TINT` : `Transmisión en vivo ${roomId} — TINT`;
+    const metaOptions: MetaTagOptions = {
+      title,
+      description: 'Transmisión en vivo en TINT con audio del sistema, chat y reacciones en tiempo real.',
+    };
+    const metaTags = generateMetaTags(metaOptions);
+    const appHtml = renderApp(url);
+
+    return {
+      appHtml,
+      metaTags,
+      title,
+      headHtml: metaTags,
+      roomDetails: null,
+      dashboardData: null,
+      isSsrRoute: true,
+    };
+  }
+
+  // Crear o gestionar sala: /rooms/new, /rooms/:id
+  if (pathname === '/rooms/new' || ROOMS_ROUTE_REGEX.test(pathname)) {
+    const title = pathname === '/rooms/new' ? 'Crear sala — TINT' : 'Gestionar sala — TINT';
+    const metaOptions: MetaTagOptions = {
+      title,
+      description: 'Crea o gestiona una sala de reproducción sincronizada o evento en vivo en TINT.',
+    };
+    const metaTags = generateMetaTags(metaOptions);
+    const appHtml = renderApp(url);
+
+    return {
+      appHtml,
+      metaTags,
+      title,
+      headHtml: metaTags,
+      roomDetails: null,
+      dashboardData: null,
+      isSsrRoute: true,
+    };
+  }
+
   // Landing page: / o /login
   const landingMeta = getLandingMetaTags();
   const metaTags = generateMetaTags(landingMeta);
@@ -243,8 +291,9 @@ export async function renderHtmlPage(
     }
   }
 
-  // Inyectar script de captura temprana para resiliencia pre-hidratación (AC2)
-  if (WATCH_ROUTE_REGEX.test(url.split('?')[0].split('#')[0])) {
+  // Inyectar script de captura temprana para resiliencia pre-hidratación en salas (AC2)
+  const pathname = url.split('?')[0].split('#')[0];
+  if (WATCH_ROUTE_REGEX.test(pathname) || LIVE_ROUTE_REGEX.test(pathname)) {
     const preHydrationScript = `<script id="__TINT_PRE_HYDRATION__">window.__TINT_PRE_HYDRATION_QUEUE__=window.__TINT_PRE_HYDRATION_QUEUE__||[];document.addEventListener('click',function(e){if(!window.__TINT_HYDRATED__){var t=e.target&&e.target.closest('button,[data-action],input[type="submit"],[role="button"]');if(t){e.preventDefault();e.stopPropagation();window.__TINT_PRE_HYDRATION_QUEUE__.push({type:e.type,action:t.getAttribute('data-action')||t.getAttribute('aria-label')||t.id||'',target:t,timeStamp:Date.now()});}}},true);</script>`;
     if (html.includes('</head>')) {
       html = html.replace('</head>', `${preHydrationScript}</head>`);
@@ -253,7 +302,7 @@ export async function renderHtmlPage(
     }
   }
 
-  const isInvite = INVITE_ROUTE_REGEX.test(url.split('?')[0].split('#')[0]);
+  const isInvite = INVITE_ROUTE_REGEX.test(pathname);
   const statusCode = isInvite && !roomDetails ? 404 : 200;
 
   return {

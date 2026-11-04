@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useContext, useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
+import { SsrContext } from '../App';
 
 import { ReactionBar } from '../components/ReactionBar';
 import { ReactionOverlay } from '../components/ReactionOverlay';
@@ -40,11 +41,18 @@ export default function LiveRoom() {
   const { roomId = '' } = useParams();
   const navigate = useNavigate();
   const { confirm, dialog } = useConfirm();
-  const hostToken = localStorage.getItem('tint_token');
-  const guestToken = guestTokenGrantsRoom(localStorage.getItem('tint_guest_token'), roomId)
-    ? localStorage.getItem('tint_guest_token')
-    : null;
-  const hasAccess = !!hostToken || !!guestToken;
+
+  const [hydrated, setHydrated] = useState(false);
+  useEffect(() => {
+    setHydrated(true);
+  }, []);
+
+  const isSsr = useContext(SsrContext) || typeof window === 'undefined';
+  const hostToken = !isSsr && typeof localStorage !== 'undefined' ? localStorage.getItem('tint_token') : null;
+  const rawGuestToken =
+    !isSsr && typeof localStorage !== 'undefined' ? localStorage.getItem('tint_guest_token') : null;
+  const guestToken = guestTokenGrantsRoom(rawGuestToken, roomId) ? rawGuestToken : null;
+  const hasAccess = isSsr || !hydrated || !!hostToken || !!guestToken;
   const isGuest = !hostToken && !!guestToken;
   const role = isGuest ? 'guest' : 'host';
   const homePath = isGuest ? '/' : '/dashboard';
@@ -53,19 +61,19 @@ export default function LiveRoom() {
   const [ended, setEnded] = useState(false);
   const markEnded = useCallback(() => setEnded(true), []);
   const [roomTitle, setRoomTitle] = useState<string | null>(() =>
-    isGuest ? localStorage.getItem('tint_room_title') : null,
+    !isSsr && isGuest && typeof localStorage !== 'undefined' ? localStorage.getItem('tint_room_title') : null,
   );
   const [inviteLink, setInviteLink] = useState<string | null>(() =>
-    isGuest ? localStorage.getItem('tint_invite_link') : null,
+    !isSsr && isGuest && typeof localStorage !== 'undefined' ? localStorage.getItem('tint_invite_link') : null,
   );
   const heading = roomTitle?.trim() ? roomTitle : `Sala ${roomId}`;
 
-  const social = useSocialSocket(hasAccess && !ended ? roomId : undefined, { role });
-  const live = useLiveStream(roomId, { role, title: roomTitle ?? undefined });
+  const social = useSocialSocket(hydrated && hasAccess && !ended ? roomId : undefined, { role });
+  const live = useLiveStream(hydrated && hasAccess ? roomId : undefined, { role, title: roomTitle ?? undefined });
 
   // Datos de la sala (host): si no es `live` se va a /watch; si ya terminó, el aviso.
   useEffect(() => {
-    if (!hasAccess || isGuest) return;
+    if (!hydrated || !hasAccess || isGuest) return;
     let cancelled = false;
     Promise.all([apiFetch(`/rooms/${encodeURIComponent(roomId)}`), apiFetch(`/rooms/${encodeURIComponent(roomId)}/invitations`)])
       .then(([roomRes, invRes]) => {
@@ -89,18 +97,18 @@ export default function LiveRoom() {
     return () => {
       cancelled = true;
     };
-  }, [roomId, hasAccess, isGuest, navigate]);
+  }, [hydrated, roomId, hasAccess, isGuest, navigate]);
 
   // La audiencia se conecta sola; el host decide cuándo empezar a transmitir.
   const { watch } = live;
   useEffect(() => {
-    if (hasAccess && isGuest && !ended) void watch();
-  }, [hasAccess, isGuest, ended, watch]);
+    if (hydrated && hasAccess && isGuest && !ended) void watch();
+  }, [hydrated, hasAccess, isGuest, ended, watch]);
 
   // WHEP 404: la sala no tiene transmisión (es una sala watch) → su página.
   useEffect(() => {
-    if (isGuest && live.error?.code === 'STREAM_NOT_FOUND') navigate(watchPath(roomId), { replace: true });
-  }, [isGuest, live.error, navigate, roomId]);
+    if (hydrated && isGuest && live.error?.code === 'STREAM_NOT_FOUND') navigate(watchPath(roomId), { replace: true });
+  }, [hydrated, isGuest, live.error, navigate, roomId]);
 
   // Minuto de la transmisión según el reloj local (trivia por minuto y reacciones).
   const liveSinceRef = useRef<number | null>(null);
@@ -190,7 +198,7 @@ export default function LiveRoom() {
       />
     );
   }
-  if (!hasAccess) {
+  if (hydrated && !hasAccess) {
     return (
       <RoomNotice
         title="Necesitas una invitación"
@@ -203,7 +211,7 @@ export default function LiveRoom() {
     social.status === 'open' ? 'Chat conectado' : social.status === 'closed' ? 'Chat desconectado' : 'Chat reconectando…';
 
   return (
-    <div className="relative isolate min-h-[100dvh] overflow-x-clip bg-tint-bg text-tint-muted">
+    <div data-room-shell="live" className="relative isolate min-h-[100dvh] overflow-x-clip bg-tint-bg text-tint-muted">
       {dialog}
       <AmbientBackground />
       <header className="sticky top-0 z-30 border-b border-white/10 bg-tint-bg/80 backdrop-blur-xl">
@@ -370,4 +378,3 @@ export default function LiveRoom() {
     </div>
   );
 }
-
