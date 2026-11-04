@@ -33,6 +33,7 @@ Cada ADR de esta carpeta se escribió a partir de evidencia del repositorio (có
 | [0023](0023-instrucciones-de-ejecucion-del-prototipo.md) | Instrucciones de ejecución del prototipo y guía de revisión (OPS-06) | Aceptada | 2026-11-02 | Infraestructura, CI/CD, README |
 | [0024](0024-login-local-con-firebase-auth-emulator.md) | Login local del host con el Firebase Auth Emulator | Aceptada | 2026-11-02 | Infraestructura, identity-api, web |
 | [0025](0025-metadatos-del-chat-en-mongodb.md) | Metadatos del chat en MongoDB, sin el texto (SOC-07, DAT-02) | Propuesta | 2026-11-02 | social-core, Infraestructura |
+| [0026](0026-app-android-nativa-kotlin.md) | App Android nativa en Kotlin | Aceptada | 2026-10-31 | android (nuevo), infra |
 
 ```mermaid
 flowchart LR
@@ -63,6 +64,7 @@ flowchart LR
     A23 --> A24["0024 login local con Firebase Auth Emulator"]
     A22 --> A24
     A17 --> A25["0025 metadatos del chat en MongoDB"]
+    A12 --> A26["0026 app Android nativa en Kotlin"]
 ```
 
 ## Formato

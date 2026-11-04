@@ -5,7 +5,7 @@ COVERAGE_MIN := 85
 NODE_SERVICES := services/identity-api
 CPP_SERVICES := services/voice-core
 
-.PHONY: up down env-sync backup restore smoke-persistence test-all test-go test-python test-web test-node test-cpp test-stream smoke-stream load-stream load-voice e2e-voice observability health logs smoke-observability secrets smoke-secrets prototype-health e2e-stream e2e-system
+.PHONY: up down env-sync backup restore smoke-persistence test-all test-go test-python test-web test-node test-cpp test-stream smoke-stream load-stream load-voice e2e-voice observability health logs smoke-observability secrets smoke-secrets prototype-health e2e-stream e2e-system test-android
 
 # Arranque recomendado: completa .env con lo que falte de .env.example y reconstruye
 # (tras un git pull, las imágenes viejas no tienen el código nuevo).
@@ -135,3 +135,7 @@ smoke-secrets:
 prototype-health: health
 	@echo Verificando gateway /healthz...
 	@curl -sk https://localhost/healthz || true
+# Aparte de test-all: exige JDK 17 y el Android SDK (JAVA_HOME y ANDROID_HOME) y un google-services.json
+# (el real o app/google-services.json.example). Ver apps/android/README.md.
+test-android:
+	cd apps/android && ./gradlew testDebugUnitTest koverVerifyDebug

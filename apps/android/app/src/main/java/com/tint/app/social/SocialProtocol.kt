@@ -1,0 +1,374 @@
+package com.tint.app.social
+
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.doubleOrNull
+import kotlinx.serialization.json.put
+
+/** Una línea del chat: un mensaje de alguien o un aviso de presencia ("Ana se unió"). */
+sealed interface ChatItem {
+    val eventId: String
+
+    data class Message(
+        override val eventId: String,
+        val userId: String,
+        val nick: String,
+        val text: String,
+        /** El autor pidió ocultar el texto hasta que se toque. */
+        val spoiler: Boolean,
+    ) : ChatItem
+
+    data class Notice(override val eventId: String, val text: String) : ChatItem
+}
+
+data class Reaction(val eventId: String, val userId: String, val nick: String, val emoji: String, val positionMs: Long)
+
+/** Pregunta lanzada a todos (sin la respuesta correcta). `*AtMs` son del reloj del servidor. */
+data class TriviaQuestion(
+    val triviaId: String,
+    val question: String,
+    val options: List<String>,
+    val opensAtMs: Long,
+    val closesAtMs: Long,
+)
+
+/** Confirmación de mi respuesta: `score` es 0 si falló; si acertó, 1000 más un bono por rapidez. */
+data class TriviaAck(val triviaId: String, val option: Int, val score: Int)
+
+data class RankEntry(val userId: String, val nick: String, val score: Int)
+
+/** Cierre de la pregunta: la correcta (índice), el top de la pregunta y el acumulado de la sala. */
+data class TriviaResult(
+    val triviaId: String,
+    val correct: Int,
+    val top: List<RankEntry>,
+    val leaderboard: List<RankEntry>,
+    val myScore: Int?,
+    val myTotal: Int?,
+)
+
+/**
+ * Estado de una encuesta (autoritativo en social-core). `closesAtMs` es del reloj del servidor y solo sirve para
+ * la cuenta atrás; quien decide si sigue abierta es el servidor (`closed` o `POLL_CLOSED`). `myVote` es el índice
+ * de mi opción, o null si no he votado.
+ */
+data class PollState(
+    val pollId: String,
+    val question: String,
+    val options: List<String>,
+    val counts: List<Int>,
+    val closesAtMs: Long,
+    val closed: Boolean,
+    val myVote: Int?,
+) {
+    /** Cuánto falta para el cierre (0 si ya cerró). `wallNowMs` es la hora de pared: solo para mostrar. */
+    fun remainingMs(wallNowMs: Long): Long = if (closed) 0L else maxOf(0L, closesAtMs - wallNowMs)
+}
+
+/** Punto del puntero láser del host (`x`, `y` normalizados a 0..1 sobre el vídeo); `end` cierra el trazo. */
+data class LaserPoint(
+    val eventId: String,
+    val userId: String,
+    val nick: String,
+    val x: Float,
+    val y: Float,
+    val end: Boolean,
+)
+
+/** Quién reaccionó más durante la sesión. */
+data class RecapReactor(val userId: String, val nick: String, val count: Int)
+
+/** Un momento del video (en ms) y cuántas veces pasó algo ahí. */
+data class RecapMoment(val positionMs: Long, val count: Int)
+
+data class RecapPeak(val positionMs: Long, val count: Int, val laughs: Int)
+
+data class RecapTotals(val reactions: Int, val pauses: Int, val rewinds: Int, val polls: Int)
+
+/** Resumen de la sesión que calcula social-core (cada bloque puede faltar si no hubo datos). */
+data class RecapSummary(
+    val topReactor: RecapReactor?,
+    val mostPaused: RecapMoment?,
+    val peak: RecapPeak?,
+    val totals: RecapTotals,
+) {
+    val isEmpty: Boolean
+        get() = topReactor == null && mostPaused == null && peak == null &&
+            totals == RecapTotals(0, 0, 0, 0)
+}
+
+sealed interface SocialMessage {
+    /** Se manda al entrar: los últimos mensajes de la sala. */
+    data class History(val items: List<ChatItem>) : SocialMessage
+
+    data class Chat(val item: ChatItem) : SocialMessage
+
+    /** Modo lento (segundos, 0 = apagado) y quiénes están silenciados (`sub`). */
+    data class Settings(val slowModeS: Int, val mutedUserIds: List<String>) : SocialMessage
+
+    data class ReactionMsg(val reaction: Reaction) : SocialMessage
+
+    data class Error(val code: String, val retryAfterMs: Long?) : SocialMessage
+
+    data class TriviaQuestionMsg(val question: TriviaQuestion) : SocialMessage
+
+    data class TriviaAckMsg(val ack: TriviaAck) : SocialMessage
+
+    data class TriviaResultMsg(val result: TriviaResult) : SocialMessage
+
+    data class PollStateMsg(val poll: PollState) : SocialMessage
+
+    data class LaserMsg(val point: LaserPoint) : SocialMessage
+
+    /** Ranking acumulado de la sala, que llega al entrar. `myRank`/`myTotal` son los míos, si ya puntué. */
+    data class LeaderboardMsg(val entries: List<RankEntry>, val myRank: Int?, val myTotal: Int?) : SocialMessage
+
+    data class RecapMsg(val recap: RecapSummary) : SocialMessage
+}
+
+/**
+ * Protocolo del Canal Social (`/ws/social`), parte del chat y las reacciones. Espejo de
+ * `apps/web/src/lib/socialSocket.ts`; el contrato está en `services/social-core/AGENTS.md`.
+ * Encuestas y láser se reciben como participante (votar sí; crear encuestas o dibujar con el láser es del host y
+ * pide el sync-ticket). El recap se ignora por ahora.
+ */
+object SocialProtocol {
+    const val CHAT_MAX_LENGTH = 280
+    const val HISTORY_LIMIT = 50
+
+    /** Mismo conjunto que la web (aplauso, risa, sorpresa, susto, corazón, tristeza). */
+    val REACTION_EMOJIS = listOf("👏", "😂", "😮", "😱", "❤️", "😢")
+
+    private val ERROR_MESSAGES = mapOf(
+        "SLOW_MODE" to "El chat está en modo lento: espera un momento para volver a escribir.",
+        "MUTED" to "El host te silenció; puedes leer el chat.",
+        "FORBIDDEN" to "No tienes permiso para hacer eso.",
+        "RATE_LIMITED" to "Vas muy rápido: ve más despacio.",
+        "UNAVAILABLE" to "El chat no está disponible ahora. Inténtalo en un momento.",
+        "TRIVIA_NOT_FOUND" to "Esa pregunta ya no existe.",
+        "TRIVIA_CLOSED" to "Se acabó el tiempo para responder.",
+        "ALREADY_ANSWERED" to "Ya respondiste esta pregunta.",
+        "POLL_CLOSED" to "La encuesta ya está cerrada.",
+        "POLL_NOT_FOUND" to "La encuesta ya no existe.",
+        "POLL_ACTIVE" to "Ya hay una encuesta abierta.",
+    )
+    private const val GENERIC_ERROR = "No se pudo completar la acción. Inténtalo de nuevo."
+
+    fun isReaction(emoji: String): Boolean = emoji in REACTION_EMOJIS
+
+    fun errorMessage(code: String): String = ERROR_MESSAGES[code] ?: GENERIC_ERROR
+
+    /** Parsea un frame del servidor; null si no es del chat o le faltan campos. */
+    fun parse(raw: String): SocialMessage? {
+        val obj = try {
+            Json.parseToJsonElement(raw) as? JsonObject
+        } catch (e: Exception) {
+            null
+        } ?: return null
+        return when (obj.string("type")) {
+            "chat_message" -> chatMessage(obj)?.let { SocialMessage.Chat(it) }
+            "notice" -> notice(obj)?.let { SocialMessage.Chat(it) }
+            "history" -> SocialMessage.History(
+                (obj["messages"] as? JsonArray).orEmpty().mapNotNull { (it as? JsonObject)?.let(::chatMessage) },
+            )
+            "chat_settings" -> SocialMessage.Settings(
+                slowModeS = obj.long("slow_mode_s")?.toInt() ?: 0,
+                mutedUserIds = (obj["muted_user_ids"] as? JsonArray).orEmpty()
+                    .mapNotNull { (it as? JsonPrimitive)?.takeIf { p -> p.isString }?.content },
+            )
+            "reaction" -> reaction(obj)?.let { SocialMessage.ReactionMsg(it) }
+            "error" -> obj.string("code")?.let { SocialMessage.Error(it, obj.long("retry_after_ms")) }
+            "trivia_question" -> triviaQuestion(obj)?.let { SocialMessage.TriviaQuestionMsg(it) }
+            "trivia_ack" -> triviaAck(obj)?.let { SocialMessage.TriviaAckMsg(it) }
+            "trivia_result" -> triviaResult(obj)?.let { SocialMessage.TriviaResultMsg(it) }
+            "poll_state" -> pollState(obj)?.let { SocialMessage.PollStateMsg(it) }
+            "laser" -> laser(obj)?.let { SocialMessage.LaserMsg(it) }
+            "trivia_leaderboard" -> SocialMessage.LeaderboardMsg(rank(obj["leaderboard"]), obj.long("my_rank")?.toInt(), obj.long("my_total")?.toInt())
+            "recap" -> SocialMessage.RecapMsg(recap(obj))
+            else -> null
+        }
+    }
+
+    private fun chatMessage(o: JsonObject): ChatItem.Message? {
+        return ChatItem.Message(
+            eventId = o.string("event_id") ?: return null,
+            userId = o.string("user_id") ?: return null,
+            nick = o.string("nick") ?: return null,
+            text = o.string("text") ?: return null,
+            spoiler = o.bool("spoiler") ?: false,
+        )
+    }
+
+    private fun notice(o: JsonObject): ChatItem.Notice? {
+        return ChatItem.Notice(o.string("event_id") ?: return null, o.string("text") ?: return null)
+    }
+
+    private fun reaction(o: JsonObject): Reaction? {
+        return Reaction(
+            eventId = o.string("event_id") ?: return null,
+            userId = o.string("user_id") ?: return null,
+            nick = o.string("nick") ?: return null,
+            emoji = o.string("emoji") ?: return null,
+            positionMs = o.long("position_ms") ?: 0,
+        )
+    }
+
+    private fun triviaQuestion(o: JsonObject): TriviaQuestion? {
+        val options = (o["options"] as? JsonArray).orEmpty()
+            .mapNotNull { (it as? JsonPrimitive)?.takeIf { p -> p.isString }?.content }
+        if (options.isEmpty()) return null
+        return TriviaQuestion(
+            triviaId = o.string("trivia_id") ?: return null,
+            question = o.string("question") ?: return null,
+            options = options,
+            opensAtMs = o.long("opens_at_ms") ?: return null,
+            closesAtMs = o.long("closes_at_ms") ?: return null,
+        )
+    }
+
+    private fun triviaAck(o: JsonObject): TriviaAck? {
+        return TriviaAck(
+            triviaId = o.string("trivia_id") ?: return null,
+            option = o.long("option")?.toInt() ?: return null,
+            score = o.long("score")?.toInt() ?: return null,
+        )
+    }
+
+    private fun triviaResult(o: JsonObject): TriviaResult? {
+        return TriviaResult(
+            triviaId = o.string("trivia_id") ?: return null,
+            correct = o.long("correct")?.toInt() ?: return null,
+            top = rank(o["top"]),
+            leaderboard = rank(o["leaderboard"]),
+            myScore = o.long("my_score")?.toInt(),
+            myTotal = o.long("my_total")?.toInt(),
+        )
+    }
+
+    private fun pollState(o: JsonObject): PollState? {
+        val options = (o["options"] as? JsonArray).orEmpty()
+            .mapNotNull { (it as? JsonPrimitive)?.takeIf { p -> p.isString }?.content }
+        if (options.isEmpty()) return null
+        // Un `counts` ausente o corto se completa con ceros: la encuesta se sigue pudiendo mostrar y votar.
+        val given = (o["counts"] as? JsonArray).orEmpty().map { (it as? JsonPrimitive)?.doubleOrNull?.toInt() ?: 0 }
+        return PollState(
+            pollId = o.string("poll_id") ?: return null,
+            question = o.string("question") ?: return null,
+            options = options,
+            counts = List(options.size) { given.getOrElse(it) { 0 }.coerceAtLeast(0) },
+            closesAtMs = o.long("closes_at_ms") ?: return null,
+            closed = o.bool("closed") ?: false,
+            myVote = o.long("my_vote")?.toInt(),
+        )
+    }
+
+    private fun laser(o: JsonObject): LaserPoint? {
+        return LaserPoint(
+            eventId = o.string("event_id") ?: return null,
+            userId = o.string("user_id") ?: return null,
+            nick = o.string("nick") ?: return null,
+            x = o.unit("x") ?: return null,
+            y = o.unit("y") ?: return null,
+            end = o.bool("end") ?: false,
+        )
+    }
+
+    private fun recap(o: JsonObject): RecapSummary {
+        val totals = o["totals"] as? JsonObject
+        return RecapSummary(
+            topReactor = (o["top_emoji_user"] as? JsonObject)?.let {
+                RecapReactor(it.string("user_id") ?: return@let null, it.string("nick") ?: return@let null, it.long("count")?.toInt() ?: 0)
+            },
+            mostPaused = (o["most_paused"] as? JsonObject)?.let { RecapMoment(it.long("position_ms") ?: return@let null, it.long("count")?.toInt() ?: 0) },
+            peak = (o["peak_reactions"] as? JsonObject)?.let {
+                RecapPeak(it.long("position_ms") ?: return@let null, it.long("count")?.toInt() ?: 0, it.long("laughs")?.toInt() ?: 0)
+            },
+            totals = RecapTotals(
+                reactions = totals?.long("reactions")?.toInt() ?: 0,
+                pauses = totals?.long("pauses")?.toInt() ?: 0,
+                rewinds = totals?.long("rewinds")?.toInt() ?: 0,
+                polls = totals?.long("polls")?.toInt() ?: 0,
+            ),
+        )
+    }
+
+    private fun rank(element: kotlinx.serialization.json.JsonElement?): List<RankEntry> =
+        (element as? JsonArray).orEmpty().mapNotNull { e ->
+            val o = e as? JsonObject ?: return@mapNotNull null
+            RankEntry(
+                userId = o.string("user_id") ?: return@mapNotNull null,
+                nick = o.string("nick") ?: return@mapNotNull null,
+                score = o.long("score")?.toInt() ?: return@mapNotNull null,
+            )
+        }
+
+    /** Porcentaje entero de cada opción (0 si nadie votó), como en la web. */
+    fun pollPercentages(counts: List<Int>): List<Int> {
+        val total = counts.sum()
+        return counts.map { if (total > 0) Math.round(it * 100f / total) else 0 }
+    }
+
+    fun pollVote(roomId: String, pollId: String, option: Int, eventId: String): String =
+        buildJsonObject {
+            put("event_id", eventId)
+            put("type", "poll_vote")
+            put("room_id", roomId)
+            put("poll_id", pollId)
+            put("option", option)
+        }.toString()
+
+    fun recapRequest(roomId: String, eventId: String): String =
+        buildJsonObject {
+            put("event_id", eventId)
+            put("type", "recap_request")
+            put("room_id", roomId)
+        }.toString()
+
+    fun triviaAnswer(roomId: String, triviaId: String, option: Int, eventId: String): String =
+        buildJsonObject {
+            put("event_id", eventId)
+            put("type", "trivia_answer")
+            put("room_id", roomId)
+            put("trivia_id", triviaId)
+            put("option", option)
+        }.toString()
+
+    fun chatSend(roomId: String, text: String, spoiler: Boolean, eventId: String, occurredAt: String): String =
+        buildJsonObject {
+            put("event_id", eventId)
+            put("type", "chat_send")
+            put("room_id", roomId)
+            put("text", text)
+            put("occurred_at", occurredAt)
+            if (spoiler) put("spoiler", true)
+        }.toString()
+
+    fun reactionSend(roomId: String, emoji: String, positionMs: Long, eventId: String, occurredAt: String): String =
+        buildJsonObject {
+            put("event_id", eventId)
+            put("type", "reaction_send")
+            put("room_id", roomId)
+            put("emoji", emoji)
+            put("position_ms", positionMs.coerceAtLeast(0))
+            put("occurred_at", occurredAt)
+        }.toString()
+
+    private fun JsonObject.primitive(key: String): JsonPrimitive? = this[key] as? JsonPrimitive
+
+    private fun JsonObject.string(key: String): String? = primitive(key)?.takeIf { it.isString }?.content
+
+    private fun JsonObject.long(key: String): Long? =
+        primitive(key)?.takeIf { !it.isString }?.doubleOrNull?.takeIf { it.isFinite() }?.toLong()
+
+    /** Número acotado a 0..1 (las coordenadas del láser); null si falta o no es un número. */
+    private fun JsonObject.unit(key: String): Float? =
+        primitive(key)?.takeIf { !it.isString }?.doubleOrNull?.takeIf { it.isFinite() }?.coerceIn(0.0, 1.0)?.toFloat()
+
+    private fun JsonObject.bool(key: String): Boolean? = primitive(key)?.takeIf { !it.isString }?.booleanOrNull
+
+    private fun JsonArray?.orEmpty(): List<kotlinx.serialization.json.JsonElement> = this ?: emptyList()
+}
