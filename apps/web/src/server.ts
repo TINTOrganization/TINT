@@ -458,8 +458,7 @@ export function createRequestHandler(options: RequestHandlerOptions = {}) {
         res.setHeader('Cache-Control', 'no-cache');
         res.end(method === 'HEAD' ? undefined : html);
         return;
-      } catch (err) {
-        console.error('[tint-web] Fallo inesperado en renderizado SSR para %s:', rawUrl, err);
+      } catch {
         // Ante cualquier fallo inesperado de SSR, fallback al index.html del cliente
         res.statusCode = 200;
         res.setHeader('Content-Type', 'text/html; charset=utf-8');
