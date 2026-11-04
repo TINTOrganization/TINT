@@ -353,6 +353,27 @@ docker compose up -d --build
 
 **Atajo recomendado:** `make up` hace los pasos 2 y 3: crea o completa `.env` con lo que falte de `.env.example` (sin tocar lo que ya tienes) y reconstruye. Úsalo también después de cada `git pull`. Sin `make` (Windows CMD): `python scripts/env_sync.py` y el paso 3.
 
+### 2 bis. Cliente Android (plantilla para la integración futura)
+
+El prototipo disponible actualmente es web y containerizado; todavía no existe un proyecto `apps/android` en este repositorio. Cuando se incorpore, conservar esta secuencia y sustituir `<paquete>` por el `applicationId` real:
+
+```bash
+# Desde la raíz del repositorio, después de añadir el cliente Android
+cd apps/android
+
+# Linux/macOS
+./gradlew assembleDebug
+
+# Windows PowerShell
+.\gradlew.bat assembleDebug
+
+# Dispositivo o emulador conectado por ADB
+adb install app/build/outputs/apk/debug/app-debug.apk
+adb shell monkey -p <paquete> 1
+```
+
+La aplicación Android deberá apuntar al gateway del prototipo (`https://10.0.2.2` desde el emulador Android, o la URL/IP documentada para un dispositivo físico). No se debe ejecutar esta plantilla como parte de la verificación actual hasta que exista el proyecto y su configuración de red.
+
 ### 3. Verificación del sistema (AC1)
 Una vez finalizado el arranque (típicamente 2–4 minutos):
 

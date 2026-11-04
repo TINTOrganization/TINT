@@ -83,6 +83,17 @@ class RunInstructionsContractTests(unittest.TestCase):
         self.assertIn("/test-me", section)
         self.assertIn("/arquitectura", section)
 
+    def test_prototype_section_documents_future_android_build_template(self):
+        """DOC-05/AC3: La guía deja una plantilla reproducible para el futuro cliente Android."""
+        section = self._extract_prototype_section()
+        lower = section.lower()
+
+        self.assertIn("apps/android", lower)
+        self.assertIn("gradlew", lower)
+        self.assertIn("assembledebug", lower)
+        self.assertIn("adb install", lower)
+        self.assertIn("todavía no existe", lower)
+
     def test_prototype_section_troubleshooting_covers_ac3(self):
         """OPS-06/AC3: Solución documentada para errores comunes."""
         section = self._extract_prototype_section()
