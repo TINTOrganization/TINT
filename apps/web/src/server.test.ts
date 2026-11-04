@@ -370,12 +370,12 @@ describe('server - createRequestHandler', () => {
     expect(body).toContain('<link rel="stylesheet" crossorigin href="/assets/index-Bk5t10yA.css">');
   });
 
-  it('devuelve la plantilla SPA para rutas de streaming sin romper los flujos cliente', async () => {
+  it('devuelve la plantilla SPA para rutas de transmisión en vivo (/live) sin romper los flujos cliente', async () => {
     const handler = createRequestHandler({
       templateHtml: mockTemplate,
       distDir: '',
     });
-    const { req, res } = createMockReqRes('/watch/room-99');
+    const { req, res } = createMockReqRes('/live/room-99');
 
     await handler(req, res);
 
@@ -385,6 +385,33 @@ describe('server - createRequestHandler', () => {
     expect(body).toContain('<div id="root"></div>');
     expect(body).toContain('/assets/index-IjWPezpJ.js');
     expect(body).toContain('/assets/index-Bk5t10yA.css');
+  });
+
+  it('devuelve HTML pre-renderizado para /watch/:roomId con el cascarón de sala (data-room-shell) en entorno Node sin window (AC1)', async () => {
+    const originalWindow = globalThis.window;
+    // @ts-expect-error simular entorno Node.js puro sin window
+    delete globalThis.window;
+
+    try {
+      const handler = createRequestHandler({
+        templateHtml: mockTemplate,
+        distDir: '',
+      });
+      const { req, res } = createMockReqRes('/watch/cinema-42');
+
+      await handler(req, res);
+
+      expect(res.statusCode).toBe(200);
+      expect(res.getHeader('content-type')).toContain('text/html');
+      const body = res.getBody();
+      expect(body).toContain('data-room-shell="watch"');
+      expect(body).toContain('<title>Sala cinema-42 — TINT</title>');
+      expect(body).toContain('data-action="toggle-play"');
+      expect(body).not.toContain('id="ambilight-canvas"');
+      expect(body).not.toContain('data-testid="live-chat"');
+    } finally {
+      globalThis.window = originalWindow;
+    }
   });
 
   it('sirve archivos estáticos simulados cuando existen en staticFiles', async () => {
