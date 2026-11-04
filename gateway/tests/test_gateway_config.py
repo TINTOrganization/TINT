@@ -17,7 +17,7 @@ class GatewayConfigTests(unittest.TestCase):
         self.assertIn("https://{$GATEWAY_HOST:localhost}", caddyfile)
         self.assertIn("@health path /healthz", caddyfile)
         self.assertIn("@frontend not path /api/* /ws/*", caddyfile)
-        self.assertIn("reverse_proxy @frontend web:5173", caddyfile)
+        self.assertIn("reverse_proxy @frontend web:80", caddyfile)
 
     def test_gateway_redirects_plain_http_to_https_with_308(self):
         """OPS-03/AC3: redirige HTTP plano a HTTPS con código 308 conservando host y URI."""

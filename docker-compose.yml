@@ -109,12 +109,10 @@ services:
     <<: *env-check
     environment:
       NGINX_ERROR_LOG_LEVEL: ${NGINX_ERROR_LOG_LEVEL:-warn}
-      PORT: 5173
-      NODE_ENV: production
     ports:
-      - "${WEB_PORT:-5173}:5173"
+      - "${WEB_PORT:-5173}:80"
     healthcheck:
-      test: ["CMD", "wget", "--spider", "--quiet", "http://127.0.0.1:5173/healthz"]
+      test: ["CMD", "wget", "--spider", "--quiet", "http://127.0.0.1/healthz"]
       interval: 10s
       timeout: 5s
       retries: 5
