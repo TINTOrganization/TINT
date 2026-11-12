@@ -22,7 +22,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"log"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -48,6 +48,9 @@ const (
 	MaxMissedChecks = 3
 	// MaxMsgsPerSecond limita los mensajes entrantes por conexión.
 	MaxMsgsPerSecond = 20
+	// MaxSyncChecksPerSecond es el límite propio de SYNC_CHECK, que no
+	// cuenta en MaxMsgsPerSecond; el exceso se descarta en silencio.
+	MaxSyncChecksPerSecond = 5
 	// CacheTTL: cada cuánto se relee el estado de Redis aunque la caché
 	// local (alimentada por el bus) esté al día. Red de seguridad por si se
 	// perdiera un mensaje Pub/Sub durante una reconexión.
@@ -108,10 +111,15 @@ type Hub struct {
 	reg *metrics.Registry
 	m   hubMetrics
 
-	// mu protege rooms. Se mantiene durante Subscribe/Unsubscribe para que
-	// un join y un leave concurrentes de la misma sala no se desordenen.
+	// mu protege rooms. Nunca se mantiene durante I/O de red: Deliver,
+	// latidos y barridos de todas las salas lo necesitan.
 	mu    sync.Mutex
 	rooms map[string]*roomEntry
+	// subMu serializa Subscribe/Unsubscribe del bus (orden: subMu → mu)
+	// para que un join y un leave concurrentes de la misma sala no se
+	// desordenen. El cliente Pub/Sub de go-redis ya serializa esas
+	// operaciones sobre su única conexión, así que no se pierde paralelismo.
+	subMu sync.Mutex
 }
 
 // roomEntry son los clientes locales de una sala y la caché de su estado.
@@ -184,6 +192,8 @@ func disconnectReason(cause error) string {
 		return "slow"
 	case errors.Is(cause, ErrRevoked):
 		return "revoked"
+	case errors.Is(cause, ErrRoomClosed):
+		return "room_closed"
 	}
 	return "normal"
 }
@@ -286,7 +296,7 @@ func (h *Hub) sweepAll(ctx context.Context) {
 	for room, b := range beats {
 		rctx, cancel := context.WithTimeout(ctx, ioTimeout)
 		if _, err := h.sweep(rctx, room, h.now().UnixMilli(), b.hosts, b.members); err != nil {
-			log.Printf("hub: barrido sala %s: %v", room, err)
+			slog.Error("hub: barrido de sala", "room_id", room, "error", err)
 		}
 		cancel()
 	}
@@ -348,7 +358,7 @@ func (h *Hub) swapDelegate(ctx context.Context, room, sub string) error {
 	ev := baseEvent(syncevent.Control, room, h.now())
 	ev.Holder = sub
 	if err := h.bus.Publish(ctx, room, mustJSON(ev)); err != nil {
-		log.Printf("hub: CONTROL sala %s: %v", room, err)
+		slog.Error("hub: CONTROL de sala", "room_id", room, "error", err)
 	}
 	return nil
 }
@@ -391,6 +401,21 @@ func (h *Hub) revoke(room, jti string) {
 		if c.claims.JTI == jti {
 			c.close(ErrRevoked)
 		}
+	}
+}
+
+// closeRoom cierra todas las conexiones locales de la sala deshabilitada
+// (host incluido). Es idempotente: cancelar un cliente ya cerrado no cambia
+// su causa, y cada cliente sale de la sala por su propio Disconnect.
+func (h *Hub) closeRoom(room string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	r, ok := h.rooms[room]
+	if !ok {
+		return
+	}
+	for c := range r.clients {
+		c.close(ErrRoomClosed)
 	}
 }
 
@@ -447,14 +472,16 @@ func (h *Hub) Connect(parent context.Context, claims auth.Claims, opts ...ConnOp
 	}
 
 	// El STATE va primero (HU-SYNC-01); el barrido puede publicar
-	// HOST_STATUS/CONTROL, que llegan después por el bus.
-	ev := stateEvent(syncevent.State, room, st, now)
+	// HOST_STATUS/CONTROL, que llegan después por el bus. Se sella justo
+	// antes de encolarlo: el cliente proyecta la posición desde
+	// server_time_ms y `now` es anterior a las idas y vueltas a Redis.
+	ev := stateEvent(syncevent.State, room, st, h.now())
 	ev.Online = syncevent.Bool(p.Online > 0)
 	ev.CanControl = syncevent.Bool(claims.CanControl() || (p.Delegate != "" && p.Delegate == claims.Sub))
 	c.enqueueEvent(ev)
 	h.release(c)
 	if _, err := h.sweep(ctx, room, nowMs, nil, nil); err != nil {
-		log.Printf("hub: barrido sala %s: %v", room, err)
+		slog.Error("hub: barrido de sala", "room_id", room, "error", err)
 	}
 	return c, nil
 }
@@ -486,11 +513,11 @@ func (h *Hub) Disconnect(c *Client) {
 	}
 	if reevaluate {
 		if _, err := h.sweep(ctx, room, nowMs, nil, nil); err != nil {
-			log.Printf("hub: barrido sala %s: %v", room, err)
+			slog.Error("hub: barrido de sala", "room_id", room, "error", err)
 		}
 	}
 	if err := h.store.Touch(ctx, room); err != nil {
-		log.Printf("hub: touch sala %s: %v", room, err)
+		slog.Error("hub: touch de sala", "room_id", room, "error", err)
 	}
 }
 
@@ -506,6 +533,11 @@ func (h *Hub) Deliver(roomID string, payload []byte) {
 			return
 		case syncevent.Revoked:
 			h.revoke(roomID, ev.JTI) // solo entre réplicas: nunca llega a los clientes
+			return
+		case syncevent.RoomClosed:
+			if ev.ValidRoomClosed(roomID) {
+				h.closeRoom(roomID) // tampoco llega a los clientes: se enteran por el 4010
+			}
 			return
 		}
 	}
@@ -547,13 +579,22 @@ func (h *Hub) Deliver(roomID string, payload []byte) {
 // lectora del cliente (el rate limit no está protegido para concurrencia).
 func (h *Hub) Handle(ctx context.Context, c *Client, raw []byte) {
 	now := h.now()
-	if !c.allow(now.UnixMilli()) {
+	nowMs := now.UnixMilli()
+	// Se decodifica antes del rate limit para elegir el límite por tipo: el
+	// mensaje ya está acotado a 4 KB, y lo que no se puede decodificar
+	// cuenta en el límite general como cualquier otro mensaje.
+	var ev syncevent.Event
+	decodeErr := c.codec.Decode(raw, &ev)
+	if decodeErr == nil && ev.Type == syncevent.SyncCheck {
+		if !c.allowSyncCheck(nowMs) {
+			return // exceso de SYNC_CHECK: se descarta en silencio
+		}
+	} else if !c.allow(nowMs) {
 		h.m.rateLimited.Inc()
 		c.enqueueEvent(errorEvent(c.claims.RoomID, "", syncevent.CodeRateLimited, now))
 		return
 	}
-	var ev syncevent.Event
-	if err := c.codec.Decode(raw, &ev); err != nil {
+	if decodeErr != nil {
 		h.m.invalid.Inc()
 		c.enqueueEvent(errorEvent(c.claims.RoomID, "", syncevent.CodeInvalid, now))
 		return
@@ -616,7 +657,7 @@ func (h *Hub) handleCommand(ctx context.Context, c *Client, ev syncevent.Event, 
 			errors.Is(err, syncevent.ErrInvalidVolume) || errors.Is(err, syncevent.ErrInvalidQuality) {
 			code, result = syncevent.CodeInvalid, "invalid"
 		} else {
-			log.Printf("hub: comando %s en sala %s: %v", ev.Type, room, err)
+			slog.Error("hub: comando", "type", ev.Type, "room_id", room, "error", err)
 		}
 		h.m.commands.With(result).Inc()
 		c.enqueueEvent(errorEvent(room, ev.EventID, code, now))
@@ -659,11 +700,22 @@ func (h *Hub) handleSyncCheck(ctx context.Context, c *Client, ev syncevent.Event
 		}
 		st = h.cache(room, loaded, nowMs)
 	}
+	if ev.Version > 0 && ev.Version < st.Version {
+		// El cliente midió su posición antes de aplicar el último broadcast
+		// (p. ej. justo tras un SEEK/LOAD del host): corregirlo produciría un
+		// seek duplicado. Ni corrección ni drift; el próximo latido lo mide.
+		return
+	}
 	rtt := c.RTT()
 	driftMs, corr := drift.Check(st, ev.PositionMs, nowMs, rtt, h.now().UnixMilli())
 	c.lastDriftMs.Store(driftMs)
 	if corr == nil {
 		return
+	}
+	// Solo la goroutine lectora del cliente llega aquí: leer y escribir
+	// lastSeekMs por separado no compite con otro SYNC_CHECK del mismo cliente.
+	if corr.Strategy == drift.Seek && !c.allowSeek(nowMs) {
+		return // el cliente aún aplica (o se recupera de) el seek anterior
 	}
 	h.m.corrections.With(string(corr.Strategy)).Inc()
 	out := baseEvent(syncevent.SyncCorrection, room, now)
@@ -729,20 +781,60 @@ func (h *Hub) release(c *Client) {
 	c.held = nil
 }
 
+// join registra al cliente en su sala y, si es la primera conexión local,
+// suscribe la réplica a la sala. Invariante: una sala está en h.rooms solo
+// mientras la suscripción del bus está activa (se inserta después de
+// Subscribe y se borra antes de Unsubscribe).
 func (h *Hub) join(ctx context.Context, c *Client) error {
+	if h.addToRoom(c) { // camino rápido: la sala ya está suscrita
+		return nil
+	}
+	h.subMu.Lock()
+	defer h.subMu.Unlock()
+	// Re-comprobar: otro join pudo crear la sala mientras esperábamos subMu.
+	if h.addToRoom(c) {
+		return nil
+	}
+	// Sin h.mu: un Subscribe lento no frena a las demás salas. Un mensaje
+	// publicado antes de insertar la sala se pierde, pero Connect lee el
+	// estado (Init) después de join y ese estado ya lo incluye.
+	room := c.claims.RoomID
+	if err := h.bus.Subscribe(ctx, room); err != nil {
+		return err
+	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	room := c.claims.RoomID
-	r, ok := h.rooms[room]
-	if !ok {
-		if err := h.bus.Subscribe(ctx, room); err != nil {
-			return err
-		}
-		r = &roomEntry{clients: make(map[*Client]struct{})}
-		h.rooms[room] = r
-	}
-	r.clients[c] = struct{}{}
+	h.rooms[room] = &roomEntry{clients: map[*Client]struct{}{c: {}}}
 	return nil
+}
+
+// addToRoom registra al cliente si su sala ya existe.
+func (h *Hub) addToRoom(c *Client) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	r, ok := h.rooms[c.claims.RoomID]
+	if ok {
+		r.clients[c] = struct{}{}
+	}
+	return ok
+}
+
+// unsubscribeIfEmpty desuscribe la sala si nadie volvió a crearla desde que
+// leave la borró. Con subMu tomado ningún join puede suscribirla a la vez.
+func (h *Hub) unsubscribeIfEmpty(room string) {
+	h.subMu.Lock()
+	defer h.subMu.Unlock()
+	h.mu.Lock()
+	_, recreated := h.rooms[room]
+	h.mu.Unlock()
+	if recreated {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), ioTimeout)
+	defer cancel()
+	if err := h.bus.Unsubscribe(ctx, room); err != nil {
+		slog.Error("hub: unsubscribe de sala", "room_id", room, "error", err)
+	}
 }
 
 // leftInfo describe la sala que deja un cliente.
@@ -753,18 +845,28 @@ type leftInfo struct {
 
 // leave quita al cliente; ok es false si ya no estaba registrado.
 func (h *Hub) leave(c *Client) (leftInfo, bool) {
+	info, ok, empty := h.removeFromRoom(c)
+	if empty {
+		h.unsubscribeIfEmpty(c.claims.RoomID) // fuera de h.mu: es I/O de red
+	}
+	return info, ok
+}
+
+// removeFromRoom quita al cliente; empty indica que la sala quedó vacía y
+// se borró de h.rooms.
+func (h *Hub) removeFromRoom(c *Client) (info leftInfo, ok, empty bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	room := c.claims.RoomID
-	r, ok := h.rooms[room]
-	if !ok {
-		return leftInfo{}, false
+	r, found := h.rooms[room]
+	if !found {
+		return leftInfo{}, false, false
 	}
-	if _, ok := r.clients[c]; !ok {
-		return leftInfo{}, false
+	if _, found := r.clients[c]; !found {
+		return leftInfo{}, false, false
 	}
 	delete(r.clients, c)
-	info := leftInfo{delegate: r.delegate}
+	info = leftInfo{delegate: r.delegate}
 	for other := range r.clients {
 		if other.claims.Sub == c.claims.Sub {
 			info.sameSub = true
@@ -773,13 +875,9 @@ func (h *Hub) leave(c *Client) (leftInfo, bool) {
 	}
 	if len(r.clients) == 0 {
 		delete(h.rooms, room)
-		ctx, cancel := context.WithTimeout(context.Background(), ioTimeout)
-		defer cancel()
-		if err := h.bus.Unsubscribe(ctx, room); err != nil {
-			log.Printf("hub: unsubscribe sala %s: %v", room, err)
-		}
+		empty = true
 	}
-	return info, true
+	return info, true, empty
 }
 
 // cache guarda st si es más nuevo que lo cacheado y devuelve el estado
@@ -830,7 +928,7 @@ func (h *Hub) publishHostStatus(ctx context.Context, room string, online bool) {
 	ev := baseEvent(syncevent.HostStatus, room, h.now())
 	ev.Online = syncevent.Bool(online)
 	if err := h.bus.Publish(ctx, room, mustJSON(ev)); err != nil {
-		log.Printf("hub: HOST_STATUS sala %s: %v", room, err)
+		slog.Error("hub: HOST_STATUS", "room_id", room, "error", err)
 	}
 }
 

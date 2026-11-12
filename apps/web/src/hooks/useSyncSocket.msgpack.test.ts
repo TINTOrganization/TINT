@@ -74,7 +74,7 @@ describe('useSyncSocket — MessagePack (O6)', () => {
       expect(f).toBeInstanceOf(Uint8Array);
       return decode(f as Uint8Array) as Record<string, unknown>;
     });
-    expect(check).toMatchObject({ type: 'SYNC_CHECK', echo_server_ts: 1_767_225_601_000, position_ms: 4_100 });
+    expect(check).toMatchObject({ type: 'SYNC_CHECK', echo_server_ts: 1_767_225_601_000, position_ms: 4_100, version: 3 });
     expect(typeof check.occurred_at).toBe('string');
     expect(cmd).toMatchObject({ type: 'RATE', rate: 1.25, room_id: 'r1' });
     expect(cmd).not.toHaveProperty('media_id');

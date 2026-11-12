@@ -14,7 +14,7 @@ vi.mock('../src/db/client.js', () => ({
   pool: { end: () => Promise.resolve() },
 }));
 
-import { create, findById, listByHost, isOwner, softRemoveById, updateTitle, setMedia } from '../src/modules/rooms/rooms.repo.js';
+import { create, findById, listByHost, isOwner, softRemoveById, updateTitle, setMedia, disableById } from '../src/modules/rooms/rooms.repo.js';
 
 const room = { id: 'r1', hostId: 'h1', title: 'Sala', status: 'active' };
 
@@ -52,6 +52,16 @@ describe('rooms.repo', () => {
   it('softRemoveById marca deleted y retorna la sala', async () => {
     returningMock.mockResolvedValueOnce([{ ...room, status: 'deleted' }]);
     await expect(softRemoveById('r1')).resolves.toMatchObject({ id: 'r1', status: 'deleted' });
+  });
+
+  it('disableById marca disabled y retorna la sala (ADR 0019)', async () => {
+    returningMock.mockResolvedValueOnce([{ ...room, status: 'disabled' }]);
+    await expect(disableById('r1')).resolves.toMatchObject({ id: 'r1', status: 'disabled' });
+  });
+
+  it('disableById retorna null si no hay sala activa que deshabilitar', async () => {
+    returningMock.mockResolvedValueOnce([]);
+    await expect(disableById('missing')).resolves.toBeNull();
   });
 
   it('softRemoveById retorna null si no existe', async () => {

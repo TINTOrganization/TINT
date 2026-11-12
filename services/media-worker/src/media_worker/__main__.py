@@ -14,7 +14,7 @@ import signal
 import socket
 import sys
 import threading
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
 import boto3
@@ -24,17 +24,21 @@ import redis
 from media_worker.config import ConfigError, Settings
 from media_worker.consumer import StreamConsumer
 from media_worker.events import redis_publisher
-from media_worker.jobs import handle_upload
+from media_worker.health import HealthServer, HealthSettings, HealthState
+from media_worker.jobs import handle_upload, mark_exhausted
+from media_worker.logging_config import LogLevelError, install_logging
 from media_worker.repository import VideoRepository
 from media_worker.storage import S3BlobStore
 
-logger = logging.getLogger("media_worker")
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
 class TriggerSettings:
-    redis_url: str
-    consumer: str
+    """Configuración exclusiva del consumidor de Redis Streams."""
+
+    redis_url: str = "redis://localhost:6379"
+    consumer: str = ""
 
     @classmethod
     def from_env(cls, env: Mapping[str, str]) -> TriggerSettings:
@@ -50,6 +54,7 @@ def build_consumer(
     redis_factory=redis.Redis.from_url,
     s3_factory=boto3.client,
     connect=psycopg.connect,
+    heartbeat: Callable[[], object] | None = None,
 ) -> StreamConsumer:
     """Conecta Redis, MinIO/S3 y PostgreSQL y devuelve el consumidor listo para `run`."""
     settings = Settings.from_env(env)
@@ -61,13 +66,19 @@ def build_consumer(
         aws_secret_access_key=settings.s3_secret_key,
     )
     client = redis_factory(trigger.redis_url, decode_responses=True)
+    repo = VideoRepository(connect(settings.database_url, autocommit=True))
+    publish = redis_publisher(client)
     handler = functools.partial(
-        _handle,
-        repo=VideoRepository(connect(settings.database_url, autocommit=True)),
-        blobs=S3BlobStore(s3, settings.bucket),
-        publish=redis_publisher(client),
+        _handle, repo=repo, blobs=S3BlobStore(s3, settings.bucket), publish=publish
     )
-    return StreamConsumer(client, handler, trigger.consumer)
+    on_exhausted = functools.partial(_exhausted, repo=repo, publish=publish)
+    return StreamConsumer(
+        client,
+        handler,
+        trigger.consumer,
+        on_exhausted=on_exhausted,
+        heartbeat=heartbeat,
+    )
 
 
 def _handle(video_id: str, repo, blobs, publish):
@@ -75,19 +86,40 @@ def _handle(video_id: str, repo, blobs, publish):
     return handle_upload(video_id, repo, blobs, publish=publish)
 
 
-def main(env: Mapping[str, str] | None = None) -> int:
+def _exhausted(video_id: str, repo, publish):
+    return mark_exhausted(video_id, repo, publish=publish)
+
+
+def main(env: Mapping[str, str] | None = None, health_factory=None) -> int:
     env = os.environ if env is None else env
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
     try:
+        install_logging("media-worker", env)
+        health_settings = HealthSettings.from_env(env)
         consumer = build_consumer(env)
+    except LogLevelError as exc:
+        print(f"media-worker: {exc}", file=sys.stderr)
+        return 2
     except ConfigError as exc:
         print(f"media-worker: {exc}", file=sys.stderr)
         return 2
     stop = threading.Event()
     for sig in (signal.SIGTERM, signal.SIGINT):
         signal.signal(sig, lambda *_: stop.set())
-    logger.info("media-worker consumiendo media:uploads")
-    consumer.run(stop)
+    state = HealthState(max_age_s=health_settings.max_age_s)
+    state.touch()
+    if consumer is not None and hasattr(consumer, "heartbeat"):
+        consumer.heartbeat = state.touch
+    server = (health_factory or HealthServer)(state, port=health_settings.port)
+    server.start()
+    logger.info(
+        "media-worker consumiendo media:uploads; salud en :%d (latido máximo %.0f s)",
+        server.port,
+        health_settings.max_age_s,
+    )
+    try:
+        consumer.run(stop)
+    finally:
+        server.stop()
     return 0
 
 

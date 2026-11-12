@@ -46,12 +46,15 @@ export interface NetworkHints {
   /** `navigator.connection.effectiveType` (Network Information API). */
   effectiveType?: string;
   saveData?: boolean;
+  /** `navigator.connection.downlink`: ancho de banda estimado en Mbps. */
+  downlink?: number;
   viewportWidth?: number;
 }
 
 interface NavigatorConnection {
   effectiveType?: string;
   saveData?: boolean;
+  downlink?: number;
 }
 
 export function readNetworkHints(): NetworkHints {
@@ -59,6 +62,7 @@ export function readNetworkHints(): NetworkHints {
   return {
     effectiveType: connection?.effectiveType,
     saveData: connection?.saveData,
+    downlink: connection?.downlink,
     viewportWidth: window.innerWidth,
   };
 }
@@ -66,12 +70,20 @@ export function readNetworkHints(): NetworkHints {
 const SLOW_CONNECTIONS = ['slow-2g', '2g', '3g'];
 /** Por debajo de este ancho (px) basta 720p. */
 const NARROW_VIEWPORT_PX = 640;
+/** Ancho de banda (Mbps) a partir del cual `auto` elige el original. */
+export const SOURCE_MIN_DOWNLINK_MBPS = 10;
 
-/** `auto`: 360p con conexión lenta o ahorro de datos, 720p en pantallas estrechas, si no el original. */
+/**
+ * `auto`: 360p con conexión lenta o ahorro de datos; 720p en pantallas estrechas; el original
+ * solo si la red informa ≥ 10 Mbps (`downlink`); si no (o sin Network Information API), 720p,
+ * que arranca antes y evita los cortes por búfer. Si la elegida no existe, `resolveQuality`
+ * cae al original.
+ */
 export function autoQuality(hints: NetworkHints): QualityId {
   if (hints.saveData || (hints.effectiveType && SLOW_CONNECTIONS.includes(hints.effectiveType))) return '360p';
   if (hints.viewportWidth !== undefined && hints.viewportWidth < NARROW_VIEWPORT_PX) return '720p';
-  return 'source';
+  if (typeof hints.downlink === 'number' && hints.downlink >= SOURCE_MIN_DOWNLINK_MBPS) return 'source';
+  return '720p';
 }
 
 /**

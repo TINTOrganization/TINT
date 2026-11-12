@@ -13,13 +13,17 @@ import (
 	"time"
 
 	"github.com/alicebob/miniredis/v2"
+	"github.com/redis/go-redis/v9"
 
 	"github.com/HanamDavid/tint-monorepo/services/sync-core/internal/config"
+	"github.com/HanamDavid/tint-monorepo/services/sync-core/internal/store"
 )
 
 func TestHealthz(t *testing.T) {
 	rec := httptest.NewRecorder()
-	NewRouter(http.NotFoundHandler(), http.NotFoundHandler()).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	req.Header.Set("X-Correlation-ID", "trace-123")
+	NewRouter(http.NotFoundHandler(), http.NotFoundHandler()).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
@@ -30,6 +34,20 @@ func TestHealthz(t *testing.T) {
 	}
 	if body["status"] != "ok" || body["service"] != "sync-core" {
 		t.Errorf("unexpected body: %v", body)
+	}
+	if got := rec.Header().Get("X-Correlation-ID"); got != "trace-123" {
+		t.Errorf("correlation ID = %q, want trace-123", got)
+	}
+}
+
+func TestHealthzGeneratesCorrelationID(t *testing.T) {
+	rec := httptest.NewRecorder()
+	NewRouter(http.NotFoundHandler(), http.NotFoundHandler()).ServeHTTP(
+		rec,
+		httptest.NewRequest(http.MethodGet, "/healthz", nil),
+	)
+	if got := rec.Header().Get("X-Correlation-ID"); got == "" {
+		t.Fatal("expected generated correlation ID")
 	}
 }
 
@@ -53,6 +71,34 @@ func TestWSRouteDelegatesToSyncHandler(t *testing.T) {
 	NewRouter(sync, http.NotFoundHandler()).ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/ws/sync", nil))
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Errorf("POST /ws/sync status = %d", rec.Code)
+	}
+}
+
+func TestInternalEventStartAndStop(t *testing.T) {
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	t.Cleanup(func() { _ = rdb.Close() })
+	st := store.New(rdb, time.Hour)
+	router := NewRouterWithDeps(http.NotFoundHandler(), http.NotFoundHandler(), st)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/internal/events/start/room-1", strings.NewReader(`{"hostId":"host-1"}`))
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("start status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body["roomId"] != "room-1" || body["sessionId"] != "sync-room-1" {
+		t.Fatalf("unexpected start body: %v", body)
+	}
+
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodDelete, "/internal/events/start/room-1", nil))
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("stop status = %d, body = %s", rec.Code, rec.Body.String())
 	}
 }
 

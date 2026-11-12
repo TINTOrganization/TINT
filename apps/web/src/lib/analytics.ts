@@ -8,7 +8,7 @@
  */
 import { apiFetch } from './api';
 
-export const DEFAULT_ANALYTICS_API_URL = 'http://localhost:8084/api/v1';
+export const DEFAULT_ANALYTICS_API_URL = '/api/v1';
 
 export interface AnalyticsTicket {
   token: string;
@@ -28,6 +28,14 @@ export interface RoomKpis {
   playback_commands: number;
   buffering_events: number;
   avg_buffering_ms: number;
+  /** QoS: latencia de red promedio (ida y vuelta) medida en las correcciones de drift. */
+  avg_rtt_ms: number;
+  /** QoS: el 95 % de los desfases corregidos quedó por debajo de este valor. */
+  p95_drift_ms: number;
+  /** QoE: tiempo total que la audiencia pasó recargando el vídeo. */
+  total_buffering_ms: number;
+  /** `deleted`, `host_closed` o `grace_expired` (inactividad); null si la sala sigue abierta. */
+  close_reason: string | null;
   closed_at: string | null;
   computed_at: string;
 }
@@ -36,6 +44,13 @@ export interface HeatmapBucket {
   bucket_start_ms: number;
   emoji: string;
   count: number;
+}
+
+/** Reacciones de un tramo (todos los emojis) y su densidad normalizada de 0 a 1. */
+export interface HeatmapDensity {
+  bucket_start_ms: number;
+  count: number;
+  density: number;
 }
 
 export interface EmojiCount {
@@ -49,6 +64,8 @@ export interface ReactionHeatmap {
   bucket_ms: number;
   /** Ordenado por bucket_start_ms, emoji. */
   buckets: HeatmapBucket[];
+  /** Un punto por tramo con reacciones, ordenado por bucket_start_ms. */
+  density: HeatmapDensity[];
   /** Ordenado por count descendente. */
   by_emoji: EmojiCount[];
 }
@@ -90,7 +107,7 @@ export interface AnalyticsClient {
 }
 
 export interface AnalyticsClientOptions {
-  /** Base de la API; por defecto VITE_ANALYTICS_API_URL o el puerto 8084 local. */
+  /** Base de la API; por defecto VITE_ANALYTICS_API_URL o la ruta pública del gateway. */
   baseUrl?: string;
 }
 

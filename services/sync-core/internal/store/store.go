@@ -61,7 +61,9 @@ return 'OK'
 
 var (
 	ErrNotFound = errors.New("la sala no tiene estado de sincronización")
-	errConflict = errors.New("conflicto de escritura concurrente")
+	// ErrRoomClosed: identity-api deshabilitó la sala (room:{id}:closed).
+	ErrRoomClosed = errors.New("sala deshabilitada")
+	errConflict   = errors.New("conflicto de escritura concurrente")
 )
 
 // Encoder construye el payload que se publica a todas las réplicas.
@@ -88,7 +90,11 @@ func (s *Store) Init(ctx context.Context, roomID, hostID string, nowMs int64) (m
 	key := syncevent.StateKey(roomID)
 	init := master.Initial(hostID, nowMs)
 	var raw *redis.MapStringStringCmd
+	var closed *redis.IntCmd
 	_, err := s.rdb.TxPipelined(ctx, func(p redis.Pipeliner) error {
+		// En la misma transacción: quien se suscribió al bus justo después
+		// de que se publicara ROOM_CLOSED lo descubre aquí (ADR 0019).
+		closed = p.Exists(ctx, syncevent.ClosedKey(roomID))
 		for field, value := range fields(init) {
 			if field != "host_id" {
 				p.HSetNX(ctx, key, field, value)
@@ -104,12 +110,30 @@ func (s *Store) Init(ctx context.Context, roomID, hostID string, nowMs int64) (m
 	if err != nil {
 		return master.State{}, fmt.Errorf("init sala %s: %w", roomID, err)
 	}
+	if closed.Val() > 0 {
+		return master.State{}, fmt.Errorf("init sala %s: %w", roomID, ErrRoomClosed)
+	}
 	return decode(raw.Val())
 }
 
 // Load lee el estado actual de la sala.
 func (s *Store) Load(ctx context.Context, roomID string) (master.State, error) {
 	return load(ctx, s.rdb, roomID)
+}
+
+// Remove elimina el estado de sincronización creado por una inicialización
+// que no llegó a completarse.
+func (s *Store) Remove(ctx context.Context, roomID string) error {
+	_, err := s.rdb.Del(
+		ctx,
+		syncevent.StateKey(roomID),
+		syncevent.HostsKey(roomID),
+		syncevent.MembersKey(roomID),
+		syncevent.HostStatusKey(roomID),
+		syncevent.HostlessSinceKey(roomID),
+		syncevent.DelegateKey(roomID),
+	).Result()
+	return err
 }
 
 // Apply aplica cmd de forma atómica. Devuelve el estado resultante y si el

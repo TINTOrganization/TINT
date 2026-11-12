@@ -65,7 +65,7 @@ Severidad: **A** alta (seguridad o flujo roto), **M** media, **B** baja.
 | :--- | :--- |
 | ~~**Contrato identity-api → media-worker.**~~ **Resuelto** en `fix/flujo-completo`: se integró `main` (el worker nuevo) en `develop` y un disparador dentro del worker consume `media:uploads`, descarga el original de la zona de staging `incoming/` y llama a `process_video` sin modificarlo. El navegador sigue subiendo directo al bucket y nada sin procesar se publica en `{id}/source.*` | Ver [dominio-reproduccion §6.7](dominio-reproduccion.md#67-subida-y-cambio-de-vídeo) y `services/media-worker/STATUS.md` |
 | `PUT /rooms/:id/media` acepta cualquier clave del bucket | Endpoint heredado del flujo manual; restringirlo a vídeos de la sala cambia la API pública de la web |
-| sync-core mantiene `Hub.mu` durante `Subscribe`/`Unsubscribe` de Redis | Refactor de concurrencia con riesgo; solo afecta mientras Redis reconecta |
+| ~~sync-core mantiene `Hub.mu` durante `Subscribe`/`Unsubscribe` de Redis~~ **Resuelto** en `fix/sync-core-correcciones-drift`: la I/O del bus se hace fuera de `h.mu`, serializada con un mutex propio (`subMu`) y re-comprobando la sala tras recuperar el candado; pruebas con un bus bloqueante y altas/bajas concurrentes con `-race` | Ver [sync-core/AGENTS.md](../services/sync-core/AGENTS.md#arquitectura-interna) (modelo de concurrencia) |
 | Fallos de infraestructura que responden 401/403/500 en vez de 503 | Cambio transversal de semántica de errores |
 
 ## 4. Resultado

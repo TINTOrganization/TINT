@@ -2,12 +2,20 @@
 package main
 
 import (
-	"log"
+	"log/slog"
 	"os"
 
+	"github.com/HanamDavid/tint-monorepo/services/social-core/internal/logging"
 	"github.com/HanamDavid/tint-monorepo/services/social-core/internal/server"
 )
 
 func main() {
-	log.Fatal(server.Run(os.Getenv))
+	if _, err := logging.Setup("social-core", os.Getenv("LOG_LEVEL")); err != nil {
+		slog.Error("configuración inválida", "error", err)
+		os.Exit(2)
+	}
+	if err := server.Run(os.Getenv); err != nil {
+		slog.Error("social-core terminó con error", "error", err)
+		os.Exit(1)
+	}
 }

@@ -17,7 +17,7 @@ from media_worker.pipeline import (
     validate_extension,
     validate_video_id,
 )
-from media_worker.probe import VideoStatus
+from media_worker.probe import FailureReason, VideoStatus
 from media_worker.storage import ambilight_key
 
 
@@ -39,7 +39,12 @@ PROBE_STREAMS_NORMALIZED = json.dumps(
             {"codec_type": "video", "codec_name": "h264", "pix_fmt": "yuv420p"},
             {"codec_type": "audio", "codec_name": "aac"},
         ],
-        "format": {"format_name": "mov,mp4,m4a,3gp,3g2,mj2", "duration": "2.0"},
+        "format": {
+            "format_name": "mov,mp4,m4a,3gp,3g2,mj2",
+            "duration": "2.0",
+            "bit_rate": "4000000",
+            "tags": {"major_brand": "isom"},
+        },
     }
 )
 
@@ -50,6 +55,7 @@ def pipeline_runner(
     already_normalized=False,
     height=None,
     failing_renditions=(),
+    remux_returncode=0,
 ):
     """Runner que atiende ffprobe (duración, altura y códecs) y ffmpeg (normalización y calidades).
 
@@ -57,6 +63,7 @@ def pipeline_runner(
     """
     seen = []
     renditions = []
+    remuxes = []
 
     def run(cmd, **kwargs):
         if cmd[0] == "ffprobe":
@@ -74,6 +81,12 @@ def pipeline_runner(
                 return SimpleNamespace(returncode=1, stdout="", stderr="x264 boom")
             Path(cmd[-1]).write_bytes(f"{target}p-bytes".encode())
             return SimpleNamespace(returncode=0, stdout="", stderr="")
+        if "copy" in cmd:
+            remuxes.append((Path(cmd[cmd.index("-i") + 1]), Path(cmd[-1])))
+            if remux_returncode:
+                return SimpleNamespace(returncode=remux_returncode, stdout="", stderr="remux boom")
+            Path(cmd[-1]).write_bytes(b"remuxed-bytes")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
         if ffmpeg_error:
             raise ffmpeg_error
         dest = Path(cmd[-1])
@@ -84,6 +97,7 @@ def pipeline_runner(
     runner = Mock(side_effect=run)
     runner.seen = seen
     runner.renditions = renditions
+    runner.remuxes = remuxes
     return runner
 
 
@@ -155,6 +169,7 @@ def test_video_is_not_uploaded_when_normalization_fails(upload, runner):
     status = process_video("v1", upload, repo, blobs, runner, popen)
     assert status is VideoStatus.FAILED
     assert repo.history == [("v1", "processing"), ("v1", "failed")]
+    assert repo.reasons["v1"] is FailureReason.PROCESSING_FAILED
     assert popen.calls == []
     assert blobs.objects == {}
 
@@ -209,6 +224,7 @@ def test_corrupt_video_is_never_uploaded(upload):
     status = process_video("v1", upload, repo, blobs, fake_run(returncode=1, stderr="moov"), popen)
     assert status is VideoStatus.FAILED
     assert repo.history == [("v1", "processing"), ("v1", "failed")]
+    assert repo.reasons["v1"] is FailureReason.UNREADABLE
     assert popen.calls == []
     assert blobs.objects == {}
 
@@ -219,6 +235,7 @@ def test_missing_local_file_marks_failed_without_uploading(tmp_path):
     runner = fake_run(returncode=1, stderr="No such file or directory")
     assert process_video("v1", missing, repo, blobs, runner, FakePopen()) is VideoStatus.FAILED
     assert repo.statuses["v1"] == "failed"
+    assert repo.reasons["v1"] is FailureReason.UNREADABLE
     assert blobs.objects == {}
 
 
@@ -229,6 +246,7 @@ def test_video_is_not_uploaded_when_ambilight_fails(upload, caplog):
         status = process_video("v1", upload, repo, blobs, pipeline_runner(), popen)
     assert status is VideoStatus.FAILED
     assert repo.statuses["v1"] == "failed"
+    assert repo.reasons["v1"] is FailureReason.PROCESSING_FAILED
     assert blobs.objects == {}
     assert "decode error" in caplog.text
 
@@ -250,19 +268,33 @@ def test_failed_video_is_reprocessed_when_requested_again(upload):
     assert [status for _, status in repo.history] == ["processing", "failed", "processing", "ready"]
 
 
-def test_already_normalized_video_is_published_without_running_ffmpeg(upload):
+def test_already_normalized_video_is_remuxed_with_faststart_not_published_raw(upload):
     repo, blobs = setup()
     runner = pipeline_runner(already_normalized=True)
     popen = two_red_frames()
     status = process_video("v1", upload, repo, blobs, runner, popen)
     assert status is VideoStatus.READY
-    assert runner.seen == []
-    assert "ffmpeg" not in [call.args[0][0] for call in runner.call_args_list]
-    assert blobs.objects["v1/source.mp4"] == b"video-bytes"
+    assert runner.seen == []  # sin re-codificar
+    ((src, remuxed),) = runner.remuxes
+    assert src == upload and remuxed != upload
+    assert blobs.objects["v1/source.mp4"] == b"remuxed-bytes"
     assert repo.storage_keys["v1"] == "v1/source.mp4"
     cmd = popen.calls[0][0]
-    assert cmd[cmd.index("-i") + 1] == str(upload)
+    assert cmd[cmd.index("-i") + 1] == str(remuxed)
     assert upload.read_bytes() == b"video-bytes"
+
+
+def test_failed_remux_falls_back_to_full_reencode(upload, caplog):
+    repo, blobs = setup()
+    runner = pipeline_runner(already_normalized=True, remux_returncode=1)
+    with caplog.at_level(logging.WARNING):
+        status = process_video("v1", upload, repo, blobs, runner, two_red_frames())
+    assert status is VideoStatus.READY
+    assert len(runner.remuxes) == 1
+    ((src, _),) = runner.seen
+    assert src == upload
+    assert blobs.objects["v1/source.mp4"] == b"normalized-bytes"
+    assert "remux" in caplog.text
 
 
 def test_supported_extensions_are_mp4_mov_mkv_webm():
@@ -342,11 +374,12 @@ def test_no_renditions_when_normalization_or_ambilight_fails(upload):
         assert blobs.objects == {}
 
 
-def test_already_normalized_hd_video_renditions_read_the_upload(upload):
+def test_already_normalized_hd_video_renditions_read_the_remuxed_file(upload):
     repo, blobs = setup()
     runner = pipeline_runner(already_normalized=True, height=720)
     process_video("v1", upload, repo, blobs, runner, two_red_frames())
-    assert runner.renditions == [(360, upload)]
+    ((_, remuxed),) = runner.remuxes
+    assert runner.renditions == [(360, remuxed)]
     assert blobs.objects["v1/360p.mp4"] == b"360p-bytes"
 
 
@@ -364,3 +397,19 @@ def test_reprocessing_an_hd_video_overwrites_the_same_renditions(upload):
     ]
     assert repo.renditions["v1"] == [720, 360]
     assert [status for _, status in repo.history] == ["processing", "ready"] * 2
+
+
+def test_zero_duration_video_fails_with_invalid_duration(upload):
+    repo, blobs = setup()
+    runner = fake_run(stdout='{"format": {"duration": "0"}}')
+    assert process_video("v1", upload, repo, blobs, runner, FakePopen()) is VideoStatus.FAILED
+    assert repo.reasons["v1"] is FailureReason.INVALID_DURATION
+
+
+def test_a_retry_clears_the_previous_failure_reason(upload):
+    repo, blobs = setup()
+    process_video("v1", upload, repo, blobs, fake_run(returncode=1), FakePopen())
+    assert repo.reasons["v1"] is FailureReason.UNREADABLE
+    process_video("v1", upload, repo, blobs, pipeline_runner(), two_red_frames())
+    assert repo.statuses["v1"] == "ready"
+    assert "v1" not in repo.reasons

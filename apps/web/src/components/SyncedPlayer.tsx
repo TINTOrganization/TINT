@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useId, useRef, useState, type ReactNode, type RefObject } from 'react';
+import { memo, useCallback, useEffect, useId, useRef, useState, type ReactNode, type RefObject } from 'react';
 import type { SyncSocketApi } from '../hooks/useSyncSocket';
 import { PLAYER_SHORTCUTS, SHORTCUT_SEEK_MS, usePlayerShortcuts } from '../hooks/usePlayerShortcuts';
 import { useTransientFlag } from '../hooks/useTransientFlag';
-import { applyCorrection, shouldRestoreRate } from '../lib/drift';
+import { applyCorrection, shouldRestoreRate, shouldSkipSeekCorrection } from '../lib/drift';
 import { readNetworkHints, resolveQuality, type PlaybackQuality } from '../lib/quality';
 import { estimateServerNow, expectedPosition, stepRate, type QualityPref, type SyncSnapshot } from '../lib/syncProtocol';
 import { createStallTracker } from '../lib/stallTracker';
@@ -35,6 +35,12 @@ export interface SyncedPlayerProps {
   overlay?: ReactNode;
   /** El vídeo llegó al final (evento `ended`). */
   onEnded?: () => void;
+  /**
+   * El `<video>` no pudo cargar el `src` (MEDIA_ERR_NETWORK o MEDIA_ERR_SRC_NOT_SUPPORTED,
+   * p. ej. URL firmada caducada): quien lo use debe dar una URL nueva. Al cambiar el `src`
+   * se re-aplica el estado maestro (posición y play/pausa).
+   */
+  onMediaError?: () => void;
 }
 
 const RATE_CHECK_INTERVAL_MS = 200;
@@ -42,8 +48,20 @@ const RATE_CHECK_INTERVAL_MS = 200;
 const FADE_MS = 180;
 /** Un salto mayor a esto al aplicar estado se suaviza con fundido. */
 const FADE_JUMP_MS = 2_000;
+/**
+ * Deriva tolerada al aplicar un estado mientras la sala reproduce: por debajo no se hace
+ * seek (cada seek vacía el búfer y congela la imagen). Así un broadcast que no mueve el
+ * ancla (VOLUME, QUALITY, RATE) no hace saltar a todos los clientes.
+ */
+export const APPLY_SEEK_TOLERANCE_PLAYING_MS = 250;
+/** Igual, con la sala en pausa: el seek no interrumpe nada y se busca el fotograma exacto. */
+export const APPLY_SEEK_TOLERANCE_PAUSED_MS = 50;
+/** `MediaError.MEDIA_ERR_NETWORK` y `MEDIA_ERR_SRC_NOT_SUPPORTED`: se recuperan con otra URL. */
+const RECOVERABLE_MEDIA_ERRORS: readonly number[] = [2, 4];
 /** Marcadores de saltos del host que se conservan. */
 const MAX_SEEK_MARKS = 5;
+/** La posición mostrada solo se actualiza si avanzó al menos esto (o tras un seek). */
+const PROGRESS_STEP_MS = 250;
 
 const ERROR_MESSAGES: Record<string, string> = {
   FORBIDDEN: 'No tienes permiso para controlar la reproducción.',
@@ -60,6 +78,10 @@ function durationOf(video: HTMLVideoElement): number {
   return Number.isFinite(video.duration) ? Math.round(video.duration * 1000) : 0;
 }
 
+function sameRanges(a: Array<[number, number]>, b: Array<[number, number]>): boolean {
+  return a.length === b.length && a.every(([s, e], i) => s === b[i][0] && e === b[i][1]);
+}
+
 function bufferedOf(video: HTMLVideoElement): Array<[number, number]> {
   const ranges: Array<[number, number]> = [];
   const b = video.buffered;
@@ -72,9 +94,11 @@ function bufferedOf(video: HTMLVideoElement): Array<[number, number]> {
 /**
  * Reproductor sincronizado con el Canal Sync. No decide nada por sí mismo: aplica el
  * estado maestro y las correcciones de sync-core, y quien tiene el control solo emite
- * comandos que el servidor valida y difunde.
+ * comandos que el servidor valida y difunde. Es `memo`: quien lo usa debe pasar props
+ * estables (callbacks con `useCallback`, `sync` memoizado) para que el chat y las
+ * reacciones no lo re-rendericen.
  */
-export function SyncedPlayer({
+export const SyncedPlayer = memo(function SyncedPlayer({
   src,
   qualities,
   canControl,
@@ -88,6 +112,7 @@ export function SyncedPlayer({
   onOpenPoll,
   overlay,
   onEnded,
+  onMediaError,
 }: SyncedPlayerProps) {
   const { state, correction, connected, hostOnline, lastError, lastBroadcast, sendCommand, volume, quality, sendBuffering } = sync;
   const [needsGesture, setNeedsGesture] = useState(false);
@@ -117,10 +142,13 @@ export function SyncedPlayer({
 
   const sendBufferingRef = useRef(sendBuffering);
 
+  const needsGestureRef = useRef(needsGesture);
+
   useEffect(() => {
     nowRef.current = now;
     stateRef.current = state;
     sendBufferingRef.current = sendBuffering;
+    needsGestureRef.current = needsGesture;
   });
 
   // Stalls (waiting → playing) para la analítica; se ignoran los causados por seeks.
@@ -142,11 +170,14 @@ export function SyncedPlayer({
 
   const tryPlay = useCallback((video: HTMLVideoElement) => {
     const result = video.play() as Promise<void> | undefined;
-    // play() puede rechazarse por la política de autoplay: pedimos un gesto.
+    // Solo la política de autoplay (NotAllowedError) pide un gesto; un play() interrumpido
+    // por un pause() o un cambio de src (AbortError) no es un bloqueo.
     if (result && typeof result.then === 'function') {
       result.then(
         () => setNeedsGesture(false),
-        () => setNeedsGesture(true),
+        (err: unknown) => {
+          if ((err as { name?: unknown } | null)?.name === 'NotAllowedError') setNeedsGesture(true);
+        },
       );
     }
   }, []);
@@ -155,9 +186,14 @@ export function SyncedPlayer({
     (video: HTMLVideoElement, snap: SyncSnapshot) => {
       cancelRateCorrection();
       const expected = expectedPosition(snap, estimateServerNow(snap, nowRef.current()));
-      if (Math.abs(video.currentTime * 1000 - expected) > FADE_JUMP_MS) fade();
+      const jump = Math.abs(video.currentTime * 1000 - expected);
+      const tolerance =
+        snap.status === 'playing' ? APPLY_SEEK_TOLERANCE_PLAYING_MS : APPLY_SEEK_TOLERANCE_PAUSED_MS;
       video.playbackRate = snap.rate;
-      video.currentTime = expected / 1000;
+      if (jump > tolerance) {
+        if (jump > FADE_JUMP_MS) fade();
+        video.currentTime = expected / 1000;
+      }
       if (snap.status === 'playing') {
         tryPlay(video);
       } else {
@@ -193,13 +229,18 @@ export function SyncedPlayer({
   useEffect(() => {
     const video = videoRef.current;
     if (!video || !correction) return;
+    if (correction.strategy === 'seek' && shouldSkipSeekCorrection(video, correction.target_ms, needsGestureRef.current)) {
+      return;
+    }
     cancelRateCorrection();
-    const action = applyCorrection(video, correction);
+    // La corrección por velocidad es relativa a la velocidad de la sala.
+    const roomRate = correction.rate ?? stateRef.current?.rate ?? 1;
+    const action = applyCorrection(video, correction, roomRate);
     if (action.kind === 'seek') {
       fade();
       return;
     }
-    if (action.playbackRate === 1) return;
+    if (action.playbackRate === roomRate) return;
 
     const startedAt = nowRef.current();
     const check = () => {
@@ -207,7 +248,7 @@ export function SyncedPlayer({
       const t = nowRef.current();
       const expected = snap ? expectedPosition(snap, estimateServerNow(snap, t)) : null;
       if (shouldRestoreRate(video.currentTime * 1000, expected, t - startedAt)) {
-        video.playbackRate = snap?.rate ?? 1;
+        video.playbackRate = snap?.rate ?? roomRate;
         cancelRateCorrection();
       }
     };
@@ -228,12 +269,32 @@ export function SyncedPlayer({
     }
   }, [lastBroadcast]);
 
-  const syncProgress = (video: HTMLVideoElement) => {
+  /** Últimos valores mostrados: evita 3 setState (y renders) por cada timeupdate/progress. */
+  const shownRef = useRef<{ ms: number; duration: number; buffered: Array<[number, number]> }>({
+    ms: Number.NEGATIVE_INFINITY,
+    duration: 0,
+    buffered: [],
+  });
+
+  /** `force`: tras un seek o un `src` nuevo la posición se muestra aunque el salto sea pequeño. */
+  const syncProgress = (video: HTMLVideoElement, force = false) => {
     const ms = Math.round(video.currentTime * 1000);
     lastPosRef.current = ms;
-    setCurrentMs(ms);
-    setDurationMs(durationOf(video));
-    setBuffered(bufferedOf(video));
+    const shown = shownRef.current;
+    if (force || Math.abs(ms - shown.ms) >= PROGRESS_STEP_MS) {
+      shown.ms = ms;
+      setCurrentMs(ms);
+    }
+    const duration = durationOf(video);
+    if (duration !== shown.duration) {
+      shown.duration = duration;
+      setDurationMs(duration);
+    }
+    const ranges = bufferedOf(video);
+    if (!sameRanges(ranges, shown.buffered)) {
+      shown.buffered = ranges;
+      setBuffered(ranges);
+    }
   };
 
   // Nuevo src (otro vídeo o URL firmada refrescada): se re-aplica el estado maestro o,
@@ -242,7 +303,7 @@ export function SyncedPlayer({
     const snap = stateRef.current;
     if (snap) applyMaster(video, snap);
     else if (lastPosRef.current > 0) video.currentTime = lastPosRef.current / 1000;
-    syncProgress(video);
+    syncProgress(video, true);
   };
 
   const localPositionMs = () => {
@@ -308,10 +369,17 @@ export function SyncedPlayer({
             onLoadedMetadata={(e) => onLoadedMetadata(e.currentTarget)}
             onDurationChange={(e) => syncProgress(e.currentTarget)}
             onEnded={onEnded}
+            onError={(e) => {
+              const code = e.currentTarget.error?.code;
+              if (code !== undefined && RECOVERABLE_MEDIA_ERRORS.includes(code)) onMediaError?.();
+            }}
             onWaiting={() => stalls.waiting()}
             onPlaying={(e) => stalls.playing(e.currentTarget.currentTime * 1000)}
             onSeeking={() => stalls.seeking()}
-            onSeeked={() => stalls.seeked()}
+            onSeeked={(e) => {
+              stalls.seeked();
+              syncProgress(e.currentTarget, true);
+            }}
             onEmptied={() => stalls.reset()}
           />
         ) : (
@@ -497,4 +565,4 @@ export function SyncedPlayer({
       )}
     </div>
   );
-}
+});

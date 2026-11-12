@@ -1,0 +1,70 @@
+/** Invitación a una sala `live` (ADR 0019): el invitado va a /live/:id, no a /watch/:id. */
+import { render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { MemoryRouter, Route, Routes } from 'react-router-dom';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import InviteLanding from './InviteLanding';
+import { apiFetch } from '../lib/api';
+
+vi.mock('../lib/api', async (orig) => ({
+  ...(await orig<typeof import('../lib/api')>()),
+  apiFetch: vi.fn(),
+}));
+const mockedApi = vi.mocked(apiFetch);
+
+function renderInvite() {
+  return render(
+    <MemoryRouter initialEntries={['/invite/ABC123']}>
+      <Routes>
+        <Route path="/invite/:code" element={<InviteLanding />} />
+        <Route path="/watch/:roomId" element={<p>Sala watch</p>} />
+        <Route path="/live/:roomId" element={<p>Sala live</p>} />
+      </Routes>
+    </MemoryRouter>,
+  );
+}
+
+beforeEach(() => {
+  mockedApi.mockReset();
+  localStorage.clear();
+});
+
+describe('InviteLanding — salas live', () => {
+  it('con roomKind live lleva a /live/:id', async () => {
+    mockedApi.mockImplementation((path: string) => {
+      if (path === '/invitations/claim') {
+        return Promise.resolve({ token: 'g', roomId: 'r1', nick: 'Ana', roomTitle: 'Directo', roomKind: 'live' });
+      }
+      return Promise.resolve({ code: 'ABC123', roomId: 'r1', roomTitle: 'Directo', roomKind: 'live' });
+    });
+    renderInvite();
+    await userEvent.type(screen.getByPlaceholderText('Nick'), 'Ana');
+    await userEvent.click(screen.getByText('Unirse'));
+    expect(await screen.findByText('Sala live')).toBeInTheDocument();
+  });
+
+  it('sin roomKind sigue yendo a /watch/:id', async () => {
+    mockedApi.mockImplementation((path: string) => {
+      if (path === '/invitations/claim') {
+        return Promise.resolve({ token: 'g', roomId: 'r1', nick: 'Ana', roomTitle: 'Cine' });
+      }
+      return Promise.resolve({ code: 'ABC123', roomId: 'r1', roomTitle: 'Cine' });
+    });
+    renderInvite();
+    await userEvent.type(screen.getByPlaceholderText('Nick'), 'Ana');
+    await userEvent.click(screen.getByText('Unirse'));
+    expect(await screen.findByText('Sala watch')).toBeInTheDocument();
+  });
+
+  it('el host con una sala live entra como host a /live/:id', async () => {
+    localStorage.setItem('tint_token', 'host');
+    mockedApi.mockImplementation((path: string) => {
+      if (path === '/rooms') {
+        return Promise.resolve({ rooms: [{ id: 'r9', kind: 'live', invitation: { code: 'ABC123' } }] });
+      }
+      return Promise.resolve({ code: 'ABC123', roomId: 'r9', roomKind: 'live' });
+    });
+    renderInvite();
+    expect(await screen.findByRole('link', { name: 'Entrar como host' })).toHaveAttribute('href', '/live/r9');
+  });
+});

@@ -63,7 +63,12 @@ export default function TestMe() {
             </motion.p>
             <h1 className="text-2xl font-black text-white sm:text-3xl">¿Cuánto sabes de TINT?</h1>
             <p className="text-sm text-tint-muted">
-              Arquitectura, librerías, APIs y procesos del monorepo. Responde con clic o con las teclas 1–4.
+              Arquitectura, librerías, APIs y procesos del monorepo. Responde con clic o con las teclas 1–4. Si prefieres
+              verlo antes,{' '}
+              <a href="/arquitectura" className="text-tint-accentHover underline underline-offset-2 hover:text-white">
+                recorre el mapa de la arquitectura
+              </a>
+              .
             </p>
           </header>
 

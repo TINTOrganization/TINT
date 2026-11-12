@@ -4,6 +4,8 @@ import { vi, beforeEach } from 'vitest';
 import Dashboard from './Dashboard';
 import Login from './Login';
 import { apiFetch, ApiError } from '../lib/api';
+import { DashboardContext } from '../App';
+import type { DashboardData } from '../lib/serverDashboard';
 
 vi.mock('../lib/api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../lib/api')>();
@@ -18,7 +20,19 @@ vi.mock('../lib/firebase', () => ({
 
 const mockedApi = vi.mocked(apiFetch);
 
-function renderDashboard() {
+function renderDashboard(dashboardData?: DashboardData | null) {
+  if (dashboardData !== undefined) {
+    return render(
+      <DashboardContext.Provider value={{ dashboardData }}>
+        <MemoryRouter initialEntries={['/dashboard']}>
+          <Routes>
+            <Route path="/dashboard" element={<Dashboard />} />
+            <Route path="/login" element={<Login />} />
+          </Routes>
+        </MemoryRouter>
+      </DashboardContext.Provider>,
+    );
+  }
   return render(
     <MemoryRouter initialEntries={['/dashboard']}>
       <Routes>
@@ -51,6 +65,23 @@ describe('Dashboard', () => {
       expect(screen.getByText('Iniciar sesión con Google')).toBeInTheDocument(),
     );
     expect(localStorage.getItem('tint_token')).toBeNull();
+  });
+
+  it('redirige a /403?reason=not_host si la API responde 403 Forbidden', async () => {
+    mockedApi.mockRejectedValueOnce(new ApiError(403, 'Forbidden'));
+    function ForbiddenProbe() {
+      return <p>{`forbidden${useLocation().search}`}</p>;
+    }
+    render(
+      <MemoryRouter initialEntries={['/dashboard']}>
+        <Routes>
+          <Route path="/dashboard" element={<Dashboard />} />
+          <Route path="/403" element={<ForbiddenProbe />} />
+          <Route path="/login" element={<Login />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+    expect(await screen.findByText('forbidden?reason=not_host')).toBeInTheDocument();
   });
 
   it('al expirar la sesión vuelve al login con ?next=/dashboard', async () => {
@@ -220,5 +251,170 @@ describe('Dashboard', () => {
     renderDashboard();
     await screen.findByText('Sala 2');
     expect(screen.getAllByRole('listitem')).toHaveLength(2);
+  });
+
+  describe('SSR pre-fetching, role-based gating y fault tolerance (AC1, AC2 & AC3)', () => {
+    it('muestra el nombre de la sala, próximo evento y estado active/disabled en cada tarjeta (AC1)', async () => {
+      const dashboardData: DashboardData = {
+        rooms: [
+          {
+            id: 'r1',
+            title: 'Sala Premiere',
+            status: 'active',
+            nextScheduledEvent: '2026-11-04T20:00:00.000Z',
+          },
+          {
+            id: 'r2',
+            title: 'Directo Pasado',
+            status: 'disabled',
+            nextScheduledEvent: { title: 'Charla Exclusiva' },
+          },
+        ],
+        isHost: true,
+        error: null,
+      };
+
+      renderDashboard(dashboardData);
+
+      expect(screen.getByText('Sala Premiere')).toBeInTheDocument();
+      expect(screen.getByTestId('room-status-r1')).toHaveTextContent('active');
+      expect(screen.getByTestId('scheduled-event-r1')).toHaveTextContent('Próximo evento:');
+
+      expect(screen.getByText('Directo Pasado')).toBeInTheDocument();
+      expect(screen.getByTestId('room-status-r2')).toHaveTextContent('disabled');
+      expect(screen.getByTestId('scheduled-event-r2')).toHaveTextContent('Charla Exclusiva');
+
+      // Revalida en segundo plano para mantener la lista actualizada
+      expect(mockedApi).toHaveBeenCalledWith('/rooms');
+    });
+
+    it('omite controles de gestión para un participante que no administra salas (AC2)', async () => {
+      const dashboardData: DashboardData = {
+        rooms: [
+          {
+            id: 'r-view',
+            title: 'Sala Compartida',
+            status: 'active',
+            nextScheduledEvent: '2026-11-04T20:00:00.000Z',
+          },
+        ],
+        isHost: false,
+        role: 'participant',
+        error: null,
+      };
+
+      renderDashboard(dashboardData);
+
+      expect(screen.getByText('Sala Compartida')).toBeInTheDocument();
+      expect(screen.getByRole('link', { name: 'Abrir Sala Compartida' })).toBeInTheDocument();
+
+      // Controles de host deben estar omitidos
+      expect(screen.queryByRole('link', { name: 'Crear sala' })).not.toBeInTheDocument();
+      expect(screen.queryByRole('link', { name: 'Gestionar Sala Compartida' })).not.toBeInTheDocument();
+      expect(screen.queryByRole('link', { name: 'Análisis de Sala Compartida' })).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Eliminar Sala Compartida' })).not.toBeInTheDocument();
+      expect(screen.queryByText(/generar en gestionar/i)).not.toBeInTheDocument();
+    });
+
+    it('muestra estado vacío sin botón de crear sala para participante sin salas (AC2)', async () => {
+      const dashboardData: DashboardData = {
+        rooms: [],
+        isHost: false,
+        role: 'participant',
+        error: null,
+      };
+
+      renderDashboard(dashboardData);
+
+      expect(screen.getByText('Sin salas disponibles')).toBeInTheDocument();
+      expect(screen.queryByRole('link', { name: 'Crear sala' })).not.toBeInTheDocument();
+    });
+
+    it('revalida en cliente al entrar a la ruta mostrando la sala recién creada sin requerir refresco manual (Fix stale rooms bug)', async () => {
+      localStorage.setItem('tint_token', 'token-host-valido');
+
+      // Simulamos que el dashboard tenía 2 salas precargadas en initialData
+      const initialData: DashboardData = {
+        rooms: [
+          { id: 'r1', title: 'Sala Existente 1', status: 'active' },
+          { id: 'r2', title: 'Sala Existente 2', status: 'active' },
+        ],
+        isHost: true,
+        error: null,
+      };
+
+      // Al entrar de nuevo a la ruta tras crear la sala 3, apiFetch devuelve las 3 salas
+      mockedApi.mockResolvedValueOnce({
+        rooms: [
+          { id: 'r1', title: 'Sala Existente 1', status: 'active' },
+          { id: 'r2', title: 'Sala Existente 2', status: 'active' },
+          { id: 'r3', title: 'Sala Recién Creada', status: 'active' },
+        ],
+      });
+
+      renderDashboard(initialData);
+
+      // Inmediatamente se ven las salas iniciales sin pantalla en blanco
+      expect(screen.getByText('Sala Existente 1')).toBeInTheDocument();
+      expect(screen.getByText('Sala Existente 2')).toBeInTheDocument();
+
+      // Tras la revalidación en segundo plano, la nueva sala aparece sin necesidad de recargar la página
+      expect(await screen.findByText('Sala Recién Creada')).toBeInTheDocument();
+      expect(mockedApi).toHaveBeenCalledWith('/rooms');
+    });
+
+    it('revalida al recibir el evento window focus', async () => {
+      localStorage.setItem('tint_token', 'token-host-valido');
+      mockedApi.mockResolvedValueOnce({
+        rooms: [{ id: 'r1', title: 'Sala 1', status: 'active' }],
+      });
+
+      renderDashboard();
+      await waitFor(() => expect(screen.getByText('Sala 1')).toBeInTheDocument());
+
+      mockedApi.mockResolvedValueOnce({
+        rooms: [
+          { id: 'r1', title: 'Sala 1', status: 'active' },
+          { id: 'r2', title: 'Sala Desde Otra Pestaña', status: 'active' },
+        ],
+      });
+
+      window.dispatchEvent(new Event('focus'));
+      expect(await screen.findByText('Sala Desde Otra Pestaña')).toBeInTheDocument();
+    });
+
+    it('recupera las salas en cliente con el token de localStorage si el SSR vino con error de sesión (Fix login bug)', async () => {
+      localStorage.setItem('tint_token', 'token-valido-host');
+      mockedApi.mockResolvedValueOnce({
+        rooms: [{ id: 'room-recuperada', title: 'Sala Recuperada', status: 'active' }],
+      });
+
+      const initialData: DashboardData = {
+        rooms: [],
+        isHost: false,
+        error: 'Sesión no válida o expirada.',
+      };
+
+      renderDashboard(initialData);
+
+      expect(await screen.findByText('Sala Recuperada')).toBeInTheDocument();
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+      expect(screen.getByRole('link', { name: 'Crear sala' })).toBeInTheDocument();
+      expect(mockedApi).toHaveBeenCalledWith('/rooms');
+    });
+
+        it('muestra mensaje de error estilizado dentro del layout ante fallo de identity-api (AC3)', async () => {
+      const dashboardData: DashboardData = {
+        rooms: [],
+        isHost: true,
+        error: 'El servicio de identidad no está disponible en este momento.',
+      };
+
+      renderDashboard(dashboardData);
+
+      expect(screen.getByText('Mis salas')).toBeInTheDocument();
+      expect(screen.getByRole('alert')).toBeInTheDocument();
+      expect(screen.getByText(/El servicio de identidad no está disponible/i)).toBeInTheDocument();
+    });
   });
 });

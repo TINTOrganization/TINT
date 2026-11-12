@@ -19,6 +19,25 @@ describe('apiFetch', () => {
   it('retorna el json si la respuesta es ok', async () => {
     mockedFetch.mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ a: 1 }) });
     await expect(apiFetch('/x')).resolves.toEqual({ a: 1 });
+    expect(mockedFetch).toHaveBeenCalledWith('/api/v1/x', expect.anything());
+  });
+
+  it('una respuesta 204 sin cuerpo devuelve null (p. ej. DELETE) sin intentar leer JSON', async () => {
+    const json = vi.fn(() => Promise.reject(new SyntaxError('Unexpected end of JSON input')));
+    mockedFetch.mockResolvedValueOnce({ ok: true, status: 204, json });
+    await expect(apiFetch('/x', { method: 'DELETE' })).resolves.toBeNull();
+    expect(json).not.toHaveBeenCalled();
+  });
+
+  it('el ApiError conserva el cuerpo de la respuesta (p. ej. maxUploadBytes del 413)', async () => {
+    mockedFetch.mockResolvedValueOnce({
+      ok: false,
+      status: 413,
+      json: () => Promise.resolve({ error: 'File too large', maxUploadBytes: 2_147_483_648 }),
+    });
+    const err = (await apiFetch('/x').catch((e: unknown) => e)) as ApiError;
+    expect(err.status).toBe(413);
+    expect(err.body).toEqual({ error: 'File too large', maxUploadBytes: 2_147_483_648 });
   });
 
   it('lanza ApiError con status y mensaje del backend si la respuesta falla', async () => {

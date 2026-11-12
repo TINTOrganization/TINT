@@ -30,6 +30,7 @@ function makeSync(over: Partial<SyncSocketApi> = {}): SyncSocketApi {
     driftMs: null,
     revoked: false,
     expired: false,
+    disabled: false,
     fatalError: null,
     reconnect: null,
     lastBroadcast: null,
@@ -274,6 +275,25 @@ describe('SyncedPlayer — cambio de src', () => {
     video().currentTime = 0;
     fireEvent.loadedMetadata(video());
     expect(video().currentTime).toBe(20);
+  });
+
+  it.each([
+    [2, true],
+    [4, true],
+    [3, false],
+    [1, false],
+  ])('un error del vídeo con código %i avisa (onMediaError): %s', (code, expected) => {
+    const onMediaError = vi.fn();
+    renderPlayer({ onMediaError });
+    Object.defineProperty(video(), 'error', { configurable: true, value: { code } });
+    fireEvent.error(video());
+    expect(onMediaError).toHaveBeenCalledTimes(expected ? 1 : 0);
+  });
+
+  it('un error sin onMediaError ni MediaError no rompe', () => {
+    renderPlayer();
+    fireEvent.error(video());
+    expect(video()).toBeInTheDocument();
   });
 
   it('permite personalizar el mensaje sin vídeo', () => {

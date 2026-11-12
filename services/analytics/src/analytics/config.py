@@ -6,8 +6,10 @@ import os
 import socket
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from datetime import timedelta
 
 from analytics.api import DEFAULT_ALLOWED_ORIGINS, DEFAULT_PORT
+from analytics.consumer import DEFAULT_ROOM_GRACE, DEFAULT_TIMEZONE
 
 
 class ConfigError(Exception):
@@ -24,6 +26,10 @@ class Settings:
     port: int = DEFAULT_PORT
     allowed_origins: tuple[str, ...] = DEFAULT_ALLOWED_ORIGINS
     consumer: str = field(default_factory=socket.gethostname)
+    room_grace: timedelta = DEFAULT_ROOM_GRACE
+    # Contraseña compartida del panel de negocio; sin ella la ruta no se sirve.
+    admin_password: str | None = field(default=None, repr=False)
+    timezone: str = DEFAULT_TIMEZONE
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> Settings:
@@ -39,6 +45,9 @@ class Settings:
             ("REDIS_URL", "redis_url"),
             # Nombre estable por réplica: al reiniciar recupera sus propios pendientes.
             ("ANALYTICS_CONSUMER", "consumer"),
+            # Zona horaria (nombre IANA) del corte del día en DAU/MAU; la resuelve PostgreSQL.
+            ("ANALYTICS_TIMEZONE", "timezone"),
+            ("ANALYTICS_ADMIN_PASSWORD", "admin_password"),
         ):
             if env.get(var):
                 optional[attr] = env[var]
@@ -47,6 +56,11 @@ class Settings:
             if not port.isdigit() or not 0 < int(port) < 65536:
                 raise ConfigError(f"ANALYTICS_PORT inválido: {port!r}")
             optional["port"] = int(port)
+        if env.get("ANALYTICS_ROOM_GRACE_HOURS"):
+            hours = env["ANALYTICS_ROOM_GRACE_HOURS"]
+            if not hours.isdigit():
+                raise ConfigError(f"ANALYTICS_ROOM_GRACE_HOURS inválido: {hours!r}")
+            optional["room_grace"] = timedelta(hours=int(hours))
         if env.get("ANALYTICS_ALLOWED_ORIGINS"):
             origins = [o.strip() for o in env["ANALYTICS_ALLOWED_ORIGINS"].split(",")]
             optional["allowed_origins"] = tuple(o for o in origins if o)

@@ -25,6 +25,23 @@ func TestLimiterAllowsUpToFivePerSecond(t *testing.T) {
 	}
 }
 
+func TestLimiterReportsRetryAfter(t *testing.T) {
+	l := NewLimiter()
+	base := time.Date(2026, 10, 8, 12, 0, 0, 0, time.UTC)
+
+	for i := 0; i < MaxPerSecond; i++ {
+		l.Allow("u1", base.Add(time.Duration(i)*100*time.Millisecond))
+	}
+
+	allowed, retry := l.AllowWithRetry("u1", base.Add(500*time.Millisecond))
+	if allowed {
+		t.Fatal("6th reaction within 1s should be rejected")
+	}
+	if retry != 500*time.Millisecond {
+		t.Fatalf("retry = %v, want 500ms", retry)
+	}
+}
+
 func TestBucketIndex(t *testing.T) {
 	tests := []struct {
 		pos  time.Duration

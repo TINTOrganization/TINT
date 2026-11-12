@@ -7,17 +7,24 @@ Lectura diferida para el host: nunca tiempo real ni eventos crudos. La lógica v
 Auth: `Authorization: Bearer <analytics-ticket>` HS256 emitido por identity-api (`iss`, `aud`,
 `exp` y `jti` obligatorios), `role == "host"` y `room_id` igual al de la ruta. Si existe
 `token:revoked:{jti}` → 401; si Redis no responde → 503 (falla cerrado).
+
+Aparte, `GET /api/v1/analytics/overview` entrega el panel de negocio (DAU/MAU, volumen de
+eventos y KPIs de las salas cerradas, siempre agregados). Se protege con una contraseña
+compartida (`ANALYTICS_ADMIN_PASSWORD`) enviada como Bearer; sin esa variable la ruta no existe.
 """
 
 from __future__ import annotations
 
+import hmac
 import json
 import logging
 import re
+import uuid
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from threading import Lock
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
@@ -29,17 +36,24 @@ from analytics.kpis import (
     TIMELINE_TYPES,
     compute_room_kpis,
     format_timestamp,
+    heatmap_density,
     reaction_heatmap,
     reactions_by_emoji,
     timeline,
 )
 
 logger = logging.getLogger(__name__)
+CORRELATION_HEADER = "X-Correlation-ID"
+SAFE_CORRELATION_ID = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
 
 DEFAULT_PORT = 8084
 DEFAULT_ALLOWED_ORIGINS = ("http://localhost:5173",)
 REVOKED_KEY = "token:revoked:{jti}"
 ROUTE = re.compile(r"^/api/v1/rooms/(?P<room_id>[^/]+)/(?P<view>kpis|reactions/heatmap|timeline)$")
+OVERVIEW_PATH = "/api/v1/analytics/overview"
+# Ventana del panel de negocio: días de DAU/MAU y salas cerradas más recientes.
+OVERVIEW_DAYS = 30
+OVERVIEW_ROOMS = 50
 # Métricas en el orden del contrato y con su tipo JSON (los promedios siempre como float).
 METRICS = (
     ("peak_users", int),
@@ -51,6 +65,9 @@ METRICS = (
     ("playback_commands", int),
     ("buffering_events", int),
     ("avg_buffering_ms", float),
+    ("avg_rtt_ms", float),
+    ("p95_drift_ms", float),
+    ("total_buffering_ms", int),
 )
 # (default, mínimo, máximo) de los parámetros de consulta.
 BUCKET_MS = (5000, 1000, 60000)
@@ -70,6 +87,10 @@ class ApiError(Exception):
         self.status = status
         self.message = message
         self.headers = headers or {}
+
+
+def correlation_id(value: str | None) -> str:
+    return value if value and SAFE_CORRELATION_ID.fullmatch(value) else str(uuid.uuid4())
 
 
 def _iso(value: datetime | None) -> str | None:
@@ -96,6 +117,7 @@ class AnalyticsApi:
         audience: str,
         allowed_origins: Iterable[str] = DEFAULT_ALLOWED_ORIGINS,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+        admin_password: str | None = None,
     ) -> None:
         self.repo = repo
         self.redis = redis
@@ -104,33 +126,69 @@ class AnalyticsApi:
         self.audience = audience
         self.allowed_origins = frozenset(allowed_origins)
         self.clock = clock
+        self.admin_password = admin_password or None
+        self._started_rooms: set[str] = set()
+        self._started_rooms_lock = Lock()
 
     def handle(self, method: str, target: str, headers: Mapping[str, str]) -> Response:
         headers = {key.lower(): value for key, value in headers.items()}
+        incoming_id = headers.get(CORRELATION_HEADER.lower())
+        request_id = correlation_id(incoming_id)
+        include_in_body = bool(incoming_id and SAFE_CORRELATION_ID.fullmatch(incoming_id))
         cors = self._cors_headers(headers.get("origin"))
+        response_headers = {**cors, CORRELATION_HEADER: request_id}
         if method == "OPTIONS":
-            return Response(204, None, {**cors, **self._preflight_headers()})
+            return Response(204, None, {**response_headers, **self._preflight_headers()})
         try:
             status, body = self._route(method, target, headers)
         except ApiError as exc:
-            return Response(exc.status, {"error": exc.message}, {**cors, **exc.headers})
+            body = {"error": exc.message}
+            if include_in_body:
+                body["correlation_id"] = request_id
+            return Response(
+                exc.status,
+                body,
+                {**response_headers, **exc.headers},
+            )
         except Exception:
-            logger.exception("error no controlado en %s %s", method, urlsplit(target).path)
-            return Response(500, {"error": "error interno"}, cors)
-        return Response(status, body, cors)
+            logger.exception(
+                "error no controlado",
+                extra={
+                    "correlation_id": request_id,
+                    "method": method,
+                    "path": urlsplit(target).path,
+                },
+            )
+            body = {"error": "error interno"}
+            if include_in_body:
+                body["correlation_id"] = request_id
+            return Response(500, body, response_headers)
+        return Response(status, body, response_headers)
 
     # --- enrutamiento -------------------------------------------------------------------------
 
     def _route(self, method: str, target: str, headers: dict[str, str]) -> tuple[int, dict]:
         url = urlsplit(target)
+        internal_match = re.fullmatch(r"/internal/events/start/([^/]+)", url.path)
+        if internal_match:
+            room_id = internal_match.group(1)
+            if method == "POST":
+                return self._start_event(room_id)
+            if method == "DELETE":
+                return self._stop_event(room_id)
+            raise ApiError(405, "método no permitido", {"Allow": "POST, DELETE"})
         match = ROUTE.match(url.path)
-        if url.path != "/healthz" and match is None:
+        # Sin contraseña configurada el panel de negocio no existe (falla cerrado).
+        overview = url.path == OVERVIEW_PATH and self.admin_password is not None
+        if url.path != "/healthz" and match is None and not overview:
             raise ApiError(404, "no encontrado")
         if method != "GET":
             raise ApiError(405, "método no permitido", {"Allow": "GET, OPTIONS"})
+        if overview:
+            self._authorize_admin(headers.get("authorization", ""))
+            return 200, self._overview()
         if match is None:
-            return 200, {"status": "ok"}
-
+            return 200, {"status": "ok", "service": "analytics"}
         room_id = match["room_id"]
         self._authorize(headers.get("authorization", ""), room_id)
         query = parse_qs(url.query, keep_blank_values=True)
@@ -140,6 +198,16 @@ class AnalyticsApi:
         if view == "reactions/heatmap":
             return 200, self._heatmap(room_id, _int_param(query, "bucket_ms", BUCKET_MS))
         return 200, self._timeline(room_id, _int_param(query, "step_s", STEP_S))
+
+    def _start_event(self, room_id: str) -> tuple[int, dict[str, Any]]:
+        with self._started_rooms_lock:
+            self._started_rooms.add(room_id)
+        return 200, {"roomId": room_id, "sessionId": f"analytics-{room_id}"}
+
+    def _stop_event(self, room_id: str) -> tuple[int, dict[str, Any] | None]:
+        with self._started_rooms_lock:
+            self._started_rooms.discard(room_id)
+        return 204, None
 
     # --- auth ---------------------------------------------------------------------------------
 
@@ -177,6 +245,14 @@ class AnalyticsApi:
         if claims.get("room_id") != room_id:
             raise ApiError(403, "el token no corresponde a esta sala")
 
+    def _authorize_admin(self, authorization: str) -> None:
+        scheme, _, password = authorization.partition(" ")
+        expected = (self.admin_password or "").encode()
+        if scheme.lower() != "bearer" or not hmac.compare_digest(
+            password.strip().encode(), expected
+        ):
+            raise ApiError(401, "contraseña incorrecta")
+
     # --- vistas -------------------------------------------------------------------------------
 
     def _read(self, call: Callable[[], Any]) -> Any:
@@ -195,6 +271,7 @@ class AnalyticsApi:
                 "room_id": room_id,
                 "live": False,
                 **{name: cast(row[name]) for name, cast in METRICS},
+                "close_reason": row["close_reason"],
                 "closed_at": _iso(row["closed_at"]),
                 "computed_at": _iso(row["computed_at"]),
             }
@@ -204,8 +281,41 @@ class AnalyticsApi:
             "room_id": room_id,
             "live": True,
             **{name: cast(kpis[name]) for name, cast in METRICS},
+            "close_reason": None,
             "closed_at": None,
             "computed_at": _iso(self.clock()),
+        }
+
+    def _overview(self) -> dict[str, Any]:
+        """Panel de negocio: solo agregados, nunca eventos crudos ni identificadores de usuario."""
+        data = self._read(lambda: self.repo.business_overview(OVERVIEW_DAYS, OVERVIEW_ROOMS))
+        return {
+            "generated_at": _iso(self.clock()),
+            "daily": [
+                {"day": day.isoformat(), "dau": dau, "mau": mau} for day, dau, mau in data["daily"]
+            ],
+            "events": {
+                "total": sum(count for _type, _source, count in data["events"]),
+                "rooms": data["active_rooms"],
+                "by_type": [
+                    {"type": kind, "source": source, "count": count}
+                    for kind, source, count in data["events"]
+                ],
+            },
+            "rooms": [
+                {
+                    "room_id": row["room_id"],
+                    **{name: cast(row[name]) for name, cast in METRICS},
+                    "close_reason": row["close_reason"],
+                    "closed_at": _iso(row["closed_at"]),
+                    "computed_at": _iso(row["computed_at"]),
+                    "heatmap": [
+                        {"bucket_start_ms": start, "reactions": reactions, "density": density}
+                        for start, reactions, density in data["heatmaps"].get(row["room_id"], [])
+                    ],
+                }
+                for row in data["rooms"]
+            ],
         }
 
     def _heatmap(self, room_id: str, bucket_ms: int) -> dict[str, Any]:
@@ -214,6 +324,7 @@ class AnalyticsApi:
             "room_id": room_id,
             "bucket_ms": bucket_ms,
             "buckets": reaction_heatmap(events, bucket_ms),
+            "density": heatmap_density(events, bucket_ms),
             "by_emoji": reactions_by_emoji(events),
         }
 
@@ -261,7 +372,13 @@ def make_handler(api: AnalyticsApi) -> type[BaseHTTPRequestHandler]:
 
         def log_message(self, format: str, *args: Any) -> None:
             # Solo método, ruta y estado: nunca cabeceras (el token va en Authorization).
-            logger.info("%s %s", self.address_string(), format % args)
+            logger.info(
+                "%s %s correlation_id=%s",
+                self.address_string(),
+                format % args,
+                self.headers.get(CORRELATION_HEADER, ""),
+                extra={"correlation_id": self.headers.get(CORRELATION_HEADER, "")},
+            )
 
     return Handler
 

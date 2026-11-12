@@ -43,6 +43,10 @@ class RoomKpis:
     playback_commands: int
     buffering_events: int
     avg_buffering_ms: float
+    # QoS (red y sincronización) y QoE (tiempo total que la audiencia pasó recargando).
+    avg_rtt_ms: float = 0.0
+    p95_drift_ms: float = 0.0
+    total_buffering_ms: int = 0
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -74,13 +78,23 @@ def _mean(values: list[float]) -> float:
     return round(sum(values) / len(values), 2) if values else 0.0
 
 
+def _percentile(values: list[float], pct: float) -> float:
+    """Percentil por rango más cercano (el menor valor que deja `pct` % de la muestra debajo)."""
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    return round(ordered[max(math.ceil(pct / 100 * len(ordered)) - 1, 0)], 2)
+
+
 def compute_room_kpis(room_id: str, events: Iterable[Event]) -> RoomKpis:
     """Agrega eventos sanitizados de una sala en sus KPIs.
 
     `avg_users` es el promedio de las muestras de `connected_users` de los eventos `presence`.
+    `avg_rtt_ms` y `p95_drift_ms` salen de `drift_correction` (QoS); el buffering es la QoE.
     """
     users: list[float] = []
     drifts: list[float] = []
+    rtts: list[float] = []
     buffering: list[float] = []
     counts: Counter[str] = Counter()
     correct = 0
@@ -94,6 +108,8 @@ def compute_room_kpis(room_id: str, events: Iterable[Event]) -> RoomKpis:
         elif kind == "drift_correction":
             if (drift := to_float(event.get("drift_ms"))) is not None:
                 drifts.append(abs(drift))
+            if (rtt := to_float(event.get("rtt_ms"))) is not None and rtt >= 0:
+                rtts.append(rtt)
         elif kind == "trivia_answer":
             correct += to_bool(event.get("correct"))
         elif kind == "buffering":
@@ -112,7 +128,20 @@ def compute_room_kpis(room_id: str, events: Iterable[Event]) -> RoomKpis:
         playback_commands=counts["playback_command"],
         buffering_events=counts["buffering"],
         avg_buffering_ms=_mean(buffering),
+        avg_rtt_ms=_mean(rtts),
+        p95_drift_ms=_percentile(drifts, 95),
+        total_buffering_ms=int(sum(buffering)),
     )
+
+
+def _reaction_positions(events: Iterable[Event]) -> Iterable[tuple[int, str]]:
+    """(`position_ms`, `emoji`) de las reacciones con emoji y posición válida."""
+    for event in events:
+        if event.get("type") != "reaction" or not event.get("emoji"):
+            continue
+        position = to_int(event.get("position_ms"))
+        if position is not None and position >= 0:
+            yield position, event["emoji"]
 
 
 def reaction_heatmap(events: Iterable[Event], bucket_ms: int = 5000) -> list[dict[str, Any]]:
@@ -123,16 +152,29 @@ def reaction_heatmap(events: Iterable[Event], bucket_ms: int = 5000) -> list[dic
     if bucket_ms <= 0:
         raise ValueError("bucket_ms debe ser positivo")
     counts: Counter[tuple[int, str]] = Counter()
-    for event in events:
-        if event.get("type") != "reaction" or not event.get("emoji"):
-            continue
-        position = to_int(event.get("position_ms"))
-        if position is None or position < 0:
-            continue
-        counts[(position // bucket_ms * bucket_ms, event["emoji"])] += 1
+    for position, emoji in _reaction_positions(events):
+        counts[(position // bucket_ms * bucket_ms, emoji)] += 1
     return [
         {"bucket_start_ms": start, "emoji": emoji, "count": count}
         for (start, emoji), count in sorted(counts.items())
+    ]
+
+
+def heatmap_density(events: Iterable[Event], bucket_ms: int = 5000) -> list[dict[str, Any]]:
+    """Reacciones por tramo (todos los emojis) y su densidad normalizada de 0 a 1.
+
+    `density` = reacciones del tramo / reacciones del tramo más activo de la sala. Solo se
+    devuelven los tramos con reacciones, ordenados por `bucket_start_ms`.
+    """
+    if bucket_ms <= 0:
+        raise ValueError("bucket_ms debe ser positivo")
+    counts: Counter[int] = Counter(
+        position // bucket_ms * bucket_ms for position, _emoji in _reaction_positions(events)
+    )
+    peak = max(counts.values(), default=0)
+    return [
+        {"bucket_start_ms": start, "count": count, "density": round(count / peak, 4)}
+        for start, count in sorted(counts.items())
     ]
 
 

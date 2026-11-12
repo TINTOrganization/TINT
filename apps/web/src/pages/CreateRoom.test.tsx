@@ -265,6 +265,19 @@ describe('CreateRoom', () => {
     await waitFor(() => expect(screen.getByText(/eliminada/i)).toBeInTheDocument());
   });
 
+  it('modo gestionar: redirige a /403?reason=not_host si la API responde 403 Forbidden', async () => {
+    mockedApi.mockRejectedValueOnce(new ApiError(403, 'Forbidden'));
+    render(
+      <MemoryRouter initialEntries={['/rooms/r1']}>
+        <Routes>
+          <Route path="/rooms/:id" element={<CreateRoom />} />
+          <Route path="/403" element={<p>forbidden-page</p>} />
+        </Routes>
+      </MemoryRouter>,
+    );
+    expect(await screen.findByText('forbidden-page')).toBeInTheDocument();
+  });
+  
   it('modo crear: tiene enlace Volver al dashboard', async () => {
     render(
       <MemoryRouter>

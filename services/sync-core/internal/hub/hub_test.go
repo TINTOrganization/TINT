@@ -453,16 +453,17 @@ func TestRateLimit(t *testing.T) {
 	h := e.newHub(t)
 	g := connect(t, h, guest)
 	next(t, g)
+	// BUFFERING cuenta en el límite general (aunque solo 1/s se publique).
 	for i := 0; i < MaxMsgsPerSecond; i++ {
-		send(t, h, g, cmd("c", syncevent.SyncCheck, 0))
+		send(t, h, g, buffering("b", 100, 0))
 	}
-	send(t, h, g, cmd("c", syncevent.SyncCheck, 0))
+	send(t, h, g, buffering("b", 100, 0))
 	if ev := nextOf(t, g, syncevent.Error); ev.Code != syncevent.CodeRateLimited {
 		t.Errorf("ERROR = %+v", ev)
 	}
 	// Nueva ventana de un segundo: vuelve a aceptar.
 	e.clock.advance(time.Second)
-	send(t, h, g, cmd("c", syncevent.SyncCheck, 0))
+	send(t, h, g, buffering("b", 100, 0))
 	expectSilence(t, g)
 }
 

@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray } from 'drizzle-orm';
+import { and, desc, eq, inArray, lt } from 'drizzle-orm';
 import { db } from '../../db/client.js';
 import { videos } from '../../db/schema.js';
 
@@ -66,4 +66,29 @@ export async function updateTitle(id: string, title: string) {
   const row = result[0];
   if (!row) return null;
   return { ...row, renditions: normalizeRenditions(row.renditions) };
+}
+
+/**
+ * Cancela una subida: borra la fila solo si sigue `pending` (atómico frente a una
+ * confirmación concurrente). Devuelve la fila borrada, o null si ya no estaba pending.
+ */
+export async function removePendingById(id: string) {
+  const result = await db
+    .delete(videos)
+    .where(and(eq(videos.id, id), eq(videos.status, 'pending')))
+    .returning();
+  return result[0] || null;
+}
+
+/**
+ * Subidas abandonadas de una sala: borra las filas `pending` creadas antes de `olderThan`
+ * (la URL PUT ya caducó y nadie confirmó) y devuelve `{ id, storageKey }` de cada una para
+ * borrar también su objeto de `incoming/`.
+ */
+export async function removeStalePendingByRoom(roomId: string, olderThan: Date) {
+  const rows = await db
+    .delete(videos)
+    .where(and(eq(videos.roomId, roomId), eq(videos.status, 'pending'), lt(videos.createdAt, olderThan)))
+    .returning();
+  return rows.map((row) => ({ id: row.id, storageKey: row.storageKey }));
 }

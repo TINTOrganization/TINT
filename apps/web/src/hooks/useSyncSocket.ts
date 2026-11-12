@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { apiFetch } from '../lib/api';
 import { errorStatus } from '../lib/errorStatus';
+import { CLOSE_ROOM_DISABLED, isRoomDisabledError } from '../lib/roomClosed';
 import type { Correction } from '../lib/drift';
 import {
   decodeFrame,
@@ -27,13 +28,15 @@ import {
   DEFAULT_VOLUME,
   type CommandExtra,
   type CommandType,
+  type CorrectionMessage,
   type QualityPref,
   type SyncSnapshot,
   type SyncState,
 } from '../lib/syncProtocol';
 import { MIN_STALL_MS } from '../lib/stallTracker';
+import { sameOriginWebSocketUrl } from '../lib/publicEntry';
 
-export const DEFAULT_SYNC_WS_URL = 'ws://localhost:8083/ws/sync';
+export const DEFAULT_SYNC_WS_URL = '/ws/sync';
 
 /** Longitud máxima de `media_id` aceptada por sync-core (contrato v2 §2). */
 const MAX_MEDIA_ID = 128;
@@ -42,9 +45,11 @@ const OWN_EVENTS_MEMORY = 50;
 
 export type SyncRole = 'host' | 'guest';
 
-export type SyncFatalError = 'NOT_HOST' | 'ROOM_GONE';
+export type SyncFatalError = 'NOT_HOST' | 'ROOM_GONE' | 'ROOM_DISABLED';
 
-function fatalTicketError(status: number | null): SyncFatalError | null {
+function fatalTicketError(err: unknown): SyncFatalError | null {
+  const status = errorStatus(err);
+  if (isRoomDisabledError(err)) return 'ROOM_DISABLED';
   if (status === 403) return 'NOT_HOST';
   if (status === 404 || status === 410) return 'ROOM_GONE';
   return null;
@@ -116,6 +121,11 @@ export interface SyncSocketApi {
    */
   expired: boolean;
   /**
+   * La sala fue deshabilitada al terminar el evento (ADR 0019): cierre `4010` o sync-ticket con
+   * `410 {error:"Disabled"}`. No se reconecta.
+   */
+  disabled: boolean;
+  /**
    * El host no puede sincronizar y reintentar no lo arregla: el sync-ticket respondió
    * 403 (`NOT_HOST`, no es el dueño) o 404/410 (`ROOM_GONE`, sala inexistente o borrada).
    */
@@ -185,6 +195,7 @@ export function useSyncSocket({
   const [revoked, setRevoked] = useState(false);
   const [fatalError, setFatalError] = useState<SyncFatalError | null>(null);
   const [expired, setExpired] = useState(false);
+  const [disabled, setDisabled] = useState(false);
   const [reconnect, setReconnect] = useState<ReconnectInfo | null>(null);
   const [lastBroadcast, setLastBroadcast] = useState<SyncBroadcast | null>(null);
   const [volume, setVolume] = useState(DEFAULT_VOLUME);
@@ -206,7 +217,7 @@ export function useSyncSocket({
     nowRef.current = now ?? defaultNow;
   });
 
-  const baseUrl = url || import.meta.env.VITE_SYNC_WS_URL || DEFAULT_SYNC_WS_URL;
+  const baseUrl = sameOriginWebSocketUrl(url || import.meta.env.VITE_SYNC_WS_URL || DEFAULT_SYNC_WS_URL);
   const requested = encoding ?? resolveEncoding(import.meta.env.VITE_SYNC_ENCODING);
 
   useEffect(() => {
@@ -216,6 +227,12 @@ export function useSyncSocket({
     let renewedAfterExpiry = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let socket: WebSocket | null = null;
+    /**
+     * El socket actual aún no recibió su primer STATE. Ese siempre aplica (la sala pudo
+     * reiniciarse, p. ej. tras el TTL de Redis, con una versión menor); los siguientes STATE
+     * de la misma conexión con versión menor a la aplicada se descartan.
+     */
+    let awaitingFirstState = true;
 
     const applyControl = (value: boolean) => {
       canControlRef.current = value;
@@ -246,6 +263,39 @@ export function useSyncSocket({
       return snapshot;
     };
 
+    /**
+     * Una corrección con `status` y `rate` describe el estado de la sala en su `version`: si
+     * difiere del aplicado (p. ej. se perdió un PAUSE o un RATE), se adopta. El ancla queda en
+     * `target_ms` "ahora" según el reloj de servidor estimado, así `SyncedPlayer` no hace un
+     * seek extra (la corrección ya posiciona y el estado cae dentro de su tolerancia).
+     */
+    const reconcileFromCorrection = (msg: CorrectionMessage) => {
+      const prev = stateRef.current;
+      if (!prev || (msg.status !== 'playing' && msg.status !== 'paused')) return;
+      if (typeof msg.rate !== 'number' || !Number.isFinite(msg.rate)) return;
+      const mediaId = typeof msg.media_id === 'string' ? msg.media_id : prev.media_id;
+      const differs =
+        msg.version > prev.version || msg.status !== prev.status || msg.rate !== prev.rate || mediaId !== prev.media_id;
+      if (!differs) return;
+      const perfNow = nowRef.current();
+      const serverNow = estimateServerNow(prev, perfNow);
+      const snapshot: SyncSnapshot = {
+        ...prev,
+        status: msg.status,
+        rate: msg.rate,
+        media_id: mediaId,
+        version: msg.version,
+        position_ms: msg.target_ms,
+        updated_at_ms: serverNow,
+        server_time_ms: serverNow,
+        received_at_perf: perfNow,
+        volume: msg.volume !== undefined ? normalizeVolume(msg.volume) : prev.volume,
+        quality: msg.quality !== undefined ? normalizeQuality(msg.quality) : prev.quality,
+      };
+      stateRef.current = snapshot;
+      setState(snapshot);
+    };
+
     const currentPosition = (): number => {
       const local = getPositionRef.current?.() ?? null;
       if (local !== null) return local;
@@ -259,7 +309,10 @@ export function useSyncSocket({
       if (!msg) return;
       switch (msg.type) {
         case 'STATE':
-          // Snapshot completo: siempre reemplaza (p. ej. tras reconectar).
+          // Snapshot completo: el primero de cada conexión siempre reemplaza (p. ej. tras
+          // reconectar); después, uno con versión menor llegó tarde y no pisa el estado.
+          if (!awaitingFirstState && stateRef.current && msg.version < stateRef.current.version) break;
+          awaitingFirstState = false;
           acceptState(msg);
           renewedAfterExpiry = false;
           if (typeof msg.online === 'boolean') setHostOnline(msg.online);
@@ -297,7 +350,12 @@ export function useSyncSocket({
             // v2 omite drift_ms cuando vale 0.
             setDriftMs(typeof msg.drift_ms === 'number' ? msg.drift_ms : 0);
           }
-          ws.send(encodeFrame(buildSyncCheck(roomId, currentPosition(), msg.server_time_ms), wireRef.current));
+          ws.send(
+            encodeFrame(
+              buildSyncCheck(roomId, currentPosition(), msg.server_time_ms, new Date(), stateRef.current?.version),
+              wireRef.current,
+            ),
+          );
           break;
         case 'SYNC_CORRECTION':
           if (stateRef.current && msg.version < stateRef.current.version) break;
@@ -306,12 +364,14 @@ export function useSyncSocket({
           // Las correcciones son parciales: solo pisan volumen/calidad si los traen.
           if (msg.volume !== undefined) setVolume(normalizeVolume(msg.volume));
           if (msg.quality !== undefined) setQuality(normalizeQuality(msg.quality));
+          reconcileFromCorrection(msg);
           setCorrection({
             seq: seqRef.current,
             target_ms: msg.target_ms,
             strategy: msg.strategy,
             drift_ms: msg.drift_ms,
             version: msg.version,
+            ...(typeof msg.rate === 'number' && Number.isFinite(msg.rate) ? { rate: msg.rate } : {}),
           });
           break;
         case 'HOST_STATUS':
@@ -347,7 +407,7 @@ export function useSyncSocket({
         })
         .catch((err: unknown) => {
           if (disposed) return;
-          const fatal = fatalTicketError(errorStatus(err));
+          const fatal = fatalTicketError(err);
           if (fatal) {
             // No es el dueño o la sala ya no existe: reintentar no lo arregla.
             setFatalError(fatal);
@@ -371,6 +431,7 @@ export function useSyncSocket({
       socket = ws;
       wsRef.current = ws;
       wireRef.current = 'json';
+      awaitingFirstState = true;
       ws.onopen = () => {
         // Si el servidor no aceptó el subprotocolo, seguimos en JSON.
         wireRef.current = ws.protocol === MSGPACK_SUBPROTOCOL ? 'msgpack' : 'json';
@@ -385,6 +446,12 @@ export function useSyncSocket({
       ws.onclose = (ev: CloseEvent) => {
         if (wsRef.current === ws) wsRef.current = null;
         setConnected(false);
+        if (ev.code === CLOSE_ROOM_DISABLED) {
+          // El evento terminó (ADR 0019): la sala no vuelve, no se reconecta.
+          setDisabled(true);
+          setReconnect(null);
+          return;
+        }
         if (ev.code === CLOSE_REVOKED) {
           // El host retiró a este participante: no reconectar nunca.
           if (role === 'guest') localStorage.removeItem('tint_guest_token');
@@ -417,7 +484,15 @@ export function useSyncSocket({
         socket.onclose = null;
         socket.onmessage = null;
         socket.onopen = null;
+        socket.onerror = null;
         socket.close();
+      }
+      if (wsRef.current && wsRef.current !== socket) {
+        wsRef.current.onclose = null;
+        wsRef.current.onmessage = null;
+        wsRef.current.onopen = null;
+        wsRef.current.onerror = null;
+        wsRef.current.close();
       }
       wsRef.current = null;
     };
@@ -448,23 +523,47 @@ export function useSyncSocket({
     [roomId],
   );
 
-  return {
-    connected,
-    state,
-    hostOnline,
-    lastError,
-    correction,
-    canControl,
-    rttMs,
-    driftMs,
-    revoked,
-    expired,
-    fatalError,
-    reconnect,
-    lastBroadcast,
-    volume,
-    quality,
-    sendCommand,
-    sendBuffering,
-  };
+  // Objeto estable mientras nada cambie: `SyncedPlayer` es memo y lo recibe entero.
+  return useMemo(
+    () => ({
+      connected,
+      state,
+      hostOnline,
+      lastError,
+      correction,
+      canControl,
+      rttMs,
+      driftMs,
+      revoked,
+      expired,
+      disabled: disabled || fatalError === 'ROOM_DISABLED',
+      fatalError,
+      reconnect,
+      lastBroadcast,
+      volume,
+      quality,
+      sendCommand,
+      sendBuffering,
+    }),
+    [
+      connected,
+      state,
+      hostOnline,
+      lastError,
+      correction,
+      canControl,
+      rttMs,
+      driftMs,
+      revoked,
+      expired,
+      disabled,
+      fatalError,
+      reconnect,
+      lastBroadcast,
+      volume,
+      quality,
+      sendCommand,
+      sendBuffering,
+    ],
+  );
 }

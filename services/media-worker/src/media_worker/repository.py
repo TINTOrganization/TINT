@@ -6,16 +6,20 @@ import json
 from collections.abc import Sequence
 from typing import NamedTuple
 
-from media_worker.probe import VideoStatus
+from media_worker.probe import FailureReason, VideoStatus
 
+# Un intento nuevo y un éxito borran el motivo del fallo anterior (`failure_reason`).
 START_PROCESSING_SQL = (
-    "UPDATE videos SET status = %s, updated_at = now() WHERE id = %s RETURNING id"
+    "UPDATE videos SET status = %s, failure_reason = NULL, updated_at = now() "
+    "WHERE id = %s RETURNING id"
 )
 MARK_READY_SQL = (
     "UPDATE videos SET status = %s, duration_ms = %s, storage_key = %s, "
-    "renditions = %s::jsonb, updated_at = now() WHERE id = %s"
+    "renditions = %s::jsonb, failure_reason = NULL, updated_at = now() WHERE id = %s"
 )
-MARK_FAILED_SQL = "UPDATE videos SET status = %s, updated_at = now() WHERE id = %s"
+MARK_FAILED_SQL = (
+    "UPDATE videos SET status = %s, failure_reason = %s, updated_at = now() WHERE id = %s"
+)
 # LEFT JOIN: `uploaded_by` es ON DELETE SET NULL y la fila del vídeo no debe perderse sin dueño.
 GET_VIDEO_SQL = (
     "SELECT videos.status, videos.storage_key, users.provider_sub FROM videos "
@@ -62,5 +66,6 @@ class VideoRepository:
             (VideoStatus.READY.value, duration_ms, storage_key, renditions_json, video_id),
         )
 
-    def mark_failed(self, video_id: str) -> None:
-        self.conn.execute(MARK_FAILED_SQL, (VideoStatus.FAILED.value, video_id))
+    def mark_failed(self, video_id: str, reason: FailureReason) -> None:
+        """Marca `failed` y guarda el motivo (código de `FailureReason`)."""
+        self.conn.execute(MARK_FAILED_SQL, (VideoStatus.FAILED.value, reason.value, video_id))

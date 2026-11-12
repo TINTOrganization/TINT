@@ -6,6 +6,7 @@ from analytics.kpis import (
     RoomKpis,
     compute_room_kpis,
     format_timestamp,
+    heatmap_density,
     reaction_heatmap,
     reactions_by_emoji,
     timeline,
@@ -17,8 +18,8 @@ def test_compute_room_kpis():
         {"type": "presence", "connected_users": 3},
         {"type": "presence", "connected_users": 7},
         {"type": "presence", "connected_users": 5},
-        {"type": "drift_correction", "drift_ms": 600},
-        {"type": "drift_correction", "drift_ms": -800},
+        {"type": "drift_correction", "drift_ms": 600, "rtt_ms": 40},
+        {"type": "drift_correction", "drift_ms": -800, "rtt_ms": "60"},
         {"type": "trivia_answer", "correct": True},
         {"type": "trivia_answer", "correct": False},
         {"type": "trivia_answer", "correct": True},
@@ -41,7 +42,27 @@ def test_compute_room_kpis():
         playback_commands=1,
         buffering_events=2,
         avg_buffering_ms=600.0,
+        avg_rtt_ms=50.0,
+        p95_drift_ms=800.0,
+        total_buffering_ms=1200,
     )
+
+
+def test_p95_drift_uses_the_nearest_rank_over_absolute_drifts():
+    drifts = [{"type": "drift_correction", "drift_ms": -ms} for ms in range(501, 601)]
+    kpis = compute_room_kpis("r1", drifts)
+    assert kpis.p95_drift_ms == 595.0
+    assert kpis.avg_drift_ms == 550.5
+
+
+def test_rtt_ignores_missing_malformed_and_negative_samples():
+    events = [
+        {"type": "drift_correction", "drift_ms": 600},
+        {"type": "drift_correction", "drift_ms": 600, "rtt_ms": "lento"},
+        {"type": "drift_correction", "drift_ms": 600, "rtt_ms": -5},
+        {"type": "drift_correction", "drift_ms": 600, "rtt_ms": "30.5"},
+    ]
+    assert compute_room_kpis("r1", events).avg_rtt_ms == 30.5
 
 
 def test_compute_room_kpis_parses_string_values_from_redis():
@@ -78,11 +99,13 @@ def test_compute_room_kpis_ignores_malformed_measurements_but_counts_the_event()
 
 
 def test_compute_room_kpis_empty_room():
-    assert compute_room_kpis("r2", []) == RoomKpis("r2", 0, 0.0, 0.0, 0.0, 0, 0, 0, 0, 0.0)
+    assert compute_room_kpis("r2", []) == RoomKpis(
+        "r2", 0, 0.0, 0.0, 0.0, 0, 0, 0, 0, 0.0, 0.0, 0.0, 0
+    )
 
 
 def test_room_kpis_as_dict():
-    kpis = RoomKpis("r1", 1, 1.0, 2.0, 3.0, 4, 5, 6, 7, 8.0)
+    kpis = RoomKpis("r1", 1, 1.0, 2.0, 3.0, 4, 5, 6, 7, 8.0, 9.0, 10.0, 11)
     assert kpis.as_dict() == {
         "room_id": "r1",
         "peak_users": 1,
@@ -94,6 +117,9 @@ def test_room_kpis_as_dict():
         "playback_commands": 6,
         "buffering_events": 7,
         "avg_buffering_ms": 8.0,
+        "avg_rtt_ms": 9.0,
+        "p95_drift_ms": 10.0,
+        "total_buffering_ms": 11,
     }
 
 
@@ -126,6 +152,38 @@ def test_reaction_heatmap_skips_reactions_without_position_or_emoji():
 def test_reaction_heatmap_rejects_non_positive_bucket():
     with pytest.raises(ValueError):
         reaction_heatmap([], bucket_ms=0)
+
+
+def test_heatmap_density_normalizes_each_bucket_against_the_busiest_one():
+    events = [
+        reaction("👏", "0"),
+        reaction("😂", "1200"),
+        reaction("👏", 4999),
+        reaction("👏", "3000"),
+        reaction("👏", "5000"),
+        reaction("😂", "12000"),
+        reaction("😂", "12500"),
+        reaction("", 100),
+        reaction("👏", "-1"),
+        {"type": "chat_message"},
+    ]
+    assert heatmap_density(events, bucket_ms=5000) == [
+        {"bucket_start_ms": 0, "count": 4, "density": 1.0},
+        {"bucket_start_ms": 5000, "count": 1, "density": 0.25},
+        {"bucket_start_ms": 10000, "count": 2, "density": 0.5},
+    ]
+
+
+def test_heatmap_density_of_a_single_bucket_is_one_and_empty_without_reactions():
+    assert heatmap_density([reaction("👏", 100)]) == [
+        {"bucket_start_ms": 0, "count": 1, "density": 1.0}
+    ]
+    assert heatmap_density([{"type": "presence"}]) == []
+
+
+def test_heatmap_density_rejects_non_positive_bucket():
+    with pytest.raises(ValueError):
+        heatmap_density([], bucket_ms=0)
 
 
 def test_reactions_by_emoji_sorted_by_count_desc_then_emoji():

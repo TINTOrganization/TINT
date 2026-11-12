@@ -6,6 +6,7 @@ import { findByJti as findGuestSession } from '../modules/guests/guestSessions.r
 import { requireAuthHost } from './auth.js';
 import { requireRoomOwner } from './requireRoomOwner.js';
 import type { GuestTokenPayload } from '../modules/auth/auth.service.js';
+import { logger } from '../logging.js';
 
 declare module 'express-serve-static-core' {
   interface Request {
@@ -56,7 +57,7 @@ export async function requireRoomGuest(req: Request, res: Response, next: NextFu
       return res.status(401).json({ error: 'Token revoked' });
     }
   } catch (err) {
-    console.error('[guestAuth] no se pudo comprobar la revocación:', (err as Error).message);
+    logger.error('guestAuth: no se pudo comprobar la revocación', { error: (err as Error).message });
     return res.status(503).json({ error: 'Service unavailable' });
   }
   req.guest = payload;

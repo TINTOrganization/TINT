@@ -1,5 +1,5 @@
 import { fireEvent, render, screen } from '@testing-library/react';
-import { applyReaction, FLOAT_GROUP_WINDOW_MS, MAX_FLOATS, ReactionOverlay } from './ReactionOverlay';
+import { applyReaction, FLOAT_GROUP_WINDOW_MS, MAX_FLOATS, ReactionOverlay, SEEN_MEMORY, trimSeen } from './ReactionOverlay';
 import type { ReactionBroadcast } from '../lib/socialSocket';
 
 function reaction(event_id: string, emoji: string): ReactionBroadcast {
@@ -68,5 +68,31 @@ describe('ReactionOverlay', () => {
     // Re-render con el mismo array: sin duplicados.
     rerender(<ReactionOverlay reactions={[reaction('e1', '❤️'), reaction('e2', '❤️')]} />);
     expect(screen.getAllByText('❤️')).toHaveLength(1);
+  });
+});
+
+describe('trimSeen', () => {
+  it('no recorta mientras no supere el máximo', () => {
+    const seen = new Set(['a', 'b']);
+    expect(trimSeen(seen, ['b'])).toBe(seen);
+  });
+
+  it('al superar el máximo conserva solo los ids aún presentes (sin fuga de memoria)', () => {
+    const seen = new Set(Array.from({ length: SEEN_MEMORY + 1 }, (_, i) => `e${i}`));
+    const trimmed = trimSeen(seen, ['e499', 'e500']);
+    expect([...trimmed]).toEqual(['e499', 'e500']);
+  });
+});
+
+describe('ReactionOverlay — memoria de eventos', () => {
+  it('tras muchas reacciones no repite las que siguen en la lista', () => {
+    const { rerender } = render(<ReactionOverlay reactions={[]} />);
+    const all = Array.from({ length: SEEN_MEMORY + 20 }, (_, i) => reaction(`e${i}`, '👏'));
+    for (let i = 0; i < all.length; i += 50) rerender(<ReactionOverlay reactions={all.slice(Math.max(0, i - 30), i + 50)} />);
+    const last = all.slice(-50);
+    rerender(<ReactionOverlay reactions={last} />);
+    const before = screen.queryAllByText('👏').length;
+    rerender(<ReactionOverlay reactions={[...last]} />);
+    expect(screen.queryAllByText('👏')).toHaveLength(before);
   });
 });

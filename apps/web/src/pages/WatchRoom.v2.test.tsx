@@ -15,8 +15,12 @@ vi.mock('../lib/api', async (orig) => ({
 const mockedApiFetch = vi.mocked(apiFetch);
 
 // El chat (/ws/social) se prueba en WatchRoomChat.test.tsx.
+const socialState = vi.hoisted(() => ({ revoked: false, expired: false }));
+
 vi.mock('../hooks/useSocialSocket', () => ({
   useSocialSocket: () => ({
+    revoked: socialState.revoked,
+    expired: socialState.expired,
     status: 'open' as const,
     messages: [],
     reactions: [],
@@ -37,7 +41,9 @@ vi.mock('../hooks/useSocialSocket', () => ({
     muteUser: vi.fn(() => true),
     trivia: { question: null, receivedAt: null, ack: null, result: null, myOption: null },
     triviaSchedule: [],
+    triviaLeaderboard: { entries: [], myRank: null, myTotal: null },
     scheduleTrivia: vi.fn(() => true),
+    updateTrivia: vi.fn(() => true),
     deleteTrivia: vi.fn(() => true),
     listTrivia: vi.fn(() => true),
     answerTrivia: vi.fn(() => true),
@@ -57,17 +63,22 @@ const state = {
   media_id: 'm1',
 };
 
+/** HTTP de error que devuelve GET /playback (simula un token revocado tras unirse). */
+let playbackError: number | null = null;
+
 let playbackByCall: Array<{
   mediaId: string | null;
   url: string | null;
   expiresAt: string | null;
   status?: string | null;
+  failureReason?: string | null;
   ambilightUrl?: string | null;
 }>;
 
 function routeApi(path: string, init?: RequestInit) {
   if (path.endsWith('/sync-ticket')) return Promise.resolve({ token: 'ticket', expiresAt: 'x' });
   if (path.endsWith('/playback')) {
+    if (playbackError) return Promise.reject(Object.assign(new Error('HTTP error'), { status: playbackError }));
     const next = playbackByCall.length > 1 ? playbackByCall.shift()! : playbackByCall[0];
     return Promise.resolve(next);
   }
@@ -123,6 +134,7 @@ beforeEach(() => {
   vi.stubGlobal('matchMedia', vi.fn(() => ({ matches: true, addListener: vi.fn(), removeListener: vi.fn() })));
   vi.stubEnv('VITE_SYNC_ENCODING', 'json');
   playbackByCall = [{ mediaId: 'm1', url: 'https://minio/m1?sig=1', expiresAt: '2099-01-01T00:00:00Z' }];
+  playbackError = null;
   mockedApiFetch.mockReset();
   mockedApiFetch.mockImplementation(routeApi as typeof apiFetch);
   vi.spyOn(HTMLMediaElement.prototype, 'play').mockResolvedValue(undefined);
@@ -164,6 +176,82 @@ describe('WatchRoom v2 — vídeo de la sala (F3)', () => {
     expect(mockedApiFetch).toHaveBeenCalledTimes(2);
     expect(screen.getByLabelText('Vídeo de la sala')).toHaveAttribute('src', 'https://minio/m2');
     expect(screen.getByText('El host cargó un nuevo vídeo')).toBeInTheDocument();
+  });
+
+  it('si el vídeo falla (URL caducada) pide una URL nueva y la aplica', async () => {
+    localStorage.setItem('tint_guest_token', testGuestToken());
+    playbackByCall = [
+      { mediaId: 'm1', url: 'https://minio/m1?sig=1', expiresAt: '2099-01-01T00:00:00Z' },
+      { mediaId: 'm1', url: 'https://minio/m1?sig=2', expiresAt: '2099-01-01T00:00:00Z' },
+    ];
+    renderWatch();
+    await flush();
+    const video = screen.getByLabelText('Vídeo de la sala');
+    expect(video).toHaveAttribute('src', 'https://minio/m1?sig=1');
+    Object.defineProperty(video, 'error', { configurable: true, value: { code: 2 } });
+    fireEvent.error(video);
+    await flush();
+    expect(screen.getByLabelText('Vídeo de la sala')).toHaveAttribute('src', 'https://minio/m1?sig=2');
+  });
+
+  it('el refresco de la URL no cambia el src; un cambio de calidad adopta la URL nueva', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    localStorage.setItem('tint_guest_token', testGuestToken());
+    const soon = new Date(Date.now() + 70_000).toISOString();
+    const qualities = (sig: number) => [
+      { id: 'source', label: 'Original', url: `https://minio/m1?sig=${sig}` },
+      { id: '360p', label: '360p', url: `https://minio/m1/360p?sig=${sig}` },
+    ];
+    playbackByCall = [
+      { mediaId: 'm1', url: 'https://minio/m1?sig=1', expiresAt: soon, qualities: qualities(1) } as never,
+      { mediaId: 'm1', url: 'https://minio/m1?sig=2', expiresAt: '2099-01-01T00:00:00Z', qualities: qualities(2) } as never,
+    ];
+    renderWatch();
+    await flush();
+    const ws = MockWebSocket.last();
+    act(() => ws.open());
+    act(() => ws.receive({ ...state, quality: 'source' }));
+    await flush();
+    expect(screen.getByLabelText('Vídeo de la sala')).toHaveAttribute('src', 'https://minio/m1?sig=1');
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10_000);
+    });
+    expect(mockedApiFetch.mock.calls.filter(([p]) => String(p).endsWith('/playback'))).toHaveLength(2);
+    expect(screen.getByLabelText('Vídeo de la sala')).toHaveAttribute('src', 'https://minio/m1?sig=1');
+    act(() => ws.receive({ ...state, type: 'QUALITY', event_id: 'q', version: 2, quality: '360p' }));
+    await flush();
+    expect(screen.getByLabelText('Vídeo de la sala')).toHaveAttribute('src', 'https://minio/m1/360p?sig=2');
+  });
+
+  it('tras un LOAD, mientras llega la URL nueva, el heartbeat no reporta la posición del vídeo viejo', async () => {
+    localStorage.setItem('tint_guest_token', testGuestToken());
+    let playbackCalls = 0;
+    mockedApiFetch.mockImplementation(((path: string, init?: RequestInit) => {
+      if (path.endsWith('/playback')) {
+        playbackCalls += 1;
+        // La URL de m2 aún no llega.
+        return playbackCalls === 1 ? Promise.resolve(playbackByCall[0]) : new Promise(() => {});
+      }
+      return routeApi(path, init);
+    }) as typeof apiFetch);
+    renderWatch();
+    await flush();
+    const ws = MockWebSocket.last();
+    act(() => ws.open());
+    act(() => ws.receive(state));
+    await flush();
+    const video = screen.getByLabelText('Vídeo de la sala') as HTMLVideoElement;
+    video.currentTime = 42;
+    act(() => ws.receive({ type: 'HEARTBEAT', server_time_ms: 1_000 }));
+    expect(ws.sentJson().at(-1)).toMatchObject({ type: 'SYNC_CHECK', position_ms: 42_000 });
+    act(() => ws.receive({ ...state, type: 'LOAD', event_id: 'e', position_ms: 0, version: 2, media_id: 'm2' }));
+    await flush();
+    expect(screen.getByLabelText('Vídeo de la sala')).toHaveAttribute('src', 'https://minio/m1?sig=1');
+    // El <video> sigue con m1 (p. ej. siguió avanzando o no pudo buscar).
+    video.currentTime = 42;
+    act(() => ws.receive({ type: 'HEARTBEAT', server_time_ms: 2_000 }));
+    // Posición esperada del estado maestro (m2 en pausa en 0), no los 42 s de m1.
+    expect(ws.sentJson().at(-1)).toMatchObject({ type: 'SYNC_CHECK', position_ms: 0, version: 2 });
   });
 
   it('si falla el playback muestra el error en el reproductor', async () => {
@@ -235,6 +323,24 @@ describe('WatchRoom v2 — estado del procesamiento (Ambilight)', () => {
     expect(screen.queryByText('Sin video configurado')).not.toBeInTheDocument();
   });
 
+  it.each([
+    ['unsupported_format', 'Formato no soportado. Usa MP4, MOV, MKV o WebM.'],
+    ['unreadable', 'No pudimos leer el archivo: parece dañado o no es un vídeo.'],
+    ['invalid_duration', 'No pudimos determinar la duración del vídeo.'],
+    ['missing_file', 'La subida no llegó completa. Sube el archivo de nuevo.'],
+    ['processing_failed', 'No se pudo preparar el vídeo. Prueba con otro archivo.'],
+  ])('failed (%s): el invitado sigue viendo solo el texto genérico', async (failureReason, specific) => {
+    localStorage.setItem('tint_guest_token', testGuestToken());
+    playbackByCall = [{ mediaId: 'm1', url: null, expiresAt: null, status: 'failed', failureReason, ambilightUrl: null }];
+    renderWatch();
+    await flush();
+    expect(screen.getByRole('status', { name: 'Estado del vídeo' })).toHaveTextContent(
+      'No se pudo procesar el vídeo (archivo dañado o formato no soportado)',
+    );
+    expect(screen.getByText('Este vídeo no se pudo procesar. El host puede subir otro.')).toBeInTheDocument();
+    expect(document.body.textContent).not.toContain(specific);
+  });
+
   it('sin fila de vídeo (status null) no muestra estado de procesamiento', async () => {
     localStorage.setItem('tint_guest_token', testGuestToken());
     playbackByCall = [{ ...base, status: null }];
@@ -246,6 +352,29 @@ describe('WatchRoom v2 — estado del procesamiento (Ambilight)', () => {
 
 describe('WatchRoom v2 — host', () => {
   beforeEach(() => localStorage.setItem('tint_token', 'firebase'));
+
+  it.each([
+    ['unsupported_format', 'Formato no soportado. Usa MP4, MOV, MKV o WebM.'],
+    ['unreadable', 'No pudimos leer el archivo: parece dañado o no es un vídeo.'],
+    ['invalid_duration', 'No pudimos determinar la duración del vídeo.'],
+    ['missing_file', 'La subida no llegó completa. Sube el archivo de nuevo.'],
+    ['processing_failed', 'No se pudo preparar el vídeo. Prueba con otro archivo.'],
+  ])('vídeo failed (%s): el host ve el motivo específico en el estado y en el reproductor', async (failureReason, specific) => {
+    playbackByCall = [{ mediaId: 'm1', url: null, expiresAt: null, status: 'failed', failureReason, ambilightUrl: null }];
+    renderWatch();
+    await flush();
+    expect(screen.getByRole('status', { name: 'Estado del vídeo' })).toHaveTextContent(specific);
+    expect(screen.getAllByText(new RegExp(specific.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))).length).toBeGreaterThan(1);
+  });
+
+  it('vídeo failed sin motivo (versión anterior): el host ve el texto genérico', async () => {
+    playbackByCall = [{ mediaId: 'm1', url: null, expiresAt: null, status: 'failed', ambilightUrl: null }];
+    renderWatch();
+    await flush();
+    expect(screen.getByRole('status', { name: 'Estado del vídeo' })).toHaveTextContent(
+      'No se pudo procesar el vídeo (archivo dañado o formato no soportado)',
+    );
+  });
 
   it('sube un vídeo a MinIO, lo confirma y envía LOAD por el canal', async () => {
     MockXhr.reset();
@@ -312,6 +441,59 @@ describe('WatchRoom v2 — invitado', () => {
     expect(screen.getByText('El host no está: tienes el control temporal')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Reproducir' })).toBeEnabled();
     expect(screen.getByText('Controlas la reproducción de la sala')).toBeInTheDocument();
+  });
+
+  it('si el cierre llega como 1006 (sin código 4001), al reconectar la API confirma el ban y expulsa', async () => {
+    localStorage.setItem('tint_guest_token', testGuestToken());
+    renderWatch();
+    await flush();
+    const ws = MockWebSocket.last();
+    act(() => ws.open());
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    playbackError = 401; // el host lo bloqueó
+    act(() => ws.close(1006, ''));
+    await flush();
+    expect(screen.getByRole('alert')).toHaveTextContent('Fuiste retirado de la sala por el host');
+    expect(screen.queryByLabelText('Vídeo de la sala')).not.toBeInTheDocument();
+    expect(localStorage.getItem('tint_guest_token')).toBeNull();
+  });
+
+  it('un corte de red normal (la API sigue respondiendo) no expulsa: sigue reconectando', async () => {
+    localStorage.setItem('tint_guest_token', testGuestToken());
+    renderWatch();
+    await flush();
+    const ws = MockWebSocket.last();
+    act(() => ws.open());
+    act(() => ws.close(1006, ''));
+    await flush();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(localStorage.getItem('tint_guest_token')).not.toBeNull();
+  });
+
+  it('el chat cerrado con 4001 expulsa de la sala aunque el canal de sync siga abierto', async () => {
+    localStorage.setItem('tint_guest_token', testGuestToken());
+    socialState.revoked = true;
+    try {
+      renderWatch();
+      await flush();
+      expect(screen.getByRole('alert')).toHaveTextContent('Fuiste retirado de la sala por el host');
+      expect(screen.queryByLabelText('Vídeo de la sala')).not.toBeInTheDocument();
+      expect(screen.getByRole('link', { name: 'Volver al inicio' })).toHaveAttribute('href', '/');
+    } finally {
+      socialState.revoked = false;
+    }
+  });
+
+  it('el chat cerrado con 4003 (invitado) muestra "Tu invitación expiró"', async () => {
+    localStorage.setItem('tint_guest_token', testGuestToken());
+    socialState.expired = true;
+    try {
+      renderWatch();
+      await flush();
+      expect(screen.getByRole('alert')).toHaveTextContent('Tu invitación expiró');
+    } finally {
+      socialState.expired = false;
+    }
   });
 
   it('cierre 4001: muestra la expulsión y no reconecta', async () => {

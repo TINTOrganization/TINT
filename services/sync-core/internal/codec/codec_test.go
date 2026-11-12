@@ -124,6 +124,29 @@ func TestMsgPackDecodesBuffering(t *testing.T) {
 	}
 }
 
+// SYNC_CHECK con la version opcional del último estado aplicado por el
+// cliente: debe llegar al evento por MessagePack igual que por JSON.
+func TestDecodesSyncCheckVersion(t *testing.T) {
+	fields := map[string]any{
+		"event_id": "6f1c2a8e-8a4e-4d0a-9f5b-1c2d3e4f5a6b", "type": "SYNC_CHECK", "room_id": "room-1",
+		"position_ms": 5000, "echo_server_ts": 1_791_655_200_000, "version": 7, "occurred_at": "2026-10-10T18:00:00.123Z",
+	}
+	rawMP, _ := msgpack.Marshal(fields)
+	rawJSON, _ := json.Marshal(fields)
+	for _, tc := range []struct {
+		c   Codec
+		raw []byte
+	}{{MsgPack, rawMP}, {JSON, rawJSON}} {
+		var ev syncevent.Event
+		if err := tc.c.Decode(tc.raw, &ev); err != nil {
+			t.Fatalf("%s: %v", tc.c.Name(), err)
+		}
+		if ev.Type != syncevent.SyncCheck || ev.Version != 7 || ev.EchoServerTs != 1_791_655_200_000 {
+			t.Errorf("%s: SYNC_CHECK = %+v", tc.c.Name(), ev)
+		}
+	}
+}
+
 func TestForSubprotocol(t *testing.T) {
 	if ForSubprotocol(SubprotocolMsgPack) != MsgPack || ForSubprotocol(SubprotocolJSON) != JSON || ForSubprotocol("") != JSON {
 		t.Error("selección de códec")

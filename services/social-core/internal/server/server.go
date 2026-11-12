@@ -5,9 +5,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"log"
+	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/HanamDavid/tint-monorepo/services/social-core/internal/analytics"
 	"github.com/HanamDavid/tint-monorepo/services/social-core/internal/auth"
@@ -28,6 +30,15 @@ const analyticsBuffer = 4096
 
 // defaultOrigins son los orígenes del frontend en desarrollo (Vite).
 const defaultOrigins = "localhost:5173,127.0.0.1:5173"
+
+const (
+	defaultReactionLimit    = reactions.MaxPerSecond
+	defaultReactionIPLimit  = reactions.MaxPerSecond
+	defaultReactionWindow   = time.Second
+	reactionLimitEnv        = "SOCIAL_REACTION_LIMIT"
+	reactionIPLimitEnv      = "SOCIAL_REACTION_IP_LIMIT"
+	reactionWindowMillisEnv = "SOCIAL_REACTION_WINDOW_MS"
+)
 
 // ErrMissingSecret indica que no se configuró JWT_SECRET.
 var ErrMissingSecret = errors.New("JWT_SECRET es obligatorio")
@@ -50,7 +61,11 @@ func Run(getenv func(string) string) error {
 	if deps.analytics != nil {
 		go deps.analytics.Run(context.Background())
 	}
-	log.Printf("social-core escuchando en %s", addr)
+	if deps.chatMeta != nil {
+		go deps.chatMeta.recorder.Run(context.Background())
+		go deps.chatMeta.writer.Run(context.Background())
+	}
+	slog.Info("social-core escuchando", "addr", addr)
 	return http.ListenAndServe(addr, NewRouterWithDeps(deps))
 }
 
@@ -60,7 +75,9 @@ func DefaultDeps(getenv func(string) string) *Deps {
 	var history chat.Store = chat.NewMemoryStore(0)
 	var store *chat.RedisStore
 	if url := getenv("REDIS_URL"); url != "" {
-		if rs, err := chat.NewRedisStore(url, 0, 0); err == nil {
+		// Redis guarda ChatRESTLimit mensajes (GET …/chat); el WebSocket
+		// sigue enviando los HistoryLimit más recientes.
+		if rs, err := chat.NewRedisStore(url, ChatRESTLimit, 0); err == nil {
 			history = rs
 			store = rs
 		}
@@ -75,6 +92,8 @@ func DefaultDeps(getenv func(string) string) *Deps {
 		HostKeys:          auth.NewGoogleCerts("", nil),
 		AllowedOrigins:    splitList(or(getenv("ALLOWED_ORIGINS"), defaultOrigins)),
 		ReactionBuckets:   reactions.NewBuckets(),
+		ReactionLimit:     configuredLimiter(getenv, reactionLimitEnv, defaultReactionLimit, defaultReactionWindow),
+		ReactionIPLimit:   configuredLimiter(getenv, reactionIPLimitEnv, defaultReactionIPLimit, defaultReactionWindow),
 	}
 	if store != nil {
 		st := store
@@ -85,6 +104,9 @@ func DefaultDeps(getenv func(string) string) *Deps {
 			return st.Subscribe(ctx, roomID)
 		}
 		d.IsRevoked = st.IsRevoked
+		d.IsRoomClosed = st.IsRoomClosed
+		d.IsLive = st.IsLive
+		d.StreamStartedAt = st.StreamStartedAt
 		d.PublishReaction = st.PublishReaction
 		d.PublishRaw = st.PublishRaw
 		d.Polls = polls.NewStore(st.Client(), chat.HistoryTTL)
@@ -96,8 +118,26 @@ func DefaultDeps(getenv func(string) string) *Deps {
 			_ = rc.RecordPoll(ctx, roomID)
 		}
 		d.useAnalytics(analytics.New(st.Client(), analyticsBuffer))
+		// Los metadatos del chat necesitan la cola en Redis (ADR 0025).
+		d.useChatMeta(getenv, st.Client())
 	}
 	return d
+}
+
+func configuredLimiter(getenv func(string) string, limitEnv string, defaultLimit int, defaultWindow time.Duration) *reactions.Limiter {
+	limit := defaultLimit
+	if raw := getenv(limitEnv); raw != "" {
+		if parsed, err := strconv.Atoi(raw); err == nil && parsed > 0 {
+			limit = parsed
+		}
+	}
+	window := defaultWindow
+	if raw := getenv(reactionWindowMillisEnv); raw != "" {
+		if parsed, err := strconv.Atoi(raw); err == nil && parsed > 0 {
+			window = time.Duration(parsed) * time.Millisecond
+		}
+	}
+	return reactions.NewLimiterWith(limit, window)
 }
 
 // useAnalytics cablea el emisor: chat_message, presence, reaction y

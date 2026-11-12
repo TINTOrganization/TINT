@@ -76,6 +76,16 @@ describe('buildCommand', () => {
 });
 
 describe('buildSyncCheck', () => {
+  it('incluye la version del estado aplicado si se conoce', () => {
+    const msg = buildSyncCheck('r1', 1_000, 5_000, new Date('2026-01-01T00:00:01.000Z'), 7);
+    expect(msg.version).toBe(7);
+    expect(JSON.parse(JSON.stringify(msg))).toHaveProperty('version', 7);
+  });
+
+  it('sin version conocida (antes del primer STATE) no envía la clave', () => {
+    expect(buildSyncCheck('r1', 1_000, 5_000)).not.toHaveProperty('version');
+  });
+
   it('incluye echo_server_ts y la posición redondeada', () => {
     const msg = buildSyncCheck('r1', 999.4, 5_000, new Date('2026-01-01T00:00:01.000Z'));
     expect(msg).toEqual({

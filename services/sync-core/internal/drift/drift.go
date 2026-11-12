@@ -13,6 +13,14 @@ const (
 	ThresholdMs = 500
 	// SeekThresholdMs separa la corrección suave (rate) del salto (seek).
 	SeekThresholdMs = 2000
+	// RTTClampSlackMs es el margen fijo del recorte de muestras de RTT
+	// (máximo aceptado = 2·RTT previo + RTTClampSlackMs).
+	RTTClampSlackMs = 200
+	// SeekCooldownMs: tras enviar un seek a un cliente no se le envía otro
+	// durante este tiempo (las correcciones por rate siguen permitidas). Un
+	// cliente en stall reporta una posición congelada y, sin enfriamiento,
+	// cada latido producía otro seek que volvía a provocar el stall.
+	SeekCooldownMs = 3000
 )
 
 // Strategy indica cómo debe realinearse el reproductor del cliente.
@@ -33,6 +41,10 @@ type Correction struct {
 
 // UpdateRTT suaviza el RTT con una media móvil exponencial (α = 0.2).
 // Las muestras negativas son imposibles con un solo reloj y se descartan.
+// Tras la primera muestra, una atípica (pestaña en segundo plano, pausa de
+// GC del cliente, SYNC_CHECK encolado tras un stall) se recorta a
+// RTTClamp(prev) antes de la EWMA: sin el recorte, un solo pico de 5 s
+// inflaba el RTT a ~1 s y target_ms quedaba adelantado durante segundos.
 func UpdateRTT(prevMs, sampleMs int64) int64 {
 	if sampleMs < 0 {
 		return prevMs
@@ -40,8 +52,12 @@ func UpdateRTT(prevMs, sampleMs int64) int64 {
 	if prevMs == 0 {
 		return sampleMs
 	}
+	sampleMs = min(sampleMs, RTTClamp(prevMs))
 	return (prevMs*4 + sampleMs) / 5
 }
+
+// RTTClamp es la muestra máxima aceptada dado el RTT suavizado previo.
+func RTTClamp(prevMs int64) int64 { return 2*prevMs + RTTClampSlackMs }
 
 // Check compara la posición reportada por el cliente con la maestra.
 // receivedAtMs es cuando llegó el SYNC_CHECK; el cliente leyó su posición

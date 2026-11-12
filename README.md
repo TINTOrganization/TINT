@@ -41,6 +41,7 @@
 | [`services/sync-core`](services/sync-core) | Sincronización & Reloj Maestro | Golang, WebSockets (`coder/websocket`), Redis | 8083 |
 | [`services/media-worker`](services/media-worker) | Inspección de vídeo & Ambilight | Python 3.11, FFmpeg/ffprobe, MinIO | — (worker) |
 | [`services/analytics`](services/analytics) | Telemetría & KPIs diferidos | Python, Redis Streams (`XREADGROUP`), SQL | — (worker) |
+| [`services/voice-core`](services/voice-core) | Canal de voz: salas, membresía y señalización WebRTC P2P | C++23, Boost.Beast, hiredis, coturn (STUN/TURN) | 8085 |
 
 ```text
 tint-monorepo/
@@ -51,7 +52,8 @@ tint-monorepo/
 │   ├── sync-core/          # Reloj Maestro y Canal Sync (Go)
 │   ├── social-core/        # Chat, reacciones y trivias (Go)
 │   ├── media-worker/       # ffprobe + Ambilight (Python + FFmpeg)
-│   └── analytics/          # Analítica & insights (Python + SQL)
+│   ├── analytics/          # Analítica & insights (Python + SQL)
+│   └── voice-core/         # Canal de voz: señalización WebRTC P2P (C++)
 ├── docs/                   # Documentación de features (diagramas Mermaid)
 ├── scripts/                # Utilidades de CI (gate de cobertura Go)
 ├── docker-compose.yml      # PostgreSQL, Redis, MinIO, social-core y sync-core
@@ -326,48 +328,160 @@ Esquemas de tokens, matriz de permisos y flujos de login, invitación y retiro e
 
 ---
 
-## 🚀 Inicio Rápido en Local
+## 🚀 Instrucciones de Ejecución del Prototipo (OPS-06)
 
-**Requisitos:** Docker, Go 1.22+, Python 3.11+, Node.js 22+ y FFmpeg (para el media-worker fuera de Docker).
+> Guía de **una página** para evaluadores y revisores. Todo el sistema está 100 % orientado a contenedores (**R10**, [ADR 0023](docs/adr/0023-instrucciones-de-ejecucion-del-prototipo.md)), permitiendo clonar, levantar y verificar el prototipo en **menos de 15 minutos**.
+
+### 1. Prerrequisitos
+- **Docker Engine** ≥ 24.0 y **Docker Compose** v2 (e.g. Docker Desktop en Windows/macOS o Docker nativo en Linux).
+- **Git** y al menos **4 GB de RAM** libre para el motor de contenedores.
+- Puertos libres por defecto: `80`, `443` (gateway), `5173` (web dev) y `9099` (Firebase Auth Emulator, solo `127.0.0.1`).
+
+### 2. Comandos de ejecución rápida
+Compatible con **Linux**, **macOS** y **Windows** (PowerShell / WSL2):
 
 ```bash
-# 1. Clonar e infraestructura (PostgreSQL, Redis, MinIO + bucket, media-worker, social-core :8082, sync-core :8083)
-git clone https://github.com/HanamDavid/tint-monorepo.git && cd tint-monorepo
-cp .env.example .env
-docker compose up -d
+# 1. Clonar el repositorio y entrar al directorio
+git clone https://github.com/TINTOrganization/TINT.git && cd TINT
 
-# 2. identity-api (:8081): dependencias, migraciones 0000–0005 y servidor
-#    (el media-worker de docker compose necesita la tabla videos: migra antes de subir vídeos)
-cd services/identity-api
-cp .env.example .env            # define FIREBASE_PROJECT_ID
-npm ci && npx drizzle-kit migrate && npm run dev
+# 2. Crear el archivo de entorno a partir de la plantilla preconfigurada
+cp .env.example .env    # En Windows CMD: copy .env.example .env
 
-# 3. media-worker: ya corre en docker compose (`docker logs -f tint-media-worker`).
-#    Para desarrollarlo fuera de Docker: pip install -r requirements-dev.txt y
-#    DATABASE_URL=… S3_ACCESS_KEY=… S3_SECRET_KEY=… PYTHONPATH=src python -m media_worker
-
-# 4. web (:5173)
-cd apps/web
-cp .env.example .env            # Firebase del cliente; VITE_SYNC_WS_URL=ws://localhost:8083/ws/sync
-npm ci && npm run dev
-
-# 5. Suite global de pruebas (TDD Policy Check) y flujo completo contra la infraestructura real
-make test-all
-cd services/identity-api && WAIT_WORKER=1 npm run test:integration
+# 3. Construir imágenes y arrancar todos los servicios en segundo plano (R10)
+docker compose up -d --build
 ```
 
-> [!IMPORTANT]
-> Sin el media-worker el vídeo se reproduce igual desde el original de `incoming/`, pero queda en `processing` y sin Ambilight. Si el worker lo rechaza (archivo corrupto) queda `failed` y no se sirve.
+**Atajo recomendado:** `make up` hace los pasos 2 y 3: crea o completa `.env` con lo que falte de `.env.example` (sin tocar lo que ya tienes) y reconstruye. Úsalo también después de cada `git pull`. Sin `make` (Windows CMD): `python scripts/env_sync.py` y el paso 3.
+
+### 2 bis. Cliente Android (plantilla para la integración futura)
+
+El prototipo disponible actualmente es web y containerizado; todavía no existe un proyecto `apps/android` en este repositorio. Cuando se incorpore, conservar esta secuencia y sustituir `<paquete>` por el `applicationId` real:
+
+```bash
+# Desde la raíz del repositorio, después de añadir el cliente Android
+cd apps/android
+
+# Linux/macOS
+./gradlew assembleDebug
+
+# Windows PowerShell
+.\gradlew.bat assembleDebug
+
+# Dispositivo o emulador conectado por ADB
+adb install app/build/outputs/apk/debug/app-debug.apk
+adb shell monkey -p <paquete> 1
+```
+
+La aplicación Android deberá apuntar al gateway del prototipo (`https://10.0.2.2` desde el emulador Android, o la URL/IP documentada para un dispositivo físico). No se debe ejecutar esta plantilla como parte de la verificación actual hasta que exista el proyecto y su configuración de red.
+
+### 3. Verificación del sistema (AC1)
+Una vez finalizado el arranque (típicamente 2–4 minutos):
+
+- **Estado de los contenedores**:
+  ```bash
+  docker compose ps
+  ```
+  *Todos los servicios (`tint-gateway`, `tint-web`, `tint-identity-api`, `tint-sync-core`, `tint-social-core`, `tint-analytics`, `tint-media-worker`, `tint-voice-core`, `tint-stream-core`, `tint-coturn`, `tint-postgres`, `tint-redis`, `tint-mongodb`, `tint-minio`, `tint-firebase-auth-emulator`) deben figurar en estado `Up` y `healthy`.*
+
+- **Sonda de salud HTTP (Liveness)**:
+  ```bash
+  curl -k https://localhost/healthz
+  # Respuesta esperada: {"status":"ok","service":"gateway"}
+  ```
+
+- **Acceso visual desde el navegador**:
+  - **Entrada Principal HTTPS (Gateway)**: [`https://localhost`](https://localhost) *(aceptar el certificado local de Caddy en desarrollo)*.
+  - **Entrada Directa Web (HTTP)**: [`http://localhost:5173`](http://localhost:5173): solo los estáticos de la web, sin API ni login (no enruta `/api` ni `/ws`). Para usar el sistema entra por `https://localhost`.
+  - **Rutas clave para el revisor (sin requerir credenciales externas de Firebase)**:
+    - [`/test-me`](https://localhost/test-me): Cuestionario interactivo con preguntas sobre la arquitectura, contratos y decisiones del monorepo.
+    - [`/arquitectura`](https://localhost/arquitectura): Mapa visual interactivo de componentes y conectores del sistema.
+    - [`/analitica`](https://localhost/analitica): Panel de KPIs y telemetría de salas.
+  - **Login del host sin Firebase real**: en [`/login`](https://localhost/login), *Continuar con Google* abre el popup del **Firebase Auth Emulator** (`http://localhost:9099`, proyecto `demo-tint`): *Add new account* → *Auto-generate user information* → *Sign in*. Solo desarrollo: sus tokens no llevan firma y producción no lo arranca ([ADR 0024](docs/adr/0024-login-local-con-firebase-auth-emulator.md)).
+
+- **Prueba de punta a punta con navegador real** (opcional, unos 6 min): `make e2e-system`. Abre Chromium por `https://localhost`, inicia sesión con el emulador y recorre dos flujos. En la watch party: subida de vídeo, invitada por link, reproducción sincronizada, chat, encuesta, trivia y KPIs. En la transmisión en vivo: pantalla del host, invitada viéndola, chat, encuesta, trivia, voz en escenario y fin del evento. Con `OUT=/ruta make e2e-system` guarda una captura de cada paso.
+
+- **Si ya tenías un `.env`** de una versión anterior: `make env-sync` no modifica valores existentes. Añade `,localhost` a `SYNC_ALLOWED_ORIGINS`, `SOCIAL_ALLOWED_ORIGINS` y `VOICE_ALLOWED_ORIGINS`, y define `MINIO_CORS_ALLOW_ORIGIN=https://localhost,http://localhost:5173`. Si falta alguno, por `https://localhost` la voz se queda en "Reconectando…" o la subida de vídeos falla por CORS.
+
+### 4. Apagado y reinicio
+```bash
+# Detener los contenedores conservando los datos
+docker compose down
+
+# Detener y reiniciar limpiando volúmenes de datos
+docker compose down -v && docker compose up -d
+```
+
+### 5. Solución de problemas comunes (AC3)
+| Error o síntoma | Causa probable | Solución inmediata |
+| :--- | :--- | :--- |
+| `Missing required variables in .env` | No se creó `.env`, una variable requerida quedó vacía o un `git pull` trajo variables nuevas. | Ejecutar `make env-sync` (añade solo las que faltan) o `cp .env.example .env` si no hay `.env`. `env-check` valida los secretos antes de levantar el stack. |
+| `bind: address already in use` (`80`, `443`, `5432`, `6379`, `27017`) | Conflicto con un servicio local (Apache, Nginx, PostgreSQL, Redis o MongoDB nativos). | Detener el servicio en conflicto o cambiar puertos en `.env` (ej. `GATEWAY_HTTP_PORT=8080`, `GATEWAY_HTTPS_PORT=8443`). |
+| Advertencia de certificado SSL no seguro en `https://localhost` | Caddy genera certificados TLS autofirmados locales para desarrollo. | En el navegador, pulsar **Avanzado** → **Continuar a localhost (no seguro)**, o acceder directamente vía `http://localhost:5173`. |
+| Docker daemon no responde o falla por memoria | Docker Desktop está detenido o tiene asignado < 4 GB de RAM. | Iniciar Docker Desktop y en *Settings* → *Resources* asignar al menos 4 GB de memoria y 2 CPUs. |
+| `tint-identity-api` reinicia con `FIREBASE_AUTH_EMULATOR_HOST no se permite…` o `env-check` pide `demo-*` | Emulador activo con `NODE_ENV=production` o un `FIREBASE_PROJECT_ID` real. | En local deja `FIREBASE_PROJECT_ID=demo-tint`; para Firebase real vacía `FIREBASE_AUTH_EMULATOR_HOST` y `VITE_FIREBASE_AUTH_EMULATOR_URL` y reconstruye la web. |
+| Advertencia sobre `coturn` en Windows o macOS | `coturn` utiliza `network_mode: host` diseñado para Linux. | En Docker Desktop opera sobre la VM local (`localhost:3478`). La señalización WebSocket y la interfaz web funcionan sin cambios. |
+
+---
+
+## 💾 Respaldo y restauración (DAT-06)
+
+Los datos viven en volúmenes con nombre (`postgres-data`, `mongo-data`, `redis-data` con AOF, `minio-data`) y sobreviven a `docker compose down`, a recrear los contenedores y a reconstruir las imágenes. Solo `docker compose down -v` los borra: el siguiente arranque empieza limpio.
+
+```bash
+make backup                                   # crea backups/<fecha-hora>
+make restore BACKUP=backups/20261102-180000   # restaura ese respaldo
+```
+
+Sin `make` (Windows CMD): `python scripts/data_backup.py backup` y `python scripts/data_backup.py restore <carpeta>`.
+
+| Almacén | Qué se guarda | Cómo se restaura |
+| :--- | :--- | :--- |
+| PostgreSQL | `pg_dump` de la base (identity-api y analytics) | `pg_restore --clean` |
+| MongoDB | `mongodump` (metadatos del chat) | `mongorestore --drop`; los usuarios los recrea `mongo-init` |
+| Redis | Instantánea RDB (estado de 12 h y colas pendientes) | Se carga y se reescribe el AOF |
+| MinIO | Copia del bucket (`mc mirror`) | `mc mirror --remove` hacia el bucket |
+
+- **Restaurar reemplaza los datos actuales.** Detiene los servicios que usan los almacenes y los reanuda al terminar.
+- Los respaldos contienen datos personales: `backups/` está en `.gitignore`. Guárdalos fuera de la máquina y cifrados.
+- Al restaurar en MinIO se pierde `Cache-Control` de los objetos; `Content-Type` se deduce de la extensión.
+- `make smoke-persistence` lo comprueba todo en un proyecto aislado, sin tocar tu stack: recrea los contenedores, respalda y restaura, y borra los volúmenes.
+
+## 🌐 Entrada Única y Puertos Locales
+
+Para depuración y arquitectura de red, la siguiente tabla resume los puertos y rutas directas:
 
 | Servicio local | URL |
 | :--- | :--- |
+| gateway | `https://localhost` (HTTP en `http://localhost` redirige a HTTPS) |
 | web | `http://localhost:5173` |
 | identity-api | `http://localhost:8081/api/v1` |
 | social-core (Canal Social) | `ws://localhost:8082/ws/social` |
 | sync-core (Canal Sync) | `ws://localhost:8083/ws/sync` · `/healthz` · `/metrics` (Prometheus) |
+| voice-core (Canal de Voz) | `ws://localhost:8085/ws/voice` · `PUT/DELETE /api/v1/voice/rooms/{id}/mutes/{user_id}` · `/healthz` · STUN/TURN en `localhost:3478` |
 | PostgreSQL | `localhost:5432` |
 | Redis | `localhost:6379` |
 | MinIO API / Consola | `localhost:9000` / [`localhost:9001`](http://localhost:9001) |
+
+El gateway es la única entrada pública de la web, APIs y canales: la SPA usa
+`/api/v1`, `/ws/sync`, `/ws/social` y `/ws/voice` en el mismo origen. Caddy
+termina TLS, conserva certificados en `gateway-data` y renueva los certificados
+de dominios públicos automáticamente. Para desplegar, define `GATEWAY_HOST` con
+el nombre DNS público, apunta sus registros A/AAAA al host y permite tráfico
+entrante a 80 y 443. Usa el override de producción para que web, API y canales
+no publiquen puertos fuera de la red Compose:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.production.yml up -d --build
+```
+
+Los puertos directos del Compose base son solo para depuración local. El alcance
+de esta entrada única no incluye las URLs firmadas de MinIO ni el relay TURN.
+
+El gateway limita a 5 s la conexión y espera de cabeceras de cada upstream. Si
+identity-api, analytics, sync-core o social-core no están disponibles, o no
+responden dentro de ese límite, devuelve HTTP 503 con el error JSON
+`service_unavailable`; una petición posterior se reintenta normalmente, sin
+estado de circuito persistente.
 
 > [!NOTE]
 > `JWT_SECRET` (en `.env`) debe ser el mismo para identity-api, sync-core y social-core: identity-api firma los tokens y los canales los verifican. MinIO acepta peticiones del navegador desde `MINIO_CORS_ALLOW_ORIGIN` (por defecto `http://localhost:5173`).

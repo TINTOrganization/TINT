@@ -1,0 +1,1 @@
+ALTER TABLE "videos" ADD COLUMN "failure_reason" varchar(40);

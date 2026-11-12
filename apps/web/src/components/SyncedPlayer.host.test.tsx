@@ -38,6 +38,7 @@ function makeSync(over: Partial<SyncSocketApi> = {}): SyncSocketApi {
     driftMs: null,
     revoked: false,
     expired: false,
+    disabled: false,
     fatalError: null,
     reconnect: null,
     lastBroadcast: null,
@@ -106,10 +107,16 @@ describe('SyncedPlayer — calidad', () => {
     expect(video()).toHaveAttribute('src', SRC);
   });
 
-  it('auto con buena conexión reproduce el original', () => {
-    vi.stubGlobal('navigator', { ...navigator, connection: { effectiveType: '4g' } });
+  it('auto con conexión rápida (≥ 10 Mbps) reproduce el original', () => {
+    vi.stubGlobal('navigator', { ...navigator, connection: { effectiveType: '4g', downlink: 20 } });
     renderPlayer({ qualities: QUALITIES });
     expect(video()).toHaveAttribute('src', SRC);
+  });
+
+  it('auto en 4g sin ancho de banda suficiente prefiere 720p', () => {
+    vi.stubGlobal('navigator', { ...navigator, connection: { effectiveType: '4g', downlink: 5 } });
+    renderPlayer({ qualities: QUALITIES });
+    expect(video()).toHaveAttribute('src', QUALITIES.find((q) => q.id === '720p')?.url);
   });
 
   it('auto con conexión lenta elige 360p', () => {

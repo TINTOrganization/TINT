@@ -18,6 +18,12 @@ func TestUpdateRTT(t *testing.T) {
 		{"EWMA 0.8/0.2", 100, 200, 120},
 		{"muestra negativa (skew) se descarta", 100, -30, 100},
 		{"muestra cero es válida", 100, 0, 80},
+		// Atípica (pestaña en segundo plano, GC del cliente): se recorta a
+		// 2·prev+200 antes de la EWMA para no inflar target_ms durante segundos.
+		{"muestra atípica se recorta a 2*prev+200", 100, 5_000, (100*4 + 400) / 5},
+		{"justo en el límite no se recorta", 100, 400, (100*4 + 400) / 5},
+		{"con prev pequeño el margen fijo de 200 manda", 10, 1_000, (10*4 + 220) / 5},
+		{"la primera muestra no se recorta", 0, 5_000, 5_000},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

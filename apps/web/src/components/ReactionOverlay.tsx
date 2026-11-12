@@ -14,6 +14,18 @@ export interface FloatReaction {
 export const FLOAT_GROUP_WINDOW_MS = 800;
 /** Tope de floats concurrentes para no saturar el reproductor. */
 export const MAX_FLOATS = 20;
+/** Máximo de `event_id` recordados antes de recortar (como `LaserOverlay`). */
+export const SEEN_MEMORY = 500;
+
+/**
+ * Recorta la memoria de eventos vistos: al superar `SEEN_MEMORY` solo conserva los ids que
+ * siguen en la lista actual (los únicos que podrían volver a llegar). Sin esto el `Set`
+ * crecía durante toda la sesión.
+ */
+export function trimSeen(seen: Set<string>, currentIds: readonly string[]): Set<string> {
+  if (seen.size <= SEEN_MEMORY) return seen;
+  return new Set(currentIds.filter((id) => seen.has(id)));
+}
 
 function xForKey(key: string): number {
   let h = 0;
@@ -48,6 +60,7 @@ export function ReactionOverlay({ reactions }: { reactions: ReactionBroadcast[] 
     const fresh = reactions.filter((r) => !seenRef.current.has(r.event_id));
     if (fresh.length === 0) return;
     for (const r of fresh) seenRef.current.add(r.event_id);
+    seenRef.current = trimSeen(seenRef.current, reactions.map((r) => r.event_id));
     const now = Date.now();
     setFloats((prev) => {
       let next = prev;

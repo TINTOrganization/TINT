@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { apiFetch, ApiError } from '../../lib/api';
@@ -11,7 +11,9 @@ vi.mock('../../lib/api', async (orig) => ({
 }));
 const mockedApiFetch = vi.mocked(apiFetch);
 
+const GIB2 = 2 * 1024 ** 3;
 const video = new File(['0123456789'], 'peli.mp4', { type: 'video/mp4' });
+const cancelCalls = () => mockedApiFetch.mock.calls.filter(([, init]) => (init as RequestInit | undefined)?.method === 'DELETE');
 
 const ticket = {
   videoId: 'v-1',
@@ -33,9 +35,12 @@ function routeUploads(
     complete?: () => Promise<unknown>;
     videos?: () => Promise<unknown>;
     assign?: (init?: RequestInit) => Promise<unknown>;
+    limits?: () => Promise<unknown>;
   } = {},
 ) {
   mockedApiFetch.mockImplementation(((path: string, init?: RequestInit) => {
+    if (path === '/uploads/limits') return overrides.limits?.() ?? Promise.resolve({ maxUploadBytes: GIB2 });
+    if (init?.method === 'DELETE' && path.includes('/media/uploads/')) return Promise.resolve(null);
     if (path === '/videos') return overrides.videos?.() ?? Promise.resolve({ videos: library });
     if (path.endsWith('/media') && init?.method === 'PUT') {
       return overrides.assign?.(init) ?? Promise.resolve({ mediaId: 'v-old', mediaKey: 'v-old/source.mp4' });
@@ -184,6 +189,100 @@ describe('ChangeVideoPanel — subida', () => {
     expect(MockXhr.instances).toHaveLength(0);
   });
 
+  describe('límite de tamaño', () => {
+    const big = () => new File([new Uint8Array(3 * 1024 ** 2)], 'grande.mp4', { type: 'video/mp4' });
+
+    it('muestra el tamaño máximo (de identity-api) junto al selector', async () => {
+      render(<ChangeVideoPanel roomId="r1" onMediaAssigned={() => true} />);
+      await openPanel();
+      expect(await screen.findByText(/Tamaño máximo: 2\.0 GB/)).toBeInTheDocument();
+      expect(mockedApiFetch).toHaveBeenCalledWith('/uploads/limits', {}, 'host');
+    });
+
+    it('un archivo mayor que el límite se rechaza antes de subir, diciendo su tamaño y el máximo', async () => {
+      routeUploads({ limits: () => Promise.resolve({ maxUploadBytes: 1024 ** 2 }) });
+      render(<ChangeVideoPanel roomId="r1" onMediaAssigned={() => true} />);
+      const input = await openPanel();
+      await screen.findByText(/Tamaño máximo: 1\.0 MB/);
+      await userEvent.upload(input, big());
+      expect(screen.getByRole('alert')).toHaveTextContent('El archivo pesa 3.0 MB y el máximo es 1.0 MB.');
+      expect(screen.getByRole('button', { name: 'Subir' })).toBeDisabled();
+      expect(mockedApiFetch).not.toHaveBeenCalledWith(expect.stringContaining('/media/uploads'), expect.anything(), 'host');
+    });
+
+    it('si no se pudo obtener el límite no hay pre-chequeo ni texto: el servidor decide', async () => {
+      routeUploads({ limits: () => Promise.reject(new ApiError(500, 'boom')) });
+      render(<ChangeVideoPanel roomId="r1" onMediaAssigned={() => true} />);
+      const input = await openPanel();
+      await userEvent.upload(input, big());
+      expect(screen.queryByText(/Tamaño máximo/)).not.toBeInTheDocument();
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Subir' })).toBeEnabled();
+    });
+
+    it('el 413 del servidor muestra el límite que trae en el cuerpo', async () => {
+      routeUploads({
+        limits: () => Promise.reject(new ApiError(500, 'boom')),
+        request: () => Promise.reject(new ApiError(413, 'File too large', { maxUploadBytes: GIB2 })),
+      });
+      render(<ChangeVideoPanel roomId="r1" onMediaAssigned={() => true} />);
+      await userEvent.upload(await openPanel(), video);
+      await userEvent.click(screen.getByRole('button', { name: 'Subir' }));
+      expect(await screen.findByRole('alert')).toHaveTextContent('El archivo supera el tamaño máximo permitido (2.0 GB).');
+    });
+  });
+
+  describe('subida interrumpida: cancela la reserva para que el reintento empiece limpio', () => {
+    it('un corte de red durante el PUT cancela la subida reservada', async () => {
+      render(<ChangeVideoPanel roomId="r1" onMediaAssigned={() => true} />);
+      const xhr = await startUpload();
+      act(() => xhr.fail());
+      expect(await screen.findByRole('alert')).toHaveTextContent(/Se perdió la conexión/);
+      await waitFor(() => expect(mockedApiFetch).toHaveBeenCalledWith('/rooms/r1/media/uploads/v-1', { method: 'DELETE' }, 'host'));
+    });
+
+    it('Cancelar subida también cancela la reserva', async () => {
+      render(<ChangeVideoPanel roomId="r1" onMediaAssigned={() => true} />);
+      await startUpload();
+      await userEvent.click(screen.getByRole('button', { name: 'Cancelar subida' }));
+      await waitFor(() => expect(cancelCalls()).toHaveLength(1));
+    });
+
+    it('desmontar el panel en plena subida cancela la reserva', async () => {
+      const { unmount } = render(<ChangeVideoPanel roomId="r1" onMediaAssigned={() => true} />);
+      await startUpload();
+      unmount();
+      await waitFor(() => expect(cancelCalls()).toHaveLength(1));
+    });
+
+    it('si falla la confirmación también se cancela', async () => {
+      routeUploads({ complete: () => Promise.reject(new ApiError(409, 'Upload missing')) });
+      render(<ChangeVideoPanel roomId="r1" onMediaAssigned={() => true} />);
+      const xhr = await startUpload();
+      act(() => xhr.respond(200));
+      await screen.findByRole('alert');
+      await waitFor(() => expect(cancelCalls()).toHaveLength(1));
+    });
+
+    it('si falla la reserva (nada que cancelar) o la subida termina bien, no se cancela nada', async () => {
+      routeUploads({ request: () => Promise.reject(new ApiError(413, 'File too large')) });
+      const first = render(<ChangeVideoPanel roomId="r1" onMediaAssigned={() => true} />);
+      await userEvent.upload(await openPanel(), video);
+      await userEvent.click(screen.getByRole('button', { name: 'Subir' }));
+      await screen.findByRole('alert');
+      expect(cancelCalls()).toHaveLength(0);
+      first.unmount();
+
+      routeUploads();
+      MockXhr.reset();
+      render(<ChangeVideoPanel roomId="r1" onMediaAssigned={() => true} />);
+      const xhr = await startUpload();
+      act(() => xhr.respond(200));
+      await waitFor(() => expect(mockedApiFetch).toHaveBeenCalledWith(expect.stringContaining('/complete'), { method: 'POST' }, 'host'));
+      expect(cancelCalls()).toHaveLength(0);
+    });
+  });
+
   it('409 al confirmar → la subida no llegó; Subir reintenta todo el flujo', async () => {
     routeUploads({ complete: () => Promise.reject(new ApiError(409, 'Upload missing')) });
     const onMediaAssigned = vi.fn(() => true);
@@ -236,6 +335,80 @@ describe('ChangeVideoPanel — Mis vídeos', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Cambiar vídeo' }));
     return screen.findByRole('list', { name: 'Mis vídeos' });
   }
+
+  describe('se mantiene al día mientras un vídeo se procesa', () => {
+    const asReady = (v: (typeof library)[number]) => ({ ...v, status: 'ready' });
+    const videoCalls = () => mockedApiFetch.mock.calls.filter(([path]) => path === '/videos').length;
+
+    it('la tarjeta pasa de "Preparando…" a "Listo" sin cerrar ni reabrir el panel', async () => {
+      let call = 0;
+      routeUploads({
+        videos: () => Promise.resolve({ videos: ++call <= 2 ? library : library.map(asReady) }),
+      });
+      const grid = await openLibrary({ libraryPollMs: 20 });
+      expect(within(within(grid).getAllByRole('listitem')[1]).getByText('Preparando…')).toBeInTheDocument();
+      await waitFor(() => expect(within(within(grid).getAllByRole('listitem')[1]).getByText('Listo')).toBeInTheDocument());
+      expect(within(grid).queryByText('Preparando…')).not.toBeInTheDocument();
+    });
+
+    it('al refrescar no recarga las miniaturas: el <video> conserva su nodo y su src aunque la firma cambie', async () => {
+      let call = 0;
+      const signed = (n: number) =>
+        library.map((v) => ({ ...v, previewUrl: v.previewUrl ? `${v.previewUrl.split('?')[0]}?sig=${n}` : null }));
+      routeUploads({ videos: () => Promise.resolve({ videos: signed(++call) }) });
+      const grid = await openLibrary({ libraryPollMs: 20 });
+      const firstCard = () => within(grid).getAllByRole('listitem')[0];
+      const node = firstCard().querySelector('video')!;
+      const src = node.getAttribute('src');
+      await waitFor(() => expect(videoCalls()).toBeGreaterThanOrEqual(4));
+      expect(firstCard().querySelector('video')).toBe(node);
+      expect(node.getAttribute('src')).toBe(src);
+    });
+
+    it('deja de consultar cuando todos los vídeos están listos', async () => {
+      routeUploads({ videos: () => Promise.resolve({ videos: library.map(asReady) }) });
+      await openLibrary({ libraryPollMs: 20 });
+      await new Promise((r) => setTimeout(r, 120));
+      expect(videoCalls()).toBe(1);
+    });
+
+    it('sigue consultando cada intervalo mientras alguno se procesa', async () => {
+      routeUploads();
+      await openLibrary({ libraryPollMs: 20 });
+      await waitFor(() => expect(videoCalls()).toBeGreaterThanOrEqual(3));
+    });
+
+    it('un fallo al consultar no muestra error y se reintenta', async () => {
+      let call = 0;
+      routeUploads({
+        videos: () => (++call === 2 ? Promise.reject(new ApiError(500, 'boom')) : Promise.resolve({ videos: call === 1 ? library : library.map(asReady) })),
+      });
+      const grid = await openLibrary({ libraryPollMs: 20 });
+      await waitFor(() => expect(within(grid).queryByText('Preparando…')).not.toBeInTheDocument());
+      expect(screen.queryByText('No pudimos cargar tus vídeos.')).not.toBeInTheDocument();
+      expect(call).toBeGreaterThanOrEqual(3);
+    });
+
+    it('deja de consultar al cerrar el panel', async () => {
+      routeUploads();
+      await openLibrary({ libraryPollMs: 20 });
+      await userEvent.click(screen.getByRole('button', { name: 'Cerrar' }));
+      const before = videoCalls();
+      await new Promise((r) => setTimeout(r, 120));
+      expect(videoCalls()).toBe(before);
+    });
+
+    it('al desmontar no queda ningún temporizador consultando', async () => {
+      routeUploads();
+      render(<ChangeVideoPanel roomId="r1" onMediaAssigned={() => true} libraryPollMs={20} />);
+      await userEvent.click(screen.getByRole('button', { name: 'Cambiar vídeo' }));
+      await screen.findByRole('list', { name: 'Mis vídeos' });
+      cleanup();
+      const before = videoCalls();
+      await new Promise((r) => setTimeout(r, 120));
+      expect(videoCalls()).toBe(before);
+    });
+  });
 
   it('muestra la cuadrícula con miniatura, título, duración y estado en palabras simples', async () => {
     const grid = await openLibrary();

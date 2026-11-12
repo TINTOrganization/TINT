@@ -17,8 +17,26 @@ class VideoStatus(StrEnum):
     FAILED = "failed"
 
 
+class FailureReason(StrEnum):
+    """Por qué un vídeo quedó en `failed` (`videos.failure_reason`).
+
+    Son códigos estables y sin datos personales: identity-api los devuelve en `playback` y la web
+    los traduce a un mensaje. Cambiar uno exige actualizar ambos lados (contrato `videos`).
+    """
+
+    UNSUPPORTED_FORMAT = "unsupported_format"  # extensión fuera de mp4/mov/mkv/webm
+    UNREADABLE = "unreadable"  # ffprobe no puede leerlo: dañado, no es un vídeo o tiempo agotado
+    INVALID_DURATION = "invalid_duration"  # duración 0, negativa o no finita
+    MISSING_FILE = "missing_file"  # el original no está en el bucket
+    PROCESSING_FAILED = "processing_failed"  # falló la normalización o el Ambilight
+
+
 class ProbeError(Exception):
     """El archivo no pudo inspeccionarse (corrupto o ilegible)."""
+
+    def __init__(self, message: str, reason: FailureReason = FailureReason.UNREADABLE) -> None:
+        super().__init__(message)
+        self.reason = reason
 
 
 DEFAULT_TIMEOUT_S = 30
@@ -43,9 +61,9 @@ def parse_duration_ms(ffprobe_output: str) -> int:
     except (ValueError, KeyError, TypeError) as exc:
         raise ProbeError("salida de ffprobe inválida") from exc
     if not math.isfinite(duration):
-        raise ProbeError("duración no finita")
+        raise ProbeError("duración no finita", FailureReason.INVALID_DURATION)
     if duration <= 0:
-        raise ProbeError("duración no positiva")
+        raise ProbeError("duración no positiva", FailureReason.INVALID_DURATION)
     return round(duration * 1000)
 
 
@@ -93,17 +111,25 @@ def _run_ffprobe(path: str, runner, timeout: float) -> str:
     return result.stdout
 
 
-def inspect_media(path: str, runner=subprocess.run) -> tuple[VideoStatus, int | None, int | None]:
-    """Estado a persistir en SQL, duración y altura (ambas None si el archivo no es válido)."""
+def inspect_media_reason(
+    path: str, runner=subprocess.run
+) -> tuple[VideoStatus, int | None, int | None, FailureReason | None]:
+    """Estado a persistir, duración, altura y motivo del fallo (None si el archivo es válido)."""
     try:
         duration_ms, height = probe_media(path, runner)
     except ProbeError as exc:
-        logger.warning("vídeo %s marcado como failed: %s", path, exc)
-        return VideoStatus.FAILED, None, None
+        logger.warning("vídeo %s marcado como failed (%s): %s", path, exc.reason.value, exc)
+        return VideoStatus.FAILED, None, None, exc.reason
     except OSError as exc:
         logger.error("no se pudo ejecutar ffprobe sobre %s: %s", path, exc)
-        return VideoStatus.FAILED, None, None
-    return VideoStatus.READY, duration_ms, height
+        return VideoStatus.FAILED, None, None, FailureReason.PROCESSING_FAILED
+    return VideoStatus.READY, duration_ms, height, None
+
+
+def inspect_media(path: str, runner=subprocess.run) -> tuple[VideoStatus, int | None, int | None]:
+    """Estado a persistir en SQL, duración y altura (ambas None si el archivo no es válido)."""
+    status, duration_ms, height, _ = inspect_media_reason(path, runner)
+    return status, duration_ms, height
 
 
 def inspect_status(path: str, runner=subprocess.run) -> tuple[VideoStatus, int | None]:

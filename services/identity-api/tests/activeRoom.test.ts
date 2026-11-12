@@ -93,6 +93,19 @@ describe('requireActiveRoom', () => {
     expect(next).not.toHaveBeenCalled();
   });
 
+  it('410 Disabled si la sala live terminó (ADR 0019)', async () => {
+    const { res, next } = await run({ ...deleted, status: 'disabled' });
+    expect(res.status).toHaveBeenCalledWith(410);
+    expect(res.json).toHaveBeenCalledWith({ error: 'Disabled' });
+    expect(next).not.toHaveBeenCalled();
+  });
+
+  it('falla cerrado ante un status desconocido (no deja pasar)', async () => {
+    const { res, next } = await run({ ...deleted, status: 'otro' });
+    expect(res.status).toHaveBeenCalledWith(410);
+    expect(next).not.toHaveBeenCalled();
+  });
+
   it('deja pasar una sala activa y la expone en req.room', async () => {
     const active = { ...deleted, status: 'active' };
     const { req, next } = await run(active);
